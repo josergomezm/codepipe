@@ -1,15 +1,88 @@
-import type { ProviderType, MessageRole } from '../schemas.js'
+import { z } from 'zod'
+import type { ProviderType } from '../schemas.js'
+import { MessageRoleSchema } from '../schemas.js'
+
+// ---------------------------------------------------------------------------
+// AdapterEvent — Zod schemas + TypeScript types
+// ---------------------------------------------------------------------------
+
+const AdapterCreditsSchema = z.object({
+  credits: z.string().min(1),
+  time: z.string().min(1),
+})
+
+const ChunkEventSchema = z.object({
+  type: z.literal('chunk'),
+  content: z.string().min(1),
+  role: MessageRoleSchema,
+})
+
+const MessageCompleteEventSchema = z.object({
+  type: z.literal('message_complete'),
+  role: MessageRoleSchema,
+  metadata: AdapterCreditsSchema.optional(),
+})
+
+const PromptDetectedEventSchema = z.object({
+  type: z.literal('prompt_detected'),
+})
+
+const ToolUseEventSchema = z.object({
+  type: z.literal('tool_use'),
+  tool: z.string().min(1),
+  content: z.string().min(1),
+})
+
+const ThinkingEventSchema = z.object({
+  type: z.literal('thinking'),
+  content: z.string().min(1),
+})
+
+const InteractivePromptEventSchema = z.object({
+  type: z.literal('interactive_prompt'),
+  content: z.string().min(1),
+  options: z.array(z.string().min(1)).optional(),
+})
+
+export const AdapterEventSchema = z.discriminatedUnion('type', [
+  ChunkEventSchema,
+  MessageCompleteEventSchema,
+  PromptDetectedEventSchema,
+  ToolUseEventSchema,
+  ThinkingEventSchema,
+  InteractivePromptEventSchema,
+])
+
+export type AdapterEvent = z.infer<typeof AdapterEventSchema>
+
+// ---------------------------------------------------------------------------
+// Validation helper
+// ---------------------------------------------------------------------------
 
 /**
- * Events emitted by a CLI adapter when processing output.
+ * Validate an array of adapter events. Returns only the valid events,
+ * logging warnings for any that fail validation.
  */
-export type AdapterEvent =
-  | { type: 'chunk'; content: string; role: MessageRole }
-  | { type: 'message_complete'; role: MessageRole; metadata?: { credits?: string; time?: string } }
-  | { type: 'prompt_detected' }
-  | { type: 'tool_use'; tool: string; content: string }
-  | { type: 'thinking'; content: string }
-  | { type: 'interactive_prompt'; content: string; options?: string[] }
+export function validateAdapterEvents(
+  events: unknown[],
+  logger?: (msg: string) => void,
+): AdapterEvent[] {
+  const valid: AdapterEvent[] = []
+  for (const event of events) {
+    const result = AdapterEventSchema.safeParse(event)
+    if (result.success) {
+      valid.push(result.data)
+    } else {
+      const msg = `Invalid adapter event dropped: ${JSON.stringify(event)} — ${result.error.message}`
+      if (logger) logger(msg)
+    }
+  }
+  return valid
+}
+
+// ---------------------------------------------------------------------------
+// CLI Adapter interface
+// ---------------------------------------------------------------------------
 
 /**
  * Pluggable parser layer that understands a specific CLI tool's output format.

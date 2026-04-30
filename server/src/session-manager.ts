@@ -9,7 +9,8 @@ import type {
   ChatMessage,
 } from './schemas.js'
 import type { IStorageLayer } from './storage.js'
-import type { ICLIAdapter, AdapterEvent } from './adapters/types.js'
+import type { ICLIAdapter } from './adapters/types.js'
+import { type AdapterEvent, validateAdapterEvents } from './adapters/types.js'
 import { getAdapter } from './adapters/registry.js'
 import { stripAnsi } from './adapters/strip-ansi.js'
 import { log } from './logger.js'
@@ -124,20 +125,26 @@ export class SessionManager implements ISessionManager {
     // Persist session to storage BEFORE wiring events
     await this.storage.saveSession(session)
 
-    // Wire pty output → strip ANSI → adapter.onData → process events
+    // Wire pty output → strip ANSI → adapter.onData → validate → process events
     ptyProcess.onData((data: string) => {
       const cleanText = stripAnsi(data)
       if (cleanText.trim().length === 0) return
       log.debug('pty', `clean: ${JSON.stringify(cleanText).slice(0, 300)}`)
-      const events = adapter.onData(cleanText)
-      if (events.length > 0) {
-        // Only log non-chunk events at info level (message_complete, prompt_detected, thinking)
-        const significantEvents = events.filter(e => e.type !== 'chunk')
-        if (significantEvents.length > 0) {
-          log.info('adapter', `${significantEvents.map(e => e.type).join(', ')}`)
-        }
-        this.processAdapterEvents(session.id, events)
+      const rawEvents = adapter.onData(cleanText)
+      if (rawEvents.length === 0) return
+
+      // Validate events at the boundary — drop malformed ones
+      const events = validateAdapterEvents(rawEvents, (msg) => {
+        log.warn('adapter', msg)
+      })
+      if (events.length === 0) return
+
+      // Only log non-chunk events at info level
+      const significantEvents = events.filter(e => e.type !== 'chunk')
+      if (significantEvents.length > 0) {
+        log.info('adapter', `${significantEvents.map(e => e.type).join(', ')}`)
       }
+      this.processAdapterEvents(session.id, events)
     })
 
     // Handle pty exit
@@ -267,10 +274,24 @@ export class SessionManager implements ISessionManager {
             ctx.session.messages.push(ctx.currentMessage)
             this.broadcast(sessionId, { type: 'message', data: ctx.currentMessage })
             this.broadcast(sessionId, { type: 'status', data: 'typing' })
+          } else if (ctx.currentMessage.role !== event.role) {
+            // Role changed (e.g., tool output interrupted assistant text) —
+            // finalize the old message and start a new one
+            this.finalizeCurrentMessage(sessionId)
+            ctx.currentMessage = {
+              id: randomUUID(),
+              role: event.role,
+              content: event.content,
+              timestamp: Date.now(),
+              status: 'streaming',
+            }
+            ctx.session.messages.push(ctx.currentMessage)
+            this.broadcast(sessionId, { type: 'message', data: ctx.currentMessage })
+            this.broadcast(sessionId, { type: 'status', data: 'typing' })
           } else {
-            // APPEND to existing streaming message (not replace)
+            // APPEND to existing streaming message (same role)
             ctx.currentMessage.content += event.content
-            // Broadcast the delta so the frontend can append
+            // Broadcast the updated message so the frontend can replace
             this.broadcast(sessionId, {
               type: 'message',
               data: ctx.currentMessage,
@@ -293,6 +314,9 @@ export class SessionManager implements ISessionManager {
             }
             this.finalizeCurrentMessage(sessionId)
           }
+          // Even if currentMessage is null (already finalized by tool_use flow),
+          // clear it to ensure clean state for the next message
+          ctx.currentMessage = null
           break
         }
 
@@ -304,6 +328,14 @@ export class SessionManager implements ISessionManager {
         }
 
         case 'tool_use': {
+          // If there's an in-progress assistant message, finalize it first.
+          // Tool output is a separate message — it should NOT bleed into
+          // the assistant's content.
+          if (ctx.currentMessage && ctx.currentMessage.status === 'streaming') {
+            this.finalizeCurrentMessage(sessionId)
+            ctx.currentMessage = null
+          }
+
           const toolMsg: ChatMessage = {
             id: randomUUID(),
             role: 'tool',
