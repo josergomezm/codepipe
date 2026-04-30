@@ -131,9 +131,10 @@ export class SessionManager implements ISessionManager {
       log.debug('pty', `clean: ${JSON.stringify(cleanText).slice(0, 300)}`)
       const events = adapter.onData(cleanText)
       if (events.length > 0) {
-        log.info('adapter', `events: ${events.map(e => e.type).join(', ')}`)
-        for (const e of events) {
-          if (e.type === 'chunk') log.debug('adapter', `chunk: ${JSON.stringify(e.content).slice(0, 200)}`)
+        // Only log non-chunk events at info level (message_complete, prompt_detected, thinking)
+        const significantEvents = events.filter(e => e.type !== 'chunk')
+        if (significantEvents.length > 0) {
+          log.info('adapter', `${significantEvents.map(e => e.type).join(', ')}`)
         }
         this.processAdapterEvents(session.id, events)
       }

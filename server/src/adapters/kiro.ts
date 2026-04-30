@@ -1,10 +1,25 @@
 import type { ProviderType } from '../schemas.js'
 import type { ICLIAdapter, AdapterEvent } from './types.js'
 
-/** Kiro credits patterns. */
+/** Check if text is ONLY spinner content (no real response text). */
+function isOnlySpinner(text: string): boolean {
+  const cleaned = text
+    .replace(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*Thinking\.{0,3}/g, '')
+    .replace(/Thinking\.{0,3}/g, '')
+    .replace(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/g, '')
+    .trim()
+  return cleaned.length === 0
+}
+
+/** Kiro prompt pattern: "N% > " at end of text. */
+const PROMPT_PATTERN = /\d+%\s*>\s*$/
+/** Prompt pattern anywhere (for removal). */
+const PROMPT_ANYWHERE = /\d+%\s*>\s*/g
+
+/** Credits patterns. */
 const CREDITS_PATTERNS = [
-  /▸\s*Credits:\s*([\d.]+)\s*•\s*Time:\s*(\S+)/,
-  /Est\.\s*Credits\s*Used:\s*([\d.]+)\s+Elapsed\s*time:\s*(\S+)/,
+  /▸\s*Credits:\s*([\d.]+)\s*•\s*Time:\s*(\d+[smh])(?=\s|\d|$)/,
+  /Est\.\s*Credits\s*Used:\s*([\d.]+)\s+Elapsed\s*time:\s*(\d+[smh])(?=\s|\d|$)/,
 ]
 
 function parseCredits(text: string): { credits: string; time: string } | null {
@@ -15,8 +30,71 @@ function parseCredits(text: string): { credits: string; time: string } | null {
   return null
 }
 
-/** Braille spinner characters used by Kiro CLI. */
-const SPINNER_CHARS = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+/** Escape special regex characters in a string. */
+function escapeRegex(str: string): string {
+  // Use character-by-character replacement to avoid $& issues
+  let result = ''
+  for (const ch of str) {
+    if ('.*+?^${}()|[]\\'.includes(ch)) {
+      result += '\\' + ch
+    } else {
+      result += ch
+    }
+  }
+  return result
+}
+
+/**
+ * Remove all known noise from a chunk, leaving only the actual response content.
+ */
+function extractContent(text: string, userInput: string): string {
+  let result = text
+
+  // Remove spinner content
+  result = result
+    .replace(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*Thinking\.{0,3}/g, '')
+    .replace(/Thinking\.{0,3}/g, '')
+    .replace(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/g, '')
+
+  // Remove prompt patterns
+  result = result.replace(PROMPT_ANYWHERE, '')
+
+  // Remove echoed user input — only from the START of the text
+  // (the echo is always the first thing the CLI outputs after receiving input)
+  if (userInput.trim().length > 0) {
+    const echo = userInput.trim()
+    const trimmedResult = result.trimStart()
+    if (trimmedResult.startsWith(echo)) {
+      result = trimmedResult.slice(echo.length)
+    }
+  }
+
+  // Remove credits lines
+  for (const pattern of CREDITS_PATTERNS) {
+    result = result.replace(pattern, '')
+  }
+  result = result.replace(/▸[^\n]*/g, '')
+
+  // Remove ">" response markers (with or without space)
+  result = result.replace(/^>\s*/gm, '')
+
+  // Remove braille art lines
+  result = result.replace(/^[⠀-⣿\s]+$/gm, '')
+
+  // Remove box-drawing lines
+  result = result.replace(/^[╭╮╰╯│─┌┐└┘├┤┬┴┼][^\n]*$/gm, '')
+
+  // Remove "Model:" info line
+  result = result.replace(/^Model:.*$/gm, '')
+
+  // Remove "Did you know?"
+  result = result.replace(/Did you know\?/g, '')
+
+  // Collapse multiple newlines
+  result = result.replace(/\n{3,}/g, '\n\n')
+
+  return result
+}
 
 type AdapterState =
   | 'waiting_for_first_input'
@@ -25,13 +103,6 @@ type AdapterState =
   | 'idle'
   | 'consuming_system_response'
 
-/**
- * CLI adapter for the Kiro CLI (legacy UI mode).
- *
- * Processes raw PTY output (ANSI stripped) using a state machine.
- * Key principle: preserve the original text spacing — don't trim content chunks.
- * Only filter known noise patterns (spinners, prompts, echo, credits).
- */
 export class KiroAdapter implements ICLIAdapter {
   readonly provider: ProviderType = 'kiro'
   readonly command = 'kiro-cli.exe'
@@ -41,95 +112,110 @@ export class KiroAdapter implements ICLIAdapter {
   private state: AdapterState = 'waiting_for_first_input'
   private lastUserInput = ''
   private pendingCredits: { credits: string; time: string } | null = null
-  /** Track if we've seen a spinner recently to filter split spinner chunks. */
-  private recentSpinner = false
-
-  private readonly promptPattern = /\d+%\s*>\s*$/
+  private cliReady = false
+  private queuedUserInput: string | null = null
+  private echoConsumed = false
+  /** Buffer for accumulating text while waiting for echo to complete. */
+  private echoBuffer = ''
+  private queuedUserInput: string | null = null
+  /** Whether the echo of the current user input has been consumed. */
+  private echoConsumed = false
 
   onData(cleanText: string): AdapterEvent[] {
-    if (this.state === 'waiting_for_first_input') return []
+    if (this.state === 'waiting_for_first_input') {
+      if (/\d+%\s*>/.test(cleanText)) {
+        this.cliReady = true
+        if (this.queuedUserInput) {
+          this.lastUserInput = this.queuedUserInput
+          this.queuedUserInput = null
+          this.state = 'waiting_for_response'
+        } else {
+          this.state = 'idle'
+        }
+      }
+      return []
+    }
+
     if (this.state === 'idle') return []
 
     if (this.state === 'consuming_system_response') {
-      if (this.promptPattern.test(cleanText)) {
+      if (PROMPT_PATTERN.test(cleanText)) {
         this.state = 'idle'
       }
       return []
     }
 
     const events: AdapterEvent[] = []
+    const credits = parseCredits(cleanText)
+    if (credits) this.pendingCredits = credits
+    const hasPrompt = PROMPT_PATTERN.test(cleanText)
 
-    // --- Classify the chunk ---
-
-    // Is this a spinner line? (braille char + "Thinking...")
-    const isFullSpinner = /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*Thinking/i.test(cleanText.trim())
-    // Is this just a lone spinner char? (split chunk — spinner char arrived separately)
-    const isLoneSpinnerChar = cleanText.trim().length === 1 && SPINNER_CHARS.includes(cleanText.trim())
-    // Is this "Thinking..." without the spinner char? (other half of split)
-    const isThinkingText = /^Thinking\.{0,3}$/.test(cleanText.trim())
-
-    if (isFullSpinner || isLoneSpinnerChar || isThinkingText) {
-      this.recentSpinner = true
+    if (isOnlySpinner(cleanText)) {
       if (this.state === 'waiting_for_response') {
         events.push({ type: 'thinking', content: 'Thinking...' })
       }
       return events
     }
 
-    // Does this contain a credits line?
-    const credits = parseCredits(cleanText)
-    if (credits) {
-      this.pendingCredits = credits
-      // The credits line might also contain the prompt (e.g., "▸ Credits: 0.03 • Time: 3s2% >")
-      if (this.promptPattern.test(cleanText)) {
-        if (this.state === 'responding') {
+    // Extract actual content (for responding state — waiting_for_response handles its own)
+    const content = this.state === 'responding' ? extractContent(cleanText, '') : ''
+
+    if (credits && content.trim().length === 0) {
+      if (hasPrompt && this.state === 'responding') {
+        events.push({
+          type: 'message_complete',
+          role: 'assistant',
+          metadata: this.pendingCredits ?? undefined,
+        })
+        events.push({ type: 'prompt_detected' })
+        this.pendingCredits = null
+        this.state = 'idle'
+      }
+      return events
+    }
+
+    if (this.state === 'waiting_for_response') {
+      // Buffer text until we've accumulated enough to check for the echo
+      if (!this.echoConsumed) {
+        this.echoBuffer += cleanText
+        const echo = this.lastUserInput.trim()
+        
+        // If buffer is shorter than the echo, keep buffering
+        if (this.echoBuffer.length < echo.length && !hasPrompt) {
+          // But still detect spinners
+          if (isOnlySpinner(cleanText)) {
+            events.push({ type: 'thinking', content: 'Thinking...' })
+          }
+          return events
+        }
+        
+        // We have enough text — strip the echo from the start of the buffer
+        this.echoConsumed = true
+        let buffered = extractContent(this.echoBuffer, echo)
+        this.echoBuffer = ''
+        
+        if (buffered.trim().length > 0) {
+          this.state = 'responding'
+          events.push({ type: 'chunk', content: buffered, role: 'assistant' })
+        }
+        
+        if (hasPrompt && this.state === 'responding') {
           events.push({
             type: 'message_complete',
             role: 'assistant',
-            metadata: this.pendingCredits ?? undefined,
+            ...(this.pendingCredits ? { metadata: this.pendingCredits } : {}),
           })
           events.push({ type: 'prompt_detected' })
           this.pendingCredits = null
           this.state = 'idle'
         }
-      }
-      return events
-    }
-
-    // Does this contain a prompt?
-    const hasPrompt = this.promptPattern.test(cleanText)
-
-    // Is this the echoed user input? (prompt + user text, or just user text)
-    if (this.state === 'waiting_for_response' && this.lastUserInput.trim().length > 0) {
-      const stripped = cleanText.trim()
-      // "N% > user input" or just "user input"
-      const withoutPrompt = stripped.replace(/^\d+%\s*>\s*/, '')
-      if (withoutPrompt === this.lastUserInput.trim() || stripped === this.lastUserInput.trim()) {
-        // This is the echo — check if it also has a spinner
-        if (/Thinking/i.test(cleanText)) {
-          events.push({ type: 'thinking', content: 'Thinking...' })
-        }
         return events
       }
-    }
-
-    // --- Process content ---
-
-    if (this.state === 'waiting_for_response') {
-      // Remove leading "> " that Kiro puts before response start
-      let content = cleanText
-      if (content.trimStart().startsWith('> ')) {
-        content = content.trimStart().slice(2)
-      }
-
-      // Remove any prompt at the end
-      if (hasPrompt) {
-        content = content.replace(/\d+%\s*>\s*$/, '')
-      }
-
+      
+      // Echo already consumed — process normally
+      const content = extractContent(cleanText, '')
       if (content.trim().length > 0) {
         this.state = 'responding'
-        this.recentSpinner = false
         events.push({ type: 'chunk', content, role: 'assistant' })
       }
 
@@ -147,18 +233,9 @@ export class KiroAdapter implements ICLIAdapter {
     }
 
     if (this.state === 'responding') {
-      let content = cleanText
-
-      // Remove any prompt at the end
-      if (hasPrompt) {
-        content = content.replace(/\d+%\s*>\s*$/, '')
-      }
-
-      // Don't trim! Preserve spaces — they're word boundaries between chunks
       if (content.length > 0) {
         events.push({ type: 'chunk', content, role: 'assistant' })
       }
-
       if (hasPrompt) {
         events.push({
           type: 'message_complete',
@@ -176,10 +253,15 @@ export class KiroAdapter implements ICLIAdapter {
   }
 
   notifyUserInput(text: string): void {
-    this.lastUserInput = text
     this.pendingCredits = null
-    this.recentSpinner = false
-    if (this.state === 'waiting_for_first_input' || this.state === 'idle') {
+    this.echoConsumed = false
+    this.echoBuffer = ''
+    if (!this.cliReady) {
+      this.queuedUserInput = text
+      return
+    }
+    this.lastUserInput = text
+    if (this.state === 'idle') {
       this.state = 'waiting_for_response'
     }
   }
@@ -196,6 +278,9 @@ export class KiroAdapter implements ICLIAdapter {
     this.state = 'waiting_for_first_input'
     this.lastUserInput = ''
     this.pendingCredits = null
-    this.recentSpinner = false
+    this.cliReady = false
+    this.queuedUserInput = null
+    this.echoConsumed = false
+    this.echoBuffer = ''
   }
 }

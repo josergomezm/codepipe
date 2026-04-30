@@ -4,6 +4,11 @@ import { KiroAdapter } from './kiro.js'
 import { stripAnsi } from './strip-ansi.js'
 import { registerAdapter, getAdapter, clearAdapters } from './registry.js'
 
+/** Simulate CLI startup by sending a prompt pattern. */
+function simulateStartup(adapter: KiroAdapter): void {
+  adapter.onData('1% > Ready')
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests — stripAnsi
 // ---------------------------------------------------------------------------
@@ -69,7 +74,7 @@ describe('KiroAdapter — basic behavior', () => {
   })
 
   it('ignores all output in waiting_for_first_input state', () => {
-    // Before any user input, all output is startup noise
+    // Before any prompt is seen, all output is startup noise
     const events = adapter.onData('Welcome to Kiro CLI!\nLoading...')
     expect(events).toEqual([])
   })
@@ -92,6 +97,9 @@ describe('KiroAdapter — state machine transitions', () => {
     adapter.onData('Welcome to Kiro!')
     adapter.onData('Loading plugins...')
 
+    // Simulate CLI becoming ready
+    simulateStartup(adapter)
+
     // User sends first message
     adapter.notifyUserInput('hello')
 
@@ -106,6 +114,7 @@ describe('KiroAdapter — state machine transitions', () => {
   })
 
   it('skips echoed user input in waiting_for_response state', () => {
+    simulateStartup(adapter)
     adapter.notifyUserInput('hello world')
 
     // CLI echoes back the user input first
@@ -122,6 +131,7 @@ describe('KiroAdapter — state machine transitions', () => {
   })
 
   it('detects prompt pattern and emits message_complete + prompt_detected', () => {
+    simulateStartup(adapter)
     adapter.notifyUserInput('hello')
 
     // Response followed by prompt
@@ -134,6 +144,7 @@ describe('KiroAdapter — state machine transitions', () => {
   })
 
   it('accumulates chunks in responding state', () => {
+    simulateStartup(adapter)
     adapter.notifyUserInput('explain something')
 
     // First chunk of response
@@ -148,6 +159,7 @@ describe('KiroAdapter — state machine transitions', () => {
   })
 
   it('transitions to idle after prompt detected, ignores further output', () => {
+    simulateStartup(adapter)
     adapter.notifyUserInput('hello')
     adapter.onData('Response text\n50% > ')
 
@@ -157,6 +169,8 @@ describe('KiroAdapter — state machine transitions', () => {
   })
 
   it('handles full conversation cycle: input → response → prompt → input → response', () => {
+    simulateStartup(adapter)
+
     // First message
     adapter.notifyUserInput('first question')
     const r1 = adapter.onData('First answer\n50% > ')
@@ -170,6 +184,7 @@ describe('KiroAdapter — state machine transitions', () => {
   })
 
   it('reset() returns to waiting_for_first_input state', () => {
+    simulateStartup(adapter)
     adapter.notifyUserInput('hello')
     adapter.onData('response\n50% > ')
 
@@ -178,6 +193,34 @@ describe('KiroAdapter — state machine transitions', () => {
     // After reset, all output is ignored again (startup noise)
     const events = adapter.onData('Welcome back!')
     expect(events).toEqual([])
+
+    // notifyUserInput should queue (cliReady is false after reset)
+    adapter.notifyUserInput('queued message')
+    // No response yet because CLI hasn't shown prompt
+    const events2 = adapter.onData('some noise')
+    expect(events2).toEqual([])
+
+    // Once prompt arrives, queued input is processed
+    adapter.onData('1% > ')
+    const events3 = adapter.onData('Response to queued\n2% > ')
+    expect(events3.map(e => e.type)).toContain('chunk')
+  })
+
+  it('queues user input when called before CLI is ready', () => {
+    // Don't call simulateStartup — CLI not ready yet
+    adapter.notifyUserInput('early message')
+
+    // Output is still ignored (waiting_for_first_input, but input is queued)
+    const events1 = adapter.onData('startup noise')
+    expect(events1).toEqual([])
+
+    // Prompt arrives — queued input is processed, transitions to waiting_for_response
+    adapter.onData('1% > Ready')
+
+    // Now the adapter is in waiting_for_response with the queued input
+    const events2 = adapter.onData('Response to early message\n2% > ')
+    expect(events2.map(e => e.type)).toContain('chunk')
+    expect(events2.map(e => e.type)).toContain('prompt_detected')
   })
 })
 
@@ -193,7 +236,9 @@ describe('KiroAdapter — system input (notifySystemInput)', () => {
   })
 
   it('silently consumes all output after notifySystemInput until prompt', () => {
-    // Simulate: CLI is in waiting_for_first_input, system prompt is sent
+    // CLI must be ready before system input so that subsequent user input works
+    simulateStartup(adapter)
+
     adapter.notifySystemInput('Format responses in markdown')
 
     // CLI echoes the system prompt — should be silently consumed
@@ -217,8 +262,25 @@ describe('KiroAdapter — system input (notifySystemInput)', () => {
     expect(types).toContain('prompt_detected')
   })
 
+  it('notifySystemInput from waiting_for_first_input consumes output silently', () => {
+    // System input can be sent before CLI is ready (no startup needed)
+    adapter.notifySystemInput('Format responses in markdown')
+
+    // All output is silently consumed
+    const echoEvents = adapter.onData('Format responses in markdown')
+    expect(echoEvents).toEqual([])
+
+    const responseEvents = adapter.onData('Understood.')
+    expect(responseEvents).toEqual([])
+
+    // Prompt transitions to idle
+    const promptEvents = adapter.onData('50% > ')
+    expect(promptEvents).toEqual([])
+  })
+
   it('transitions from idle to consuming_system_response', () => {
     // Get to idle state first
+    simulateStartup(adapter)
     adapter.notifyUserInput('hello')
     adapter.onData('Response\n50% > ')
 
@@ -248,6 +310,7 @@ describe('KiroAdapter — credits metadata parsing', () => {
   })
 
   it('parses credits line and attaches metadata to message_complete', () => {
+    simulateStartup(adapter)
     adapter.notifyUserInput('hello')
 
     // Response chunk
@@ -265,6 +328,7 @@ describe('KiroAdapter — credits metadata parsing', () => {
   })
 
   it('parses alternative credits format', () => {
+    simulateStartup(adapter)
     adapter.notifyUserInput('hello')
 
     // Response chunk
@@ -282,6 +346,7 @@ describe('KiroAdapter — credits metadata parsing', () => {
   })
 
   it('emits message_complete without metadata when no credits line', () => {
+    simulateStartup(adapter)
     adapter.notifyUserInput('hello')
 
     const events = adapter.onData('Simple answer\n50% > ')
@@ -301,6 +366,7 @@ describe('KiroAdapter — edge cases', () => {
   })
 
   it('handles prompt pattern with different percentages', () => {
+    simulateStartup(adapter)
     adapter.notifyUserInput('test')
 
     const events1 = adapter.onData('Answer\n0% > ')
@@ -308,6 +374,7 @@ describe('KiroAdapter — edge cases', () => {
   })
 
   it('handles prompt-only output (no content before prompt)', () => {
+    simulateStartup(adapter)
     adapter.notifyUserInput('test')
     // Skip echo
     adapter.onData('test')
@@ -319,6 +386,7 @@ describe('KiroAdapter — edge cases', () => {
   })
 
   it('does not false-positive on text containing percent signs', () => {
+    simulateStartup(adapter)
     adapter.notifyUserInput('test')
 
     // "50% done" should NOT trigger prompt detection (no " > " at end)
@@ -353,7 +421,7 @@ describe('KiroAdapter — property-based tests', () => {
         fc.string({ minLength: 1, maxLength: 200 }),
         (content) => {
           const adapter = new KiroAdapter()
-          // Don't call notifyUserInput — stays in waiting_for_first_input
+          // Don't call simulateStartup — stays in waiting_for_first_input
           const result = adapter.onData(content)
           expect(result).toEqual([])
         },
@@ -368,6 +436,7 @@ describe('KiroAdapter — property-based tests', () => {
         fc.string({ minLength: 1, maxLength: 200 }),
         (content) => {
           const adapter = new KiroAdapter()
+          // notifySystemInput works from waiting_for_first_input without startup
           adapter.notifySystemInput('system prompt')
           const result = adapter.onData(content)
           expect(result).toEqual([])
