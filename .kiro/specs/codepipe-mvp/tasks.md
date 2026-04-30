@@ -18,109 +18,109 @@
 
 ## Phase 2: Storage Layer
 
-- [ ] 2.1 Implement StorageLayer class
-  - [ ] 2.1.1 Create `server/src/storage.ts` implementing `IStorageLayer` interface with JSON file operations
-  - [ ] 2.1.2 Implement `ensureDataDir()` that creates `data/` and `data/sessions/` directories on startup if they don't exist
-  - [ ] 2.1.3 Implement `atomicWrite(filePath, data)` using write-to-temp-then-rename pattern
-  - [ ] 2.1.4 Implement project CRUD: `listProjects()`, `addProject()`, `removeProject()`, `getProject()` operating on `data/projects.json`
-  - [ ] 2.1.5 Implement session CRUD: `saveSession()`, `getSession()`, `listSessions()` (metadata only, no messages), `deleteSession()`
-  - [ ] 2.1.6 Implement `appendMessage(sessionId, message)` that loads session, appends message, updates `updatedAt`, and writes atomically
-  - [ ] 2.1.7 Implement `updateSessionStatus(sessionId, status)` for transitioning live → archived
-- [ ] 2.2 Add Zod validation to storage reads
-  - [ ] 2.2.1 Validate loaded session data against `SessionSchema` on read, log and handle corruption gracefully
-  - [ ] 2.2.2 Validate loaded project data against `z.array(ProjectSchema)` on read
-- [ ] 2.3 Write storage layer tests
-  - [ ] 2.3.1 Unit tests for project CRUD (add, list, get, remove)
-  - [ ] 2.3.2 Unit tests for session CRUD (save, get, list metadata, delete)
-  - [ ] 2.3.3 Unit tests for appendMessage (ordering, updatedAt update)
-  - [ ] 2.3.4 Test atomic write behavior (verify temp file is used, original preserved on failure)
-  - [ ] 2.3.5 Property-based test: session round-trip integrity (generate random Session objects with fast-check, save → load → compare)
+- [x] 2.1 Implement StorageLayer class
+  - [x] 2.1.1 Create `server/src/storage.ts` implementing `IStorageLayer` interface with JSON file operations
+  - [x] 2.1.2 Implement `ensureDataDir()` that creates `data/` and `data/sessions/` directories on startup if they don't exist
+  - [x] 2.1.3 Implement `atomicWrite(filePath, data)` using write-to-temp-then-rename pattern
+  - [x] 2.1.4 Implement project CRUD: `listProjects()`, `addProject()`, `removeProject()`, `getProject()` operating on `data/projects.json`
+  - [x] 2.1.5 Implement session CRUD: `saveSession()`, `getSession()`, `listSessions()` (metadata only, no messages), `deleteSession()`
+  - [x] 2.1.6 Implement `appendMessage(sessionId, message)` that loads session, appends message, updates `updatedAt`, and writes atomically
+  - [x] 2.1.7 Implement `updateSessionStatus(sessionId, status)` for transitioning live → archived
+- [x] 2.2 Add Zod validation to storage reads
+  - [x] 2.2.1 Validate loaded session data against `SessionSchema` on read, log and handle corruption gracefully
+  - [x] 2.2.2 Validate loaded project data against `z.array(ProjectSchema)` on read
+- [x] 2.3 Write storage layer tests
+  - [x] 2.3.1 Unit tests for project CRUD (add, list, get, remove)
+  - [x] 2.3.2 Unit tests for session CRUD (save, get, list metadata, delete)
+  - [x] 2.3.3 Unit tests for appendMessage (ordering, updatedAt update)
+  - [x] 2.3.4 Test atomic write behavior (verify temp file is used, original preserved on failure)
+  - [x] 2.3.5 Property-based test: session round-trip integrity (generate random Session objects with fast-check, save → load → compare)
 
 ## Phase 3: CLI Adapter System
 
-- [ ] 3.1 Define adapter interface and registry
-  - [ ] 3.1.1 Create `server/src/adapters/types.ts` with `ICLIAdapter` interface, `AdapterEvent` type union, and `AdapterFactory` type
-  - [ ] 3.1.2 Create `server/src/adapters/registry.ts` with adapter registration map and `getAdapter(provider)` lookup
-- [ ] 3.2 Implement Kiro CLI adapter
-  - [ ] 3.2.1 Create `server/src/adapters/kiro.ts` implementing `ICLIAdapter` with Kiro CLI command, args, and prompt detection patterns
-  - [ ] 3.2.2 Implement `onScreenUpdate()` with internal position tracking: diff new content from last processed position, detect prompt patterns, emit chunk/message_complete/prompt_detected events
-  - [ ] 3.2.3 Implement `reset()` to clear internal parsing state
-- [ ] 3.3 Write adapter tests
-  - [ ] 3.3.1 Unit tests for Kiro adapter with recorded terminal output snapshots: verify correct AdapterEvent sequences for known output patterns
-  - [ ] 3.3.2 Test prompt detection: verify prompt_detected is emitted when Kiro prompt pattern appears
-  - [ ] 3.3.3 Test idempotent processing: same screen content passed twice produces no duplicate events
-  - [ ] 3.3.4 Property-based test: adapter position monotonicity (generate random screen content sequences, verify lastProcessedPosition never decreases)
+- [x] 3.1 Define adapter interface and registry
+  - [x] 3.1.1 Create `server/src/adapters/types.ts` with `ICLIAdapter` interface, `AdapterEvent` type union, and `AdapterFactory` type
+  - [x] 3.1.2 Create `server/src/adapters/registry.ts` with adapter registration map and `getAdapter(provider)` lookup
+- [x] 3.2 Implement Kiro CLI adapter
+  - [x] 3.2.1 Create `server/src/adapters/kiro.ts` implementing `ICLIAdapter` with Kiro CLI command, args, and prompt detection patterns
+  - [x] 3.2.2 Implement `onScreenUpdate()` with internal position tracking: diff new content from last processed position, detect prompt patterns, emit chunk/message_complete/prompt_detected events
+  - [x] 3.2.3 Implement `reset()` to clear internal parsing state
+- [x] 3.3 Write adapter tests
+  - [x] 3.3.1 Unit tests for Kiro adapter with recorded terminal output snapshots: verify correct AdapterEvent sequences for known output patterns
+  - [x] 3.3.2 Test prompt detection: verify prompt_detected is emitted when Kiro prompt pattern appears
+  - [x] 3.3.3 Test idempotent processing: same screen content passed twice produces no duplicate events
+  - [x] 3.3.4 Property-based test: adapter position monotonicity (generate random screen content sequences, verify lastProcessedPosition never decreases)
 
 ## Phase 4: Session Manager & WebSocket Server
 
-- [ ] 4.1 Implement SessionManager
-  - [ ] 4.1.1 Create `server/src/session-manager.ts` with in-memory session tracking map (`Map<string, SessionContext>`)
-  - [ ] 4.1.2 Implement `createSession(provider, projectId)`: validate project, resolve adapter, spawn pty with node-pty, wire xterm-headless parser, register onExit handler, persist session
-  - [ ] 4.1.3 Implement `handleInput(sessionId, text)`: create user ChatMessage, persist, broadcast, write to pty stdin
-  - [ ] 4.1.4 Implement `processAdapterEvents(sessionId, events)`: process chunk/message_complete/prompt_detected/tool_use/thinking events, manage streaming message state, broadcast and persist
-  - [ ] 4.1.5 Implement `attachClient(sessionId, socket)` and `detachClient(sessionId, socket)` for WebSocket client management
-  - [ ] 4.1.6 Implement `getSession()`, `listSessions()`, `deleteSession()` delegating to storage with pty cleanup for live sessions
-  - [ ] 4.1.7 Implement `shutdown()` to kill all pty processes and archive all live sessions
-  - [ ] 4.1.8 Add PTY output debouncing (50ms) before screen serialization to batch rapid output
-  - [ ] 4.1.9 Add storage write debouncing (500ms or on message completion) for message persistence
-- [ ] 4.2 Implement WebSocket server
-  - [ ] 4.2.1 Create `server/src/websocket.ts` with ws server attached to the Express HTTP server
-  - [ ] 4.2.2 Implement connection handler: parse sessionId from query params, validate with SessionManager, attach client
-  - [ ] 4.2.3 Implement history replay on connection: send `{ type: 'history' }` followed by current status
-  - [ ] 4.2.4 Implement message handler: validate incoming messages with `WSClientMessageSchema.safeParse()`, route to SessionManager.handleInput
-  - [ ] 4.2.5 Implement `broadcast(sessionId, message)`: iterate all attached clients for the session and send
-  - [ ] 4.2.6 Implement disconnection cleanup: remove client from session's client set on socket close
-- [ ] 4.3 Implement REST API routes
-  - [ ] 4.3.1 Create `server/src/routes/sessions.ts` with session CRUD endpoints (GET list, POST create, GET detail, DELETE)
-  - [ ] 4.3.2 Create `server/src/routes/projects.ts` with project CRUD endpoints (GET list, POST create, DELETE)
-  - [ ] 4.3.3 Add Zod validation middleware for request bodies (CreateSessionRequestSchema, CreateProjectRequestSchema)
-  - [ ] 4.3.4 Add path traversal validation for project paths (reject paths containing '..')
-  - [ ] 4.3.5 Add project path existence check on creation (verify directory exists on disk)
-- [ ] 4.4 Wire up server entry point
-  - [ ] 4.4.1 Update `server/src/index.ts` to initialize StorageLayer, SessionManager, register adapters, mount REST routes, attach WebSocket server, bind to 127.0.0.1
-  - [ ] 4.4.2 Add graceful shutdown handler (SIGINT/SIGTERM) that calls SessionManager.shutdown()
-- [ ] 4.5 Write backend integration tests
-  - [ ] 4.5.1 Test session creation via REST API with mocked pty (verify 201 response, session persisted)
-  - [ ] 4.5.2 Test WebSocket connection and history replay
-  - [ ] 4.5.3 Test user input flow: send via WebSocket → user message broadcast → pty write
-  - [ ] 4.5.4 Test session deletion: live session → pty killed → archived; archived session → file deleted
-  - [ ] 4.5.5 Test error cases: invalid provider, missing project, non-existent session
+- [x] 4.1 Implement SessionManager
+  - [x] 4.1.1 Create `server/src/session-manager.ts` with in-memory session tracking map (`Map<string, SessionContext>`)
+  - [x] 4.1.2 Implement `createSession(provider, projectId)`: validate project, resolve adapter, spawn pty with node-pty, wire xterm-headless parser, register onExit handler, persist session
+  - [x] 4.1.3 Implement `handleInput(sessionId, text)`: create user ChatMessage, persist, broadcast, write to pty stdin
+  - [x] 4.1.4 Implement `processAdapterEvents(sessionId, events)`: process chunk/message_complete/prompt_detected/tool_use/thinking events, manage streaming message state, broadcast and persist
+  - [x] 4.1.5 Implement `attachClient(sessionId, socket)` and `detachClient(sessionId, socket)` for WebSocket client management
+  - [x] 4.1.6 Implement `getSession()`, `listSessions()`, `deleteSession()` delegating to storage with pty cleanup for live sessions
+  - [x] 4.1.7 Implement `shutdown()` to kill all pty processes and archive all live sessions
+  - [x] 4.1.8 Add PTY output debouncing (50ms) before screen serialization to batch rapid output
+  - [x] 4.1.9 Add storage write debouncing (500ms or on message completion) for message persistence
+- [x] 4.2 Implement WebSocket server
+  - [x] 4.2.1 Create `server/src/websocket.ts` with ws server attached to the Express HTTP server
+  - [x] 4.2.2 Implement connection handler: parse sessionId from query params, validate with SessionManager, attach client
+  - [x] 4.2.3 Implement history replay on connection: send `{ type: 'history' }` followed by current status
+  - [x] 4.2.4 Implement message handler: validate incoming messages with `WSClientMessageSchema.safeParse()`, route to SessionManager.handleInput
+  - [x] 4.2.5 Implement `broadcast(sessionId, message)`: iterate all attached clients for the session and send
+  - [x] 4.2.6 Implement disconnection cleanup: remove client from session's client set on socket close
+- [x] 4.3 Implement REST API routes
+  - [x] 4.3.1 Create `server/src/routes/sessions.ts` with session CRUD endpoints (GET list, POST create, GET detail, DELETE)
+  - [x] 4.3.2 Create `server/src/routes/projects.ts` with project CRUD endpoints (GET list, POST create, DELETE)
+  - [x] 4.3.3 Add Zod validation middleware for request bodies (CreateSessionRequestSchema, CreateProjectRequestSchema)
+  - [x] 4.3.4 Add path traversal validation for project paths (reject paths containing '..')
+  - [x] 4.3.5 Add project path existence check on creation (verify directory exists on disk)
+- [x] 4.4 Wire up server entry point
+  - [x] 4.4.1 Update `server/src/index.ts` to initialize StorageLayer, SessionManager, register adapters, mount REST routes, attach WebSocket server, bind to 127.0.0.1
+  - [x] 4.4.2 Add graceful shutdown handler (SIGINT/SIGTERM) that calls SessionManager.shutdown()
+- [x] 4.5 Write backend integration tests
+  - [x] 4.5.1 Test session creation via REST API with mocked pty (verify 201 response, session persisted)
+  - [x] 4.5.2 Test WebSocket connection and history replay
+  - [x] 4.5.3 Test user input flow: send via WebSocket → user message broadcast → pty write
+  - [x] 4.5.4 Test session deletion: live session → pty killed → archived; archived session → file deleted
+  - [x] 4.5.5 Test error cases: invalid provider, missing project, non-existent session
 
 ## Phase 5: Frontend — State & Composables
 
-- [ ] 5.1 Implement Pinia stores
-  - [ ] 5.1.1 Create `client/src/stores/sessions.ts` with session list, active session, messages, and status state; actions for fetchSessions, createSession, selectSession, deleteSession, upsertMessage
-  - [ ] 5.1.2 Create `client/src/stores/projects.ts` with project list state; actions for fetchProjects, addProject, removeProject
-- [ ] 5.2 Implement useSession composable
-  - [ ] 5.2.1 Create `client/src/composables/useSession.ts` with WebSocket connection lifecycle: connect(sessionId), disconnect(), sendMessage(text)
-  - [ ] 5.2.2 Handle incoming WebSocket messages: route 'history', 'message', 'status', 'error' to Pinia store actions
-  - [ ] 5.2.3 Expose reactive state: isConnected, connectionError
-  - [ ] 5.2.4 Implement auto-reconnect on unexpected disconnection (with backoff)
-- [ ] 5.3 Create API client
-  - [ ] 5.3.1 Create `client/src/api/client.ts` with typed fetch wrappers for all REST endpoints (sessions CRUD, projects CRUD)
+- [x] 5.1 Implement Pinia stores
+  - [x] 5.1.1 Create `client/src/stores/sessions.ts` with session list, active session, messages, and status state; actions for fetchSessions, createSession, selectSession, deleteSession, upsertMessage
+  - [x] 5.1.2 Create `client/src/stores/projects.ts` with project list state; actions for fetchProjects, addProject, removeProject
+- [x] 5.2 Implement useSession composable
+  - [x] 5.2.1 Create `client/src/composables/useSession.ts` with WebSocket connection lifecycle: connect(sessionId), disconnect(), sendMessage(text)
+  - [x] 5.2.2 Handle incoming WebSocket messages: route 'history', 'message', 'status', 'error' to Pinia store actions
+  - [x] 5.2.3 Expose reactive state: isConnected, connectionError
+  - [x] 5.2.4 Implement auto-reconnect on unexpected disconnection (with backoff)
+- [x] 5.3 Create API client
+  - [x] 5.3.1 Create `client/src/api/client.ts` with typed fetch wrappers for all REST endpoints (sessions CRUD, projects CRUD)
 
 ## Phase 6: Frontend — UI Components
 
-- [ ] 6.1 Build layout shell
-  - [ ] 6.1.1 Create `App.vue` with two-panel layout (sidebar + main area) using Tailwind flex/grid
-  - [ ] 6.1.2 Create `AppSidebar.vue` container component
-  - [ ] 6.1.3 Set up Vue Router with a single route that renders `ChatView.vue`
-- [ ] 6.2 Build sidebar components
-  - [ ] 6.2.1 Create `SessionList.vue`: render sessions from Pinia store, sorted by updatedAt descending, with live/archived visual indicators
-  - [ ] 6.2.2 Create `NewSessionButton.vue`: button that triggers session creation flow
-  - [ ] 6.2.3 Create `ProjectList.vue`: render projects with add/remove functionality
-- [ ] 6.3 Build chat area components
-  - [ ] 6.3.1 Create `ChatView.vue`: container that holds MessageList and ChatInput, connects to active session via useSession composable
-  - [ ] 6.3.2 Create `MessageList.vue`: scrollable message container with auto-scroll behavior and "scroll to bottom" button
-  - [ ] 6.3.3 Create `ChatBubble.vue`: render individual messages as bubbles (user right-aligned, assistant left-aligned), with markdown rendering for assistant messages using markdown-it
-  - [ ] 6.3.4 Create `TypingIndicator.vue`: animated indicator shown when session status is 'typing'
-- [ ] 6.4 Build input area components
-  - [ ] 6.4.1 Create `ChatInput.vue`: textarea with Enter-to-send, Shift+Enter for newlines, disabled send button when empty
-  - [ ] 6.4.2 Create `ProjectSelector.vue`: dropdown showing saved projects
-  - [ ] 6.4.3 Create `ProviderSelector.vue`: dropdown showing available providers (kiro, gemini, claude, codex)
-- [ ] 6.5 Apply dark mode styling
-  - [ ] 6.5.1 Add Tailwind `dark:` variants to all components for dark mode support
-  - [ ] 6.5.2 Ensure consistent color scheme across light and dark modes
+- [x] 6.1 Build layout shell
+  - [x] 6.1.1 Create `App.vue` with two-panel layout (sidebar + main area) using Tailwind flex/grid
+  - [x] 6.1.2 Create `AppSidebar.vue` container component
+  - [x] 6.1.3 Set up Vue Router with a single route that renders `ChatView.vue`
+- [x] 6.2 Build sidebar components
+  - [x] 6.2.1 Create `SessionList.vue`: render sessions from Pinia store, sorted by updatedAt descending, with live/archived visual indicators
+  - [x] 6.2.2 Create `NewSessionButton.vue`: button that triggers session creation flow
+  - [x] 6.2.3 Create `ProjectList.vue`: render projects with add/remove functionality
+- [x] 6.3 Build chat area components
+  - [x] 6.3.1 Create `ChatView.vue`: container that holds MessageList and ChatInput, connects to active session via useSession composable
+  - [x] 6.3.2 Create `MessageList.vue`: scrollable message container with auto-scroll behavior and "scroll to bottom" button
+  - [x] 6.3.3 Create `ChatBubble.vue`: render individual messages as bubbles (user right-aligned, assistant left-aligned), with markdown rendering for assistant messages using markdown-it
+  - [x] 6.3.4 Create `TypingIndicator.vue`: animated indicator shown when session status is 'typing'
+- [x] 6.4 Build input area components
+  - [x] 6.4.1 Create `ChatInput.vue`: textarea with Enter-to-send, Shift+Enter for newlines, disabled send button when empty
+  - [x] 6.4.2 Create `ProjectSelector.vue`: dropdown showing saved projects
+  - [x] 6.4.3 Create `ProviderSelector.vue`: dropdown showing available providers (kiro, gemini, claude, codex)
+- [x] 6.5 Apply dark mode styling
+  - [x] 6.5.1 Add Tailwind `dark:` variants to all components for dark mode support
+  - [x] 6.5.2 Ensure consistent color scheme across light and dark modes
 
 ## Phase 7: Integration & Polish
 

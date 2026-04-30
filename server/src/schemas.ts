@@ -15,6 +15,8 @@ export const MessageStatusSchema = z.enum(['streaming', 'complete'])
 export const ChatMessageMetadataSchema = z.object({
   toolName: z.string().optional(),
   thinkingContent: z.string().optional(),
+  credits: z.string().optional(),
+  time: z.string().optional(),
 })
 
 export const ChatMessageSchema = z.object({
@@ -29,7 +31,7 @@ export const ChatMessageSchema = z.object({
 export const ProjectSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1).max(100),
-  path: z.string().startsWith('/'),
+  path: z.string().min(1),
 })
 
 // Base session object without the refinement — needed so .omit() works
@@ -74,7 +76,7 @@ export const CreateSessionRequestSchema = z.object({
 
 export const CreateProjectRequestSchema = z.object({
   name: z.string().min(1).max(100),
-  path: z.string().startsWith('/'),
+  path: z.string().min(1),
 })
 
 // --- Inferred Types ---

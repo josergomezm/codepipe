@@ -101,13 +101,9 @@ describe('ProjectSchema', () => {
     expect(result.success).toBe(true)
   })
 
-  it('rejects a project with a relative path', () => {
+  it('accepts a project with a relative path (validation done at route level)', () => {
     const result = ProjectSchema.safeParse(validProject({ path: 'relative/path' }))
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      const messages = result.error.issues.map((i) => i.message)
-      expect(messages.some((m) => m.includes('/'))).toBe(true)
-    }
+    expect(result.success).toBe(true)
   })
 
   it('rejects a project with an empty name', () => {
@@ -252,12 +248,12 @@ describe('CreateProjectRequestSchema', () => {
     expect(result.success).toBe(true)
   })
 
-  it('rejects a request with a relative path', () => {
+  it('accepts a request with a relative path (validation done at route level)', () => {
     const result = CreateProjectRequestSchema.safeParse({
       name: 'My Project',
       path: 'relative/path',
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBe(true)
   })
 
   it('rejects a request with an empty name', () => {
