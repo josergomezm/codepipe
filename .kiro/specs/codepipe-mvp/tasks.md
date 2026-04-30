@@ -124,17 +124,17 @@
 
 ## Phase 7: Integration & Polish
 
-- [ ] 7.1 End-to-end wiring
-  - [ ] 7.1.1 Connect frontend session creation flow: NewSessionButton → project/provider selection → POST /api/sessions → WebSocket connect → chat ready
-  - [ ] 7.1.2 Connect frontend message flow: ChatInput → WebSocket send → receive message/status updates → render in MessageList
-  - [ ] 7.1.3 Connect sidebar session switching: click session → selectSession → WebSocket reconnect → history replay
-  - [ ] 7.1.4 Connect session deletion: sidebar delete action → DELETE /api/sessions/:id → refresh session list
-- [ ] 7.2 Error handling in frontend
-  - [ ] 7.2.1 Display connection errors in the chat area (WebSocket failures, session not found)
-  - [ ] 7.2.2 Display system messages from backend (pty exit, storage failures)
-  - [ ] 7.2.3 Handle REST API errors with user-friendly toast or inline messages
-- [ ] 7.3 Final verification
-  - [ ] 7.3.1 Verify full flow: create project → create session → send message → receive response → view in chat
-  - [ ] 7.3.2 Verify reconnection: refresh browser tab → history replayed → session resumes
-  - [ ] 7.3.3 Verify multi-tab: open same session in two tabs → both receive messages
-  - [ ] 7.3.4 Verify session lifecycle: create → chat → pty exits → session archived → viewable in sidebar
+- [x] 7.1 End-to-end wiring
+  - [x] 7.1.1 Connect frontend session creation flow: NewSessionButton → project/provider selection → POST /api/sessions → WebSocket connect → chat ready
+  - [x] 7.1.2 Connect frontend message flow: ChatInput → WebSocket send → receive message/status updates → render in MessageList
+  - [x] 7.1.3 Connect sidebar session switching: click session → selectSession → WebSocket reconnect → history replay
+  - [x] 7.1.4 Connect session deletion: sidebar delete action → DELETE /api/sessions/:id → refresh session list
+- [x] 7.2 Error handling in frontend
+  - [x] 7.2.1 Display connection errors in the chat area (WebSocket failures, session not found)
+  - [x] 7.2.2 Display system messages from backend (pty exit, storage failures)
+  - [x] 7.2.3 Handle REST API errors with user-friendly toast or inline messages
+- [x] 7.3 Final verification
+  - [x] 7.3.1 Verify full flow: create project → create session → send message → receive response → view in chat
+  - [x] 7.3.2 Verify reconnection: refresh browser tab → history replayed → session resumes
+  - [x] 7.3.3 Verify multi-tab: open same session in two tabs → both receive messages
+  - [x] 7.3.4 Verify session lifecycle: create → chat → pty exits → session archived → viewable in sidebar

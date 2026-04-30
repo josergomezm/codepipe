@@ -8,33 +8,60 @@ export const useSessionsStore = defineStore('sessions', () => {
   const activeSessionId = ref<string | null>(null)
   const activeMessages = ref<ChatMessage[]>([])
   const sessionStatus = ref<'typing' | 'idle' | 'exited'>('idle')
+  /** User-facing error message, cleared on next successful action. */
+  const error = ref<string | null>(null)
 
   async function fetchSessions() {
-    sessions.value = await api.fetchSessions()
+    try {
+      sessions.value = await api.fetchSessions()
+      error.value = null
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to load sessions'
+    }
   }
 
   async function createSession(provider: ProviderType, projectId: string): Promise<Session> {
-    const session = await api.createSession(provider, projectId)
-    const { messages: _messages, ...meta } = session
-    sessions.value.unshift(meta)
-    return session
+    try {
+      const session = await api.createSession(provider, projectId)
+      const { messages: _messages, ...meta } = session
+      sessions.value.unshift(meta)
+      error.value = null
+      return session
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to create session'
+      throw e
+    }
   }
 
   async function selectSession(sessionId: string) {
-    activeSessionId.value = sessionId
-    const session = await api.fetchSession(sessionId)
-    activeMessages.value = session.messages
-    sessionStatus.value = session.status === 'archived' ? 'exited' : 'idle'
+    try {
+      activeSessionId.value = sessionId
+      const session = await api.fetchSession(sessionId)
+      activeMessages.value = session.messages
+      sessionStatus.value = session.status === 'archived' ? 'exited' : 'idle'
+      error.value = null
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to load session'
+    }
   }
 
   async function deleteSession(sessionId: string) {
-    await api.deleteSession(sessionId)
-    sessions.value = sessions.value.filter((s) => s.id !== sessionId)
-    if (activeSessionId.value === sessionId) {
-      activeSessionId.value = null
-      activeMessages.value = []
-      sessionStatus.value = 'idle'
+    try {
+      await api.deleteSession(sessionId)
+      sessions.value = sessions.value.filter((s) => s.id !== sessionId)
+      if (activeSessionId.value === sessionId) {
+        activeSessionId.value = null
+        activeMessages.value = []
+        sessionStatus.value = 'idle'
+      }
+      error.value = null
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to delete session'
     }
+  }
+
+  function clearError() {
+    error.value = null
   }
 
   function upsertMessage(message: ChatMessage) {
@@ -71,6 +98,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     activeSessionId,
     activeMessages,
     sessionStatus,
+    error,
     fetchSessions,
     createSession,
     selectSession,
@@ -79,5 +107,6 @@ export const useSessionsStore = defineStore('sessions', () => {
     appendDelta,
     setStatus,
     setMessages,
+    clearError,
   }
 })

@@ -46,6 +46,18 @@ onUnmounted(() => {
       </span>
     </div>
 
+    <!-- Error banner -->
+    <div
+      v-if="store.error"
+      class="flex items-center justify-between bg-red-50 px-4 py-2 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-400"
+    >
+      <span>{{ store.error }}</span>
+      <button
+        class="ml-2 rounded p-1 hover:bg-red-100 dark:hover:bg-red-900/40"
+        @click="store.clearError()"
+      >✕</button>
+    </div>
+
     <!-- Welcome screen when no session selected -->
     <div v-if="!store.activeSessionId" class="flex flex-1 items-center justify-center px-4">
       <div class="text-center">
