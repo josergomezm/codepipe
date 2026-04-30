@@ -1,7 +1,8 @@
 import type { ProviderType } from '../schemas.js'
 import type { ICLIAdapter, AdapterEvent } from './types.js'
 
-/** Check if text is ONLY spinner content (no real response text). */
+// ── Pattern detection ──────────────────────────────────────────────────
+
 function isOnlySpinner(text: string): boolean {
   const cleaned = text
     .replace(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*Thinking\.{0,3}/g, '')
@@ -11,10 +12,26 @@ function isOnlySpinner(text: string): boolean {
   return cleaned.length === 0
 }
 
-/** Kiro prompt pattern: "N% > " at end of text. */
+/** Main prompt: "N% > " at end of text. */
 const PROMPT_PATTERN = /\d+%\s*>\s*$/
-/** Prompt pattern anywhere (for removal). */
 const PROMPT_ANYWHERE = /\d+%\s*>\s*/g
+
+/** Interactive prompts: [y/n/t], [y/n], (y/n), etc. */
+const INTERACTIVE_PROMPT = /\[([yntYNT/|, ]+)\]\s*:?\s*$/
+/** Also match "Allow this action?" style prompts. */
+const PERMISSION_PROMPT = /Allow this action\?.*\[([^\]]+)\]\s*:?\s*$/
+
+/** Tool use patterns from Kiro CLI. */
+const TOOL_USE_PATTERN = /\(using tool:\s*(\w+)[^)]*\)/
+const TOOL_RESULT_PATTERNS = [
+  /✓\s+Successfully\s+(.+)/,
+  /●\s+Execution failed\s+(.+)/,
+  /↱\s+Operation\s+\d+:\s+(.+)/,
+  /⋮\s*$/,
+  /- Summary:\s+(.+)/,
+  /- Completed in\s+(.+)/,
+  /Loading\.\.\.\s*Loading\.\.\.\s*Loading\.\.\./,
+]
 
 /** Credits patterns. */
 const CREDITS_PATTERNS = [
@@ -30,24 +47,31 @@ function parseCredits(text: string): { credits: string; time: string } | null {
   return null
 }
 
-/** Escape special regex characters in a string. */
-function escapeRegex(str: string): string {
-  // Use character-by-character replacement to avoid $& issues
-  let result = ''
-  for (const ch of str) {
-    if ('.*+?^${}()|[]\\'.includes(ch)) {
-      result += '\\' + ch
-    } else {
-      result += ch
-    }
+/** Check if a line looks like tool output (not user-facing response text). */
+function isToolOutputLine(line: string): boolean {
+  const trimmed = line.trim()
+  if (TOOL_USE_PATTERN.test(trimmed)) return true
+  for (const pattern of TOOL_RESULT_PATTERNS) {
+    if (pattern.test(trimmed)) return true
   }
-  return result
+  // Lines starting with ↱ are tool operation details
+  if (trimmed.startsWith('↱')) return true
+  // Lines with [CodebaseMap ...] are tool results
+  if (/\[CodebaseMap/.test(trimmed)) return true
+  return false
 }
 
+// ── Content extraction ─────────────────────────────────────────────────
+
 /**
- * Remove all known noise from a chunk, leaving only the actual response content.
+ * Process a chunk of text and separate it into response content and tool output.
+ * Returns { content, toolOutput } where content is the user-facing text
+ * and toolOutput is the tool-related text to show separately.
  */
-function extractContent(text: string, userInput: string): string {
+function separateContent(
+  text: string,
+  userInput: string,
+): { content: string; toolOutput: string } {
   let result = text
 
   // Remove spinner content
@@ -59,8 +83,7 @@ function extractContent(text: string, userInput: string): string {
   // Remove prompt patterns
   result = result.replace(PROMPT_ANYWHERE, '')
 
-  // Remove echoed user input — only from the START of the text
-  // (the echo is always the first thing the CLI outputs after receiving input)
+  // Remove echoed user input from the start
   if (userInput.trim().length > 0) {
     const echo = userInput.trim()
     const trimmedResult = result.trimStart()
@@ -75,26 +98,36 @@ function extractContent(text: string, userInput: string): string {
   }
   result = result.replace(/▸[^\n]*/g, '')
 
-  // Remove ">" response markers (with or without space)
+  // Remove ">" response markers
   result = result.replace(/^>\s*/gm, '')
 
-  // Remove braille art lines
+  // Remove startup noise
   result = result.replace(/^[⠀-⣿\s]+$/gm, '')
-
-  // Remove box-drawing lines
   result = result.replace(/^[╭╮╰╯│─┌┐└┘├┤┬┴┼][^\n]*$/gm, '')
-
-  // Remove "Model:" info line
   result = result.replace(/^Model:.*$/gm, '')
-
-  // Remove "Did you know?"
   result = result.replace(/Did you know\?/g, '')
 
-  // Collapse multiple newlines
-  result = result.replace(/\n{3,}/g, '\n\n')
+  // Separate tool output from response content
+  const lines = result.split('\n')
+  const contentLines: string[] = []
+  const toolLines: string[] = []
 
-  return result
+  for (const line of lines) {
+    if (isToolOutputLine(line)) {
+      toolLines.push(line)
+    } else {
+      contentLines.push(line)
+    }
+  }
+
+  // Collapse multiple newlines
+  const content = contentLines.join('\n').replace(/\n{3,}/g, '\n\n')
+  const toolOutput = toolLines.join('\n')
+
+  return { content, toolOutput }
 }
+
+// ── Adapter ────────────────────────────────────────────────────────────
 
 type AdapterState =
   | 'waiting_for_first_input'
@@ -115,13 +148,12 @@ export class KiroAdapter implements ICLIAdapter {
   private cliReady = false
   private queuedUserInput: string | null = null
   private echoConsumed = false
-  /** Buffer for accumulating text while waiting for echo to complete. */
   private echoBuffer = ''
-  private queuedUserInput: string | null = null
-  /** Whether the echo of the current user input has been consumed. */
-  private echoConsumed = false
+  /** Last known tool name for continuation chunks. */
+  private lastToolName = 'tool'
 
   onData(cleanText: string): AdapterEvent[] {
+    // ── Startup: wait for first prompt ──
     if (this.state === 'waiting_for_first_input') {
       if (/\d+%\s*>/.test(cleanText)) {
         this.cliReady = true
@@ -146,10 +178,44 @@ export class KiroAdapter implements ICLIAdapter {
     }
 
     const events: AdapterEvent[] = []
+
+    // ── Check for interactive prompts (permission requests) ──
+    const interactiveMatch = INTERACTIVE_PROMPT.exec(cleanText) || PERMISSION_PROMPT.exec(cleanText)
+    if (interactiveMatch) {
+      // Finalize any in-progress message first
+      if (this.state === 'responding') {
+        events.push({
+          type: 'message_complete',
+          role: 'assistant',
+          ...(this.pendingCredits ? { metadata: this.pendingCredits } : {}),
+        })
+        this.pendingCredits = null
+      }
+
+      // Extract the options from the prompt
+      const optionsStr = interactiveMatch[1]
+      const options = optionsStr.split(/[/|,]/).map(o => o.trim()).filter(Boolean)
+
+      // Extract the prompt text (everything before the [options])
+      const promptText = cleanText.slice(0, interactiveMatch.index).trim()
+      const displayText = promptText || cleanText.trim()
+
+      events.push({
+        type: 'interactive_prompt',
+        content: displayText,
+        options,
+      })
+
+      // Stay in responding state — user needs to answer
+      return events
+    }
+
+    // ── Standard processing ──
     const credits = parseCredits(cleanText)
     if (credits) this.pendingCredits = credits
     const hasPrompt = PROMPT_PATTERN.test(cleanText)
 
+    // Spinner only
     if (isOnlySpinner(cleanText)) {
       if (this.state === 'waiting_for_response') {
         events.push({ type: 'thinking', content: 'Thinking...' })
@@ -157,48 +223,57 @@ export class KiroAdapter implements ICLIAdapter {
       return events
     }
 
-    // Extract actual content (for responding state — waiting_for_response handles its own)
-    const content = this.state === 'responding' ? extractContent(cleanText, '') : ''
-
-    if (credits && content.trim().length === 0) {
-      if (hasPrompt && this.state === 'responding') {
-        events.push({
-          type: 'message_complete',
-          role: 'assistant',
-          metadata: this.pendingCredits ?? undefined,
-        })
-        events.push({ type: 'prompt_detected' })
-        this.pendingCredits = null
-        this.state = 'idle'
+    // Credits-only chunk with prompt
+    if (credits) {
+      const { content } = separateContent(cleanText, '')
+      if (content.trim().length === 0) {
+        if (hasPrompt && this.state === 'responding') {
+          events.push({
+            type: 'message_complete',
+            role: 'assistant',
+            metadata: this.pendingCredits ?? undefined,
+          })
+          events.push({ type: 'prompt_detected' })
+          this.pendingCredits = null
+          this.state = 'idle'
+        }
+        return events
       }
-      return events
     }
 
+    // ── waiting_for_response: buffer echo then process ──
     if (this.state === 'waiting_for_response') {
-      // Buffer text until we've accumulated enough to check for the echo
       if (!this.echoConsumed) {
         this.echoBuffer += cleanText
         const echo = this.lastUserInput.trim()
-        
-        // If buffer is shorter than the echo, keep buffering
+
         if (this.echoBuffer.length < echo.length && !hasPrompt) {
-          // But still detect spinners
           if (isOnlySpinner(cleanText)) {
             events.push({ type: 'thinking', content: 'Thinking...' })
           }
           return events
         }
-        
-        // We have enough text — strip the echo from the start of the buffer
+
         this.echoConsumed = true
-        let buffered = extractContent(this.echoBuffer, echo)
+        const { content, toolOutput } = separateContent(this.echoBuffer, echo)
         this.echoBuffer = ''
-        
-        if (buffered.trim().length > 0) {
-          this.state = 'responding'
-          events.push({ type: 'chunk', content: buffered, role: 'assistant' })
+
+        if (toolOutput.trim().length > 0) {
+          const toolMatch = TOOL_USE_PATTERN.exec(toolOutput)
+          const toolName = toolMatch ? toolMatch[1] : this.lastToolName
+          if (toolMatch) this.lastToolName = toolMatch[1]
+          events.push({
+            type: 'tool_use',
+            tool: toolName,
+            content: toolOutput.trim(),
+          })
         }
-        
+
+        if (content.trim().length > 0) {
+          this.state = 'responding'
+          events.push({ type: 'chunk', content, role: 'assistant' })
+        }
+
         if (hasPrompt && this.state === 'responding') {
           events.push({
             type: 'message_complete',
@@ -211,9 +286,21 @@ export class KiroAdapter implements ICLIAdapter {
         }
         return events
       }
-      
-      // Echo already consumed — process normally
-      const content = extractContent(cleanText, '')
+
+      // Echo consumed — normal processing
+      const { content, toolOutput } = separateContent(cleanText, '')
+
+      if (toolOutput.trim().length > 0) {
+        const toolMatch = TOOL_USE_PATTERN.exec(toolOutput)
+        const toolName = toolMatch ? toolMatch[1] : this.lastToolName
+        if (toolMatch) this.lastToolName = toolMatch[1]
+        events.push({
+          type: 'tool_use',
+          tool: toolName,
+          content: toolOutput.trim(),
+        })
+      }
+
       if (content.trim().length > 0) {
         this.state = 'responding'
         events.push({ type: 'chunk', content, role: 'assistant' })
@@ -232,10 +319,25 @@ export class KiroAdapter implements ICLIAdapter {
       return events
     }
 
+    // ── responding: accumulate chunks ──
     if (this.state === 'responding') {
+      const { content, toolOutput } = separateContent(cleanText, '')
+
+      if (toolOutput.trim().length > 0) {
+        const toolMatch = TOOL_USE_PATTERN.exec(toolOutput)
+        const toolName = toolMatch ? toolMatch[1] : this.lastToolName
+        if (toolMatch) this.lastToolName = toolMatch[1]
+        events.push({
+          type: 'tool_use',
+          tool: toolName,
+          content: toolOutput.trim(),
+        })
+      }
+
       if (content.length > 0) {
         events.push({ type: 'chunk', content, role: 'assistant' })
       }
+
       if (hasPrompt) {
         events.push({
           type: 'message_complete',
@@ -261,7 +363,9 @@ export class KiroAdapter implements ICLIAdapter {
       return
     }
     this.lastUserInput = text
-    if (this.state === 'idle') {
+    if (this.state === 'idle' || this.state === 'responding') {
+      // responding → waiting_for_response handles the case where user answers
+      // an interactive prompt while the CLI is still in "responding" mode
       this.state = 'waiting_for_response'
     }
   }
@@ -282,5 +386,6 @@ export class KiroAdapter implements ICLIAdapter {
     this.queuedUserInput = null
     this.echoConsumed = false
     this.echoBuffer = ''
+    this.lastToolName = 'tool'
   }
 }

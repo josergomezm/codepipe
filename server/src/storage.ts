@@ -57,6 +57,32 @@ export class StorageLayer implements IStorageLayer {
   async ensureDataDir(): Promise<void> {
     await mkdir(this.dataDir, { recursive: true })
     await mkdir(this.sessionsDir, { recursive: true })
+    // Clean up orphaned temp files from previous runs
+    await this.cleanupTempFiles()
+  }
+
+  /**
+   * Remove any .tmp. files left behind by failed atomic writes.
+   */
+  private async cleanupTempFiles(): Promise<void> {
+    try {
+      const dirs = [this.dataDir, this.sessionsDir]
+      for (const dir of dirs) {
+        if (!existsSync(dir)) continue
+        const files = await readdir(dir)
+        for (const file of files) {
+          if (file.includes('.tmp.')) {
+            try {
+              await unlink(path.join(dir, file))
+            } catch {
+              // Ignore — file may be locked
+            }
+          }
+        }
+      }
+    } catch {
+      // Non-critical — don't fail startup
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -65,8 +91,19 @@ export class StorageLayer implements IStorageLayer {
 
   async atomicWrite(filePath: string, data: unknown): Promise<void> {
     const tempPath = filePath + '.tmp.' + randomUUID()
-    await writeFile(tempPath, JSON.stringify(data, null, 2), 'utf-8')
-    await rename(tempPath, filePath)
+    try {
+      await writeFile(tempPath, JSON.stringify(data, null, 2), 'utf-8')
+      await rename(tempPath, filePath)
+    } catch (err) {
+      // On Windows, rename can fail if the target is locked.
+      // Fall back to direct write (less safe but doesn't leave temp files).
+      try {
+        await unlink(tempPath)
+      } catch {
+        // Temp file may not exist
+      }
+      await writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8')
+    }
   }
 
   // -----------------------------------------------------------------------

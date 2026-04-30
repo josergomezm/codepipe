@@ -126,7 +126,7 @@ describe('KiroAdapter — live 3-message conversation', () => {
       return {
         content,
         events: [...currentEvents],
-        credits: credits ?? undefined,
+        credits: (credits?.credits && credits?.time) ? { credits: credits.credits, time: credits.time } : undefined,
         thinkingCount: currentEvents.filter(e => e.type === 'thinking').length,
       }
     }

@@ -307,7 +307,7 @@ export class SessionManager implements ISessionManager {
           const toolMsg: ChatMessage = {
             id: randomUUID(),
             role: 'tool',
-            content: event.input,
+            content: event.content,
             timestamp: Date.now(),
             status: 'complete',
             metadata: { toolName: event.tool },
@@ -317,6 +317,29 @@ export class SessionManager implements ISessionManager {
             log.error('session', `Failed to persist tool message for session ${sessionId}`, err)
           })
           this.broadcast(sessionId, { type: 'message', data: toolMsg })
+          break
+        }
+
+        case 'interactive_prompt': {
+          // Finalize any in-progress message
+          this.finalizeCurrentMessage(sessionId)
+          ctx.currentMessage = null
+
+          // Create a system message showing the prompt
+          const promptMsg: ChatMessage = {
+            id: randomUUID(),
+            role: 'system',
+            content: event.content + (event.options ? ` [${event.options.join('/')}]` : ''),
+            timestamp: Date.now(),
+            status: 'complete',
+          }
+          ctx.session.messages.push(promptMsg)
+          this.storage.appendMessage(sessionId, promptMsg).catch((err) => {
+            log.error('session', `Failed to persist interactive prompt for session ${sessionId}`, err)
+          })
+          this.broadcast(sessionId, { type: 'message', data: promptMsg })
+          // Signal that the CLI is waiting for user input
+          this.broadcast(sessionId, { type: 'status', data: 'idle' })
           break
         }
 

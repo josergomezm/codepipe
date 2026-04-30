@@ -30,8 +30,10 @@ const isSystem = computed(() => props.message.role === 'system')
 
 <template>
   <!-- System message: centered, muted -->
-  <div v-if="isSystem" class="flex justify-center px-4 py-1">
-    <span class="text-xs text-gray-400 dark:text-gray-500">{{ message.content }}</span>
+  <div v-if="isSystem" class="flex justify-center px-4 py-2">
+    <div class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-center dark:border-amber-800/40 dark:bg-amber-900/20">
+      <p class="whitespace-pre-wrap text-sm text-amber-800 dark:text-amber-300">{{ message.content }}</p>
+    </div>
   </div>
 
   <!-- User message: right-aligned, blue -->
