@@ -43,6 +43,8 @@ export class StorageLayer implements IStorageLayer {
   private readonly dataDir: string
   private readonly sessionsDir: string
   private readonly projectsFile: string
+  /** Per-file write locks to prevent concurrent writes to the same file. */
+  private readonly writeLocks = new Map<string, Promise<void>>()
 
   constructor(dataDir: string) {
     this.dataDir = dataDir
@@ -89,20 +91,36 @@ export class StorageLayer implements IStorageLayer {
   // Atomic write helper
   // -----------------------------------------------------------------------
 
-  async atomicWrite(filePath: string, data: unknown): Promise<void> {
+  /**
+   * Serialize writes to the same file path so concurrent calls don't race.
+   */
+  private async serializedWrite(filePath: string, data: unknown): Promise<void> {
+    const prev = this.writeLocks.get(filePath) ?? Promise.resolve()
+    const next = prev.then(
+      () => this.atomicWrite(filePath, data),
+      () => this.atomicWrite(filePath, data),
+    )
+    this.writeLocks.set(filePath, next)
+    await next
+  }
+
+  private async atomicWrite(filePath: string, data: unknown): Promise<void> {
+    const json = JSON.stringify(data, null, 2)
     const tempPath = filePath + '.tmp.' + randomUUID()
     try {
-      await writeFile(tempPath, JSON.stringify(data, null, 2), 'utf-8')
+      await writeFile(tempPath, json, 'utf-8')
       await rename(tempPath, filePath)
-    } catch (err) {
+    } catch {
       // On Windows, rename can fail if the target is locked.
-      // Fall back to direct write (less safe but doesn't leave temp files).
+      // Fall back to direct write — use flag 'w' to ensure the file is
+      // truncated first so no stale tail bytes remain from a longer
+      // previous write.
       try {
         await unlink(tempPath)
       } catch {
         // Temp file may not exist
       }
-      await writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8')
+      await writeFile(filePath, json, { encoding: 'utf-8', flag: 'w' })
     }
   }
 
@@ -143,14 +161,14 @@ export class StorageLayer implements IStorageLayer {
       ...project,
     }
     projects.push(newProject)
-    await this.atomicWrite(this.projectsFile, projects)
+    await this.serializedWrite(this.projectsFile, projects)
     return newProject
   }
 
   async removeProject(projectId: string): Promise<void> {
     const projects = await this.loadProjects()
     const filtered = projects.filter((p) => p.id !== projectId)
-    await this.atomicWrite(this.projectsFile, filtered)
+    await this.serializedWrite(this.projectsFile, filtered)
   }
 
   async getProject(projectId: string): Promise<Project | null> {
@@ -190,7 +208,7 @@ export class StorageLayer implements IStorageLayer {
   }
 
   async saveSession(session: Session): Promise<void> {
-    await this.atomicWrite(this.sessionPath(session.id), session)
+    await this.serializedWrite(this.sessionPath(session.id), session)
   }
 
   async getSession(sessionId: string): Promise<Session | null> {
@@ -232,7 +250,7 @@ export class StorageLayer implements IStorageLayer {
     }
     session.messages.push(message)
     session.updatedAt = message.timestamp
-    await this.atomicWrite(this.sessionPath(sessionId), session)
+    await this.serializedWrite(this.sessionPath(sessionId), session)
   }
 
   async updateSessionStatus(sessionId: string, status: SessionStatus): Promise<void> {
@@ -242,6 +260,6 @@ export class StorageLayer implements IStorageLayer {
     }
     session.status = status
     session.updatedAt = Date.now()
-    await this.atomicWrite(this.sessionPath(sessionId), session)
+    await this.serializedWrite(this.sessionPath(sessionId), session)
   }
 }
