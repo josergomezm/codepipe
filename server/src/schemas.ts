@@ -55,6 +55,8 @@ const SessionObjectSchema = z.object({
   updatedAt: z.number().int().positive(),
   status: SessionStatusSchema,
   messages: z.array(ChatMessageSchema),
+  /** The CLI tool's own session ID, used for --resume-id on reconnection. */
+  cliSessionId: z.string().optional(),
 })
 
 export const SessionSchema = SessionObjectSchema.refine(

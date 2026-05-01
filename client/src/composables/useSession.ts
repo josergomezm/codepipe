@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { ref, readonly } from 'vue'
 import { useSessionsStore } from '../stores/sessions'
 
 // Singleton state — shared across all components that call useSession()
@@ -11,8 +11,12 @@ let reconnectAttempts = 0
 let currentSessionId: string | null = null
 
 function connect(sessionId: string) {
-  // If already connected to this session, don't reconnect
-  if (currentSessionId === sessionId && ws?.readyState === WebSocket.OPEN) {
+  // If already connected or connecting to this session, don't reconnect
+  if (
+    currentSessionId === sessionId &&
+    ws &&
+    (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
+  ) {
     return
   }
 
@@ -38,6 +42,13 @@ function connect(sessionId: string) {
     try {
       const msg = JSON.parse(event.data as string)
       const store = useSessionsStore()
+
+      // Guard: ignore messages from a session that's no longer active.
+      // This prevents a slow/late response from a previous session from
+      // overwriting the current session's messages.
+      if (currentSessionId !== store.activeSessionId) {
+        return
+      }
 
       switch (msg.type) {
         case 'history':
@@ -110,14 +121,29 @@ function disconnect() {
   cleanupSocket()
 }
 
-function sendMessage(text: string, attachments?: import('../api/client').Attachment[]) {
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: 'input',
-      data: text,
-      ...(attachments?.length ? { attachments } : {}),
-    }))
+function sendMessage(text: string, attachments?: import('../api/client').Attachment[]): boolean {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return false
   }
+
+  // Guard: only send if the WebSocket is connected to the session the user
+  // is currently viewing. Without this check, a race between session switching
+  // and message sending can route input to the wrong CLI process.
+  const store = useSessionsStore()
+  if (!currentSessionId || currentSessionId !== store.activeSessionId) {
+    return false
+  }
+
+  ws.send(JSON.stringify({
+    type: 'input',
+    data: text,
+    ...(attachments?.length ? { attachments } : {}),
+  }))
+  return true
+}
+
+function clearConnectionError() {
+  connectionError.value = null
 }
 
 export function useSession() {
@@ -125,7 +151,8 @@ export function useSession() {
     connect,
     disconnect,
     sendMessage,
+    clearConnectionError,
     isConnected,
-    connectionError,
+    connectionError: readonly(connectionError),
   }
 }

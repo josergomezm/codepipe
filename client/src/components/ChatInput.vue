@@ -71,9 +71,14 @@ async function send() {
 
     // Send message with attachments
     const messageText = trimmed || 'Please analyze the attached file(s).'
-    sendMessage(messageText, attachments)
+    const sent = sendMessage(messageText, attachments)
 
-    // Clear state
+    if (!sent) {
+      uploadError.value = 'Not connected — message could not be sent. Try again in a moment.'
+      return
+    }
+
+    // Clear state only on successful send
     text.value = ''
     pendingFiles.value = []
     if (textarea.value) {

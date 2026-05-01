@@ -104,6 +104,25 @@ export interface ICLIAdapter {
    * Returns the string to prepend/append to the user's message text.
    */
   formatAttachment(filePath: string, mimeType: string): string
+
+  /**
+   * Return the command + args needed to resume/continue a previous session.
+   * Each CLI tool has its own mechanism (e.g., `--continue`, `--resume <id>`).
+   *
+   * @param cliSessionId — the CLI tool's own session ID (captured during the
+   *   original session). If null, the adapter should fall back to a best-effort
+   *   resume (e.g., "resume most recent in this directory").
+   *
+   * If the CLI doesn't support session resumption at all, return `null`.
+   */
+  getResumeCommand(cliSessionId: string | null): { command: string; args: string[] } | null
+
+  /**
+   * Directory where the CLI tool stores its own session files.
+   * Used to detect the CLI's session ID after spawning a new process.
+   * Return `null` if the CLI doesn't have a known session storage location.
+   */
+  readonly cliSessionDir: string | null
 }
 
 export type AdapterFactory = () => ICLIAdapter

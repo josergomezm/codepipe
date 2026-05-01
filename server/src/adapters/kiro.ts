@@ -10,6 +10,8 @@ import {
   extractToolName,
 } from './kiro-patterns.js'
 import { processChunk } from './kiro-pipeline.js'
+import { homedir } from 'os'
+import path from 'path'
 
 // ── State machine ──────────────────────────────────────────────────────
 
@@ -25,6 +27,7 @@ export class KiroAdapter implements ICLIAdapter {
   readonly command = 'kiro-cli.exe'
   readonly args: string[] = ['chat', '--legacy-ui', '--wrap', 'never']
   readonly systemPrompt: string | undefined = undefined
+  readonly cliSessionDir: string = path.join(homedir(), '.kiro', 'sessions', 'cli')
 
   private state: AdapterState = 'waiting_for_first_input'
   private lastUserInput = ''
@@ -300,5 +303,20 @@ export class KiroAdapter implements ICLIAdapter {
     }
     // Text files / documents — use @path syntax for inline expansion
     return `@${filePath}`
+  }
+
+  getResumeCommand(cliSessionId: string | null): { command: string; args: string[] } | null {
+    if (cliSessionId) {
+      // Precise resume using the CLI's own session ID
+      return {
+        command: this.command,
+        args: ['chat', '--legacy-ui', '--wrap', 'never', '--resume-id', cliSessionId],
+      }
+    }
+    // Fallback: resume the most recent conversation in the working directory
+    return {
+      command: this.command,
+      args: ['chat', '--legacy-ui', '--wrap', 'never', '--resume'],
+    }
   }
 }

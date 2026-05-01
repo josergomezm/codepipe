@@ -37,11 +37,18 @@ export const useSessionsStore = defineStore('sessions', () => {
     try {
       activeSessionId.value = sessionId
       const session = await api.fetchSession(sessionId)
+      // Guard: only apply the fetched data if this is still the active session.
+      // Without this, a slow fetch for a previous session can overwrite the
+      // current session's messages.
+      if (activeSessionId.value !== sessionId) return
       activeMessages.value = session.messages
       sessionStatus.value = session.status === 'archived' ? 'exited' : 'idle'
       error.value = null
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to load session'
+      // Only show the error if this is still the active session
+      if (activeSessionId.value === sessionId) {
+        error.value = e instanceof Error ? e.message : 'Failed to load session'
+      }
     }
   }
 

@@ -8,7 +8,7 @@ import ChatInput from '@/components/ChatInput.vue'
 
 const store = useSessionsStore()
 const ui = useUiStore()
-const { connect, disconnect } = useSession()
+const { connect, disconnect, connectionError, clearConnectionError } = useSession()
 
 // Connect/disconnect when active session changes
 watch(
@@ -48,13 +48,13 @@ onUnmounted(() => {
 
     <!-- Error banner -->
     <div
-      v-if="store.error"
+      v-if="store.error || connectionError"
       class="flex items-center justify-between bg-red-50 px-4 py-2 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-400"
     >
-      <span>{{ store.error }}</span>
+      <span>{{ store.error || connectionError }}</span>
       <button
         class="ml-2 rounded p-1 hover:bg-red-100 dark:hover:bg-red-900/40"
-        @click="store.clearError()"
+        @click="store.clearError(); clearConnectionError()"
       >✕</button>
     </div>
 

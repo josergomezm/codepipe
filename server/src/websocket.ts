@@ -3,8 +3,10 @@ import type { Server as HttpServer, IncomingMessage } from 'http'
 import type { Duplex } from 'stream'
 
 import type { ISessionManager } from './session-manager.js'
+import { SYSTEM_PROMPT_DELAY_MS } from './session-manager.js'
 import type { IStorageLayer } from './storage.js'
 import { WSClientMessageSchema } from './schemas.js'
+import type { Session, Attachment } from './schemas.js'
 import { log } from './logger.js'
 
 /**
@@ -50,6 +52,58 @@ export function setupWebSocket(
 }
 
 /**
+ * Create the standard message handler for a live session WebSocket.
+ * Returned as a named function so it can be removed with removeListener.
+ */
+function createMessageHandler(
+  ws: WebSocket,
+  sessionId: string,
+  sessionManager: ISessionManager,
+): (raw: Buffer | string) => void {
+  return (raw: Buffer | string) => {
+    try {
+      const text = raw.toString()
+      log.debug('ws', `Received from client for session ${sessionId}`, text)
+      const parsed = WSClientMessageSchema.safeParse(JSON.parse(text))
+      if (!parsed.success) {
+        log.error('ws', 'Invalid message format', parsed.error.format())
+        ws.send(JSON.stringify({ type: 'error', data: 'Invalid message format' }))
+        return
+      }
+
+      const msg = parsed.data
+      if (msg.type === 'input') {
+        log.debug('ws', `Routing input to handleInput: "${msg.data}"`)
+        try {
+          sessionManager.handleInput(sessionId, msg.data, msg.attachments)
+        } catch (inputErr) {
+          log.error('ws', `handleInput failed for session ${sessionId}`, inputErr)
+          const message = inputErr instanceof Error ? inputErr.message : 'Failed to send message'
+          ws.send(JSON.stringify({ type: 'error', data: message }))
+        }
+      }
+    } catch (err) {
+      log.error('ws', 'Error processing message', err)
+      ws.send(JSON.stringify({ type: 'error', data: 'Failed to process message' }))
+    }
+  }
+}
+
+/**
+ * Attach the standard live-session handlers (message + close) to a WebSocket.
+ */
+function attachLiveHandlers(
+  ws: WebSocket,
+  sessionId: string,
+  sessionManager: ISessionManager,
+): void {
+  ws.on('message', createMessageHandler(ws, sessionId, sessionManager))
+  ws.on('close', () => {
+    sessionManager.detachClient(sessionId, ws)
+  })
+}
+
+/**
  * Handle a new WebSocket connection for a given session.
  */
 function handleConnection(
@@ -68,34 +122,7 @@ function handleConnection(
     ws.send(JSON.stringify({ type: 'history', data: liveSession.messages }))
     ws.send(JSON.stringify({ type: 'status', data: 'idle' }))
 
-    // Handle incoming messages
-    ws.on('message', (raw: Buffer | string) => {
-      try {
-        const text = raw.toString()
-        log.debug('ws', `Received from client for session ${sessionId}`, text)
-        const parsed = WSClientMessageSchema.safeParse(JSON.parse(text))
-        if (!parsed.success) {
-          log.error('ws', 'Invalid message format', parsed.error.format())
-          ws.send(JSON.stringify({ type: 'error', data: 'Invalid message format' }))
-          return
-        }
-
-        const msg = parsed.data
-        if (msg.type === 'input') {
-          log.debug('ws', `Routing input to handleInput: "${msg.data}"`)
-          sessionManager.handleInput(sessionId, msg.data, msg.attachments)
-        }
-      } catch (err) {
-        log.error('ws', 'Error processing message', err)
-        ws.send(JSON.stringify({ type: 'error', data: 'Invalid message format' }))
-      }
-    })
-
-    // Handle disconnection
-    ws.on('close', () => {
-      sessionManager.detachClient(sessionId, ws)
-    })
-
+    attachLiveHandlers(ws, sessionId, sessionManager)
     return
   }
 
@@ -105,6 +132,30 @@ function handleConnection(
       // Archived session — replay history and send exited status
       ws.send(JSON.stringify({ type: 'history', data: archivedSession.messages }))
       ws.send(JSON.stringify({ type: 'status', data: 'exited' }))
+
+      // Handle messages on archived sessions — attempt to revive the session
+      const archivedHandler = (raw: Buffer | string) => {
+        try {
+          const text = raw.toString()
+          log.debug('ws', `Received from client for archived session ${sessionId}`, text)
+          const parsed = WSClientMessageSchema.safeParse(JSON.parse(text))
+          if (!parsed.success) {
+            log.error('ws', 'Invalid message format', parsed.error.format())
+            ws.send(JSON.stringify({ type: 'error', data: 'Invalid message format' }))
+            return
+          }
+
+          const msg = parsed.data
+          if (msg.type === 'input') {
+            // Try to revive the session by creating a new pty with the same config
+            reviveSession(ws, sessionId, archivedSession, archivedHandler, msg.data, msg.attachments, sessionManager, storage)
+          }
+        } catch (err) {
+          log.error('ws', 'Error processing message on archived session', err)
+          ws.send(JSON.stringify({ type: 'error', data: 'Failed to process message' }))
+        }
+      }
+      ws.on('message', archivedHandler)
     } else {
       // Session doesn't exist at all
       ws.send(JSON.stringify({ type: 'error', data: 'Session not found' }))
@@ -115,4 +166,55 @@ function handleConnection(
     ws.send(JSON.stringify({ type: 'error', data: 'Failed to load session' }))
     ws.close()
   })
+}
+
+/**
+ * Revive an archived session by spawning a new pty process and
+ * re-attaching the WebSocket client. The session keeps its original ID
+ * and message history — it just gets a fresh CLI process.
+ */
+async function reviveSession(
+  ws: WebSocket,
+  sessionId: string,
+  archivedSession: Session,
+  archivedHandler: (raw: Buffer | string) => void,
+  inputText: string,
+  attachments: Attachment[] | undefined,
+  sessionManager: ISessionManager,
+  storage: IStorageLayer,
+): Promise<void> {
+  try {
+    log.info('ws', `Reviving archived session ${sessionId} (provider: ${archivedSession.provider})`)
+
+    // Revive the session — this spawns a new pty and re-registers it in the SessionManager
+    const revivedSession = await sessionManager.reviveSession(sessionId, archivedSession)
+
+    // Remove only the archived-session handler, then attach the live-session ones
+    ws.removeListener('message', archivedHandler)
+
+    // Attach the client to the now-live session
+    sessionManager.attachClient(sessionId, ws)
+
+    // Send updated status to the client
+    ws.send(JSON.stringify({ type: 'status', data: 'idle' }))
+
+    // Set up the standard live-session handlers
+    attachLiveHandlers(ws, sessionId, sessionManager)
+
+    // Now send the user's original input that triggered the revival.
+    // Wait slightly longer than SYSTEM_PROMPT_DELAY_MS to let the CLI fully initialize.
+    setTimeout(() => {
+      try {
+        sessionManager.handleInput(sessionId, inputText, attachments)
+      } catch (err) {
+        log.error('ws', `Failed to send initial input after revival for session ${sessionId}`, err)
+        ws.send(JSON.stringify({ type: 'error', data: 'Session revived but failed to send message. Try sending again.' }))
+      }
+    }, SYSTEM_PROMPT_DELAY_MS + 500)
+
+  } catch (err) {
+    log.error('ws', `Failed to revive session ${sessionId}`, err)
+    const message = err instanceof Error ? err.message : 'Failed to restart session'
+    ws.send(JSON.stringify({ type: 'error', data: `Could not restart session: ${message}` }))
+  }
 }

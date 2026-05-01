@@ -1,4 +1,7 @@
 import { randomUUID } from 'crypto'
+import { readdir, readFile } from 'fs/promises'
+import { existsSync } from 'fs'
+import path from 'path'
 import * as pty from 'node-pty'
 import type { WebSocket } from 'ws'
 
@@ -44,6 +47,7 @@ export interface ISessionManager {
   attachClient(sessionId: string, socket: WebSocket): void
   detachClient(sessionId: string, socket: WebSocket): void
   handleInput(sessionId: string, text: string, attachments?: Attachment[]): void
+  reviveSession(sessionId: string, archivedSession: Session): Promise<Session>
   shutdown(): Promise<void>
 }
 
@@ -55,7 +59,7 @@ export interface ISessionManager {
 const STORAGE_DEBOUNCE_MS = 500
 
 /** Delay before sending the system prompt to let the CLI initialize. */
-const SYSTEM_PROMPT_DELAY_MS = 3000
+export const SYSTEM_PROMPT_DELAY_MS = 3000
 
 export class SessionManager implements ISessionManager {
   private readonly sessions = new Map<string, SessionContext>()
@@ -98,6 +102,9 @@ export class SessionManager implements ISessionManager {
       messages: [],
     }
 
+    // Snapshot CLI session directory before spawning (for detecting the CLI's session ID)
+    const preSpawnSessionFiles = await this.snapshotCliSessionDir(adapter)
+
     // Spawn pty process
     const shell = adapter.command
     const args = adapter.args
@@ -126,75 +133,92 @@ export class SessionManager implements ISessionManager {
     // Persist session to storage BEFORE wiring events
     await this.storage.saveSession(session)
 
-    // Wire pty output → strip ANSI → adapter.onData → validate → process events
-    ptyProcess.onData((data: string) => {
-      const cleanText = stripAnsi(data)
-      if (cleanText.trim().length === 0) return
-      log.debug('pty', `clean: ${JSON.stringify(cleanText).slice(0, 300)}`)
-      const rawEvents = adapter.onData(cleanText)
-      if (rawEvents.length === 0) return
+    // Wire pty events and optionally send system prompt
+    this.wirePtyToSession(session.id, ctx)
+    this.scheduleSystemPrompt(session.id, adapter)
 
-      // Validate events at the boundary — drop malformed ones
-      const events = validateAdapterEvents(rawEvents, (msg) => {
-        log.warn('adapter', msg)
-      })
-      if (events.length === 0) return
+    // Detect the CLI's own session ID asynchronously.
+    // We wait a bit for the CLI to create its session file, then diff against
+    // the pre-spawn snapshot. This runs in the background — it doesn't block
+    // session creation.
+    this.detectAndStoreCliSessionId(session.id, adapter, preSpawnSessionFiles, project.path)
 
-      // Only log non-chunk events at info level
-      const significantEvents = events.filter(e => e.type !== 'chunk')
-      if (significantEvents.length > 0) {
-        log.info('adapter', `${significantEvents.map(e => e.type).join(', ')}`)
-      }
-      this.processAdapterEvents(session.id, events)
+    return session
+  }
+
+  // -----------------------------------------------------------------------
+  // 4.1.2b — reviveSession
+  // -----------------------------------------------------------------------
+
+  /**
+   * Revive an archived session by spawning a new pty process.
+   * Keeps the original session ID and message history, but creates a
+   * fresh CLI process so the user can continue the conversation.
+   */
+  async reviveSession(
+    sessionId: string,
+    archivedSession: Session,
+  ): Promise<Session> {
+    // If already live (race condition), just return it
+    const existing = this.sessions.get(sessionId)
+    if (existing) {
+      return existing.session
+    }
+
+    // Validate project still exists
+    const project = await this.storage.getProject(archivedSession.projectId)
+    if (!project) {
+      throw new Error('Project not found — it may have been removed')
+    }
+
+    // Resolve CLI adapter for provider
+    const adapter = getAdapter(archivedSession.provider)
+    if (!adapter) {
+      throw new Error(`No adapter registered for provider "${archivedSession.provider}"`)
+    }
+
+    // Update session record to live
+    const now = Date.now()
+    const session: Session = {
+      ...archivedSession,
+      status: 'live',
+      updatedAt: now,
+    }
+
+    // Spawn pty process — use resume command if the adapter supports it
+    const resumeCmd = adapter.getResumeCommand(archivedSession.cliSessionId ?? null)
+    const shell = resumeCmd ? resumeCmd.command : adapter.command
+    const args = resumeCmd ? resumeCmd.args : adapter.args
+    log.info('session', `Reviving session ${sessionId}: ${shell} ${args.join(' ')} in ${project.path}${resumeCmd ? ' (resume mode)' : ' (fresh start)'}`)
+    log.info('session', `CLI session ID for resume: ${archivedSession.cliSessionId ?? 'none — using fallback'}`)
+    const ptyProcess = pty.spawn(shell, args, {
+      name: 'xterm-256color',
+      cols: 120,
+      rows: 40,
+      cwd: project.path,
+      env: { ...process.env } as Record<string, string>,
     })
 
-    // Handle pty exit
-    ptyProcess.onExit(({ exitCode }) => {
-      ctx.session.status = 'archived'
+    // Build session context
+    const ctx: SessionContext = {
+      session,
+      pty: ptyProcess,
+      adapter,
+      clients: new Set(),
+      currentMessage: null,
+      storageDebounceTimer: null,
+      pendingMessage: null,
+    }
 
-      // Finalize any in-progress streaming message
-      this.finalizeCurrentMessage(session.id)
+    this.sessions.set(sessionId, ctx)
 
-      // Clear any pending timers
-      if (ctx.storageDebounceTimer) {
-        clearTimeout(ctx.storageDebounceTimer)
-        ctx.storageDebounceTimer = null
-      }
+    // Persist updated status to storage
+    await this.storage.updateSessionStatus(sessionId, 'live')
 
-      // Persist archived status
-      this.storage.updateSessionStatus(session.id, 'archived').catch((err) => {
-        log.error('session', `Failed to archive session ${session.id}`, err)
-      })
-
-      // Append system message about exit
-      const exitMsg: ChatMessage = {
-        id: randomUUID(),
-        role: 'system',
-        content: `CLI process exited with code ${exitCode ?? 'unknown'}`,
-        timestamp: Date.now(),
-        status: 'complete',
-      }
-      ctx.session.messages.push(exitMsg)
-      this.storage.appendMessage(session.id, exitMsg).catch((err) => {
-        log.error('session', `Failed to persist exit message for session ${session.id}`, err)
-      })
-
-      this.broadcast(session.id, { type: 'message', data: exitMsg })
-      this.broadcast(session.id, { type: 'status', data: 'exited' })
-    })
-
-    // Send system prompt after a delay to let the CLI initialize
-    if (adapter.systemPrompt) {
-      const systemPrompt = adapter.systemPrompt
-      setTimeout(() => {
-        // Only send if session is still live
-        const currentCtx = this.sessions.get(session.id)
-        if (currentCtx && currentCtx.session.status === 'live') {
-          log.info('session', `Sending system prompt for session ${session.id}`)
-          currentCtx.adapter.notifySystemInput(systemPrompt)
-          currentCtx.pty.write(systemPrompt + '\r')
-        }
-      }, SYSTEM_PROMPT_DELAY_MS)
+    // Wire pty events; skip system prompt if resuming (CLI already has context)
+    this.wirePtyToSession(sessionId, ctx)
+    if (!resumeCmd) {
+      this.scheduleSystemPrompt(sessionId, adapter)
     }
 
     return session
@@ -525,6 +549,82 @@ export class SessionManager implements ISessionManager {
   }
 
   // -----------------------------------------------------------------------
+  // Shared pty wiring
+  // -----------------------------------------------------------------------
+
+  /**
+   * Wire a pty process's output and exit events to the session.
+   * Used by both createSession and reviveSession.
+   */
+  private wirePtyToSession(sessionId: string, ctx: SessionContext): void {
+    const { pty: ptyProcess, adapter } = ctx
+
+    ptyProcess.onData((data: string) => {
+      const cleanText = stripAnsi(data)
+      if (cleanText.trim().length === 0) return
+      log.debug('pty', `clean: ${JSON.stringify(cleanText).slice(0, 300)}`)
+      const rawEvents = adapter.onData(cleanText)
+      if (rawEvents.length === 0) return
+
+      const events = validateAdapterEvents(rawEvents, (msg) => {
+        log.warn('adapter', msg)
+      })
+      if (events.length === 0) return
+
+      const significantEvents = events.filter(e => e.type !== 'chunk')
+      if (significantEvents.length > 0) {
+        log.info('adapter', `${significantEvents.map(e => e.type).join(', ')}`)
+      }
+      this.processAdapterEvents(sessionId, events)
+    })
+
+    ptyProcess.onExit(({ exitCode }) => {
+      ctx.session.status = 'archived'
+      this.finalizeCurrentMessage(sessionId)
+
+      if (ctx.storageDebounceTimer) {
+        clearTimeout(ctx.storageDebounceTimer)
+        ctx.storageDebounceTimer = null
+      }
+
+      this.storage.updateSessionStatus(sessionId, 'archived').catch((err) => {
+        log.error('session', `Failed to archive session ${sessionId}`, err)
+      })
+
+      const exitMsg: ChatMessage = {
+        id: randomUUID(),
+        role: 'system',
+        content: `CLI process exited with code ${exitCode ?? 'unknown'}`,
+        timestamp: Date.now(),
+        status: 'complete',
+      }
+      ctx.session.messages.push(exitMsg)
+      this.storage.appendMessage(sessionId, exitMsg).catch((err) => {
+        log.error('session', `Failed to persist exit message for session ${sessionId}`, err)
+      })
+
+      this.broadcast(sessionId, { type: 'message', data: exitMsg })
+      this.broadcast(sessionId, { type: 'status', data: 'exited' })
+    })
+  }
+
+  /**
+   * Schedule sending the system prompt after a delay, if the adapter has one.
+   */
+  private scheduleSystemPrompt(sessionId: string, adapter: ICLIAdapter): void {
+    if (!adapter.systemPrompt) return
+    const systemPrompt = adapter.systemPrompt
+    setTimeout(() => {
+      const currentCtx = this.sessions.get(sessionId)
+      if (currentCtx && currentCtx.session.status === 'live') {
+        log.info('session', `Sending system prompt for session ${sessionId}`)
+        currentCtx.adapter.notifySystemInput(systemPrompt)
+        currentCtx.pty.write(systemPrompt + '\r')
+      }
+    }, SYSTEM_PROMPT_DELAY_MS)
+  }
+
+  // -----------------------------------------------------------------------
   // Finalize streaming message helper
   // -----------------------------------------------------------------------
 
@@ -619,5 +719,110 @@ export class SessionManager implements ISessionManager {
         // Client may have disconnected; will be cleaned up on close event
       }
     }
+  }
+
+  // -----------------------------------------------------------------------
+  // CLI session ID detection
+  // -----------------------------------------------------------------------
+
+  /**
+   * Snapshot the CLI's session directory to get a set of existing session
+   * file names. Called before spawning the pty so we can diff afterwards.
+   */
+  private async snapshotCliSessionDir(adapter: ICLIAdapter): Promise<Set<string>> {
+    const dir = adapter.cliSessionDir
+    if (!dir || !existsSync(dir)) return new Set()
+    try {
+      const files = await readdir(dir)
+      return new Set(files.filter(f => f.endsWith('.json')))
+    } catch {
+      return new Set()
+    }
+  }
+
+  /**
+   * After spawning a CLI process, detect the new session file it created
+   * by diffing against the pre-spawn snapshot. Stores the CLI session ID
+   * on the CodePipe session and persists it.
+   *
+   * Runs asynchronously in the background — does not block session creation.
+   */
+  private detectAndStoreCliSessionId(
+    sessionId: string,
+    adapter: ICLIAdapter,
+    preSpawnFiles: Set<string>,
+    projectPath: string,
+  ): void {
+    const dir = adapter.cliSessionDir
+    if (!dir) return
+
+    // Poll a few times with increasing delays to catch the new file.
+    // The CLI typically creates its session file within the first few seconds.
+    const delays = [2000, 4000, 8000]
+    let attempt = 0
+
+    const tryDetect = async () => {
+      try {
+        if (!existsSync(dir)) return
+
+        const currentFiles = await readdir(dir)
+        const newFiles = currentFiles.filter(
+          f => f.endsWith('.json') && !preSpawnFiles.has(f),
+        )
+
+        if (newFiles.length === 0) {
+          // No new file yet — retry if we have attempts left
+          attempt++
+          if (attempt < delays.length) {
+            setTimeout(tryDetect, delays[attempt])
+          } else {
+            log.warn('session', `Could not detect CLI session ID for session ${sessionId} after ${delays.length} attempts`)
+          }
+          return
+        }
+
+        // If multiple new files, pick the one whose cwd matches our project path.
+        // If only one, use it directly.
+        let cliSessionId: string | null = null
+
+        if (newFiles.length === 1) {
+          cliSessionId = newFiles[0].replace('.json', '')
+        } else {
+          // Multiple new files — read each to find the one matching our project
+          for (const file of newFiles) {
+            try {
+              const content = await readFile(path.join(dir, file), 'utf-8')
+              const data = JSON.parse(content)
+              if (data.cwd && path.resolve(data.cwd) === path.resolve(projectPath)) {
+                cliSessionId = file.replace('.json', '')
+                break
+              }
+            } catch {
+              // Skip unreadable files
+            }
+          }
+          // Fallback: use the most recently modified file
+          if (!cliSessionId) {
+            cliSessionId = newFiles[newFiles.length - 1].replace('.json', '')
+          }
+        }
+
+        if (cliSessionId) {
+          log.info('session', `Detected CLI session ID for session ${sessionId}: ${cliSessionId}`)
+          const ctx = this.sessions.get(sessionId)
+          if (ctx) {
+            ctx.session.cliSessionId = cliSessionId
+            // Persist to storage
+            this.storage.saveSession(ctx.session).catch((err) => {
+              log.error('session', `Failed to persist CLI session ID for session ${sessionId}`, err)
+            })
+          }
+        }
+      } catch (err) {
+        log.error('session', `Error detecting CLI session ID for session ${sessionId}`, err)
+      }
+    }
+
+    setTimeout(tryDetect, delays[0])
   }
 }
