@@ -97,6 +97,13 @@ export interface ICLIAdapter {
   notifyUserInput(text: string): void
   notifySystemInput(text: string): void
   reset(): void
+
+  /**
+   * Format a file attachment as a string to inject into the CLI prompt.
+   * Each provider has its own syntax for referencing files.
+   * Returns the string to prepend/append to the user's message text.
+   */
+  formatAttachment(filePath: string, mimeType: string): string
 }
 
 export type AdapterFactory = () => ICLIAdapter

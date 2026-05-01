@@ -292,4 +292,13 @@ export class KiroAdapter implements ICLIAdapter {
     this.lastToolName = 'tool'
     this.inToolSequence = false
   }
+
+  formatAttachment(filePath: string, mimeType: string): string {
+    // Kiro CLI: images are referenced by bare path, text files use @path syntax
+    if (mimeType.startsWith('image/')) {
+      return filePath
+    }
+    // Text files / documents — use @path syntax for inline expansion
+    return `@${filePath}`
+  }
 }

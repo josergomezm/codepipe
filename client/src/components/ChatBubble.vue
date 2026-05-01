@@ -39,6 +39,18 @@ const isSystem = computed(() => props.message.role === 'system')
   <!-- User message: right-aligned, blue -->
   <div v-else-if="isUser" class="flex justify-end px-4 py-1">
     <div class="max-w-[75%] overflow-hidden rounded-2xl bg-blue-600 px-4 py-2.5 text-white">
+      <!-- Attachment indicators -->
+      <div v-if="message.attachments?.length" class="mb-1.5 flex flex-wrap gap-1.5">
+        <span
+          v-for="att in message.attachments"
+          :key="att.id"
+          class="inline-flex items-center gap-1 rounded-md bg-blue-500/40 px-2 py-0.5 text-xs"
+        >
+          <span v-if="att.mimeType.startsWith('image/')">🖼️</span>
+          <span v-else>📄</span>
+          {{ att.filename }}
+        </span>
+      </div>
       <p class="whitespace-pre-wrap break-words text-sm">{{ message.content }}</p>
     </div>
   </div>

@@ -5,6 +5,14 @@ export type SessionStatus = 'live' | 'archived'
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool'
 export type MessageStatus = 'streaming' | 'complete'
 
+export interface Attachment {
+  id: string
+  filename: string
+  mimeType: string
+  size: number
+  path: string
+}
+
 export interface ChatMessage {
   id: string
   role: MessageRole
@@ -12,6 +20,7 @@ export interface ChatMessage {
   timestamp: number
   status: MessageStatus
   metadata?: { toolName?: string; thinkingContent?: string; credits?: string; time?: string }
+  attachments?: Attachment[]
 }
 
 export interface Project {
@@ -103,4 +112,21 @@ export interface BrowseResult {
 export function browsePath(path?: string): Promise<BrowseResult> {
   const url = path ? `/api/browse?path=${encodeURIComponent(path)}` : '/api/browse'
   return request<BrowseResult>(url)
+}
+
+// --- Upload ---
+
+export async function uploadFile(file: File): Promise<Attachment> {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const res = await fetch('/api/upload', {
+    method: 'POST',
+    body: formData,
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }))
+    throw new Error(body.error ?? res.statusText)
+  }
+  return res.json() as Promise<Attachment>
 }

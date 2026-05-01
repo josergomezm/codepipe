@@ -17,6 +17,7 @@
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
     "express": "^4.21.2",
+    "multer": "^2.1.1",
     "node-pty": "^1.0.0",
     "strip-ansi": "^7.2.0",
     "uuid": "^11.1.0",
@@ -25,6 +26,7 @@
   },
   "devDependencies": {
     "@types/express": "^5.0.2",
+    "@types/multer": "^2.1.0",
     "@types/node": "^22.15.18",
     "@types/supertest": "^6.0.2",
     "@types/uuid": "^10.0.0",

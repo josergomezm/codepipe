@@ -8,6 +8,7 @@ import { KiroAdapter } from './adapters/kiro.js'
 import { createSessionRoutes } from './routes/sessions.js'
 import { createProjectRoutes } from './routes/projects.js'
 import { createBrowseRoutes } from './routes/browse.js'
+import { createUploadRoutes } from './routes/upload.js'
 import { setupWebSocket } from './websocket.js'
 import { log } from './logger.js'
 
@@ -42,6 +43,7 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/sessions', createSessionRoutes(sessionManager, storage))
 app.use('/api/projects', createProjectRoutes(storage))
 app.use('/api/browse', createBrowseRoutes())
+app.use('/api/upload', createUploadRoutes('./data/uploads'))
 
 // ---------------------------------------------------------------------------
 // HTTP + WebSocket server

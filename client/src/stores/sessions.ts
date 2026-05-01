@@ -72,6 +72,7 @@ export const useSessionsStore = defineStore('sessions', () => {
       existing.content = message.content
       existing.status = message.status
       if (message.metadata) existing.metadata = message.metadata
+      if (message.attachments) existing.attachments = message.attachments
     } else {
       activeMessages.value.push(message)
     }
@@ -90,7 +91,12 @@ export const useSessionsStore = defineStore('sessions', () => {
   }
 
   function setMessages(messages: ChatMessage[]) {
-    activeMessages.value = messages
+    // Deduplicate by id — the last occurrence wins, preserving order
+    const seen = new Map<string, ChatMessage>()
+    for (const msg of messages) {
+      seen.set(msg.id, msg)
+    }
+    activeMessages.value = [...seen.values()]
   }
 
   return {

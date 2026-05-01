@@ -19,6 +19,15 @@ export const ChatMessageMetadataSchema = z.object({
   time: z.string().optional(),
 })
 
+export const AttachmentSchema = z.object({
+  id: z.string().uuid(),
+  filename: z.string().min(1),
+  mimeType: z.string().min(1),
+  size: z.number().int().nonnegative(),
+  /** Absolute path on the host filesystem where the file was saved. */
+  path: z.string().min(1),
+})
+
 export const ChatMessageSchema = z.object({
   id: z.string().uuid(),
   role: MessageRoleSchema,
@@ -26,6 +35,7 @@ export const ChatMessageSchema = z.object({
   timestamp: z.number().int().positive(),
   status: MessageStatusSchema,
   metadata: ChatMessageMetadataSchema.optional(),
+  attachments: z.array(AttachmentSchema).optional(),
 })
 
 export const ProjectSchema = z.object({
@@ -57,7 +67,11 @@ export const SessionMetaSchema = SessionObjectSchema.omit({ messages: true })
 // --- WebSocket Protocol ---
 
 export const WSClientMessageSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('input'), data: z.string().min(1) }),
+  z.object({
+    type: z.literal('input'),
+    data: z.string().min(1),
+    attachments: z.array(AttachmentSchema).optional(),
+  }),
 ])
 
 export const WSServerMessageSchema = z.discriminatedUnion('type', [
@@ -86,6 +100,7 @@ export type SessionStatus = z.infer<typeof SessionStatusSchema>
 export type MessageRole = z.infer<typeof MessageRoleSchema>
 export type MessageStatus = z.infer<typeof MessageStatusSchema>
 export type ChatMessageMetadata = z.infer<typeof ChatMessageMetadataSchema>
+export type Attachment = z.infer<typeof AttachmentSchema>
 export type ChatMessage = z.infer<typeof ChatMessageSchema>
 export type Project = z.infer<typeof ProjectSchema>
 export type Session = z.infer<typeof SessionSchema>

@@ -9,8 +9,6 @@ let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let reconnectAttempts = 0
 let currentSessionId: string | null = null
-/** Suppress errors during intentional disconnect. */
-let intentionalDisconnect = false
 
 function connect(sessionId: string) {
   // If already connected to this session, don't reconnect
@@ -18,9 +16,8 @@ function connect(sessionId: string) {
     return
   }
 
-  intentionalDisconnect = true
-  disconnect()
-  intentionalDisconnect = false
+  // Clean up any previous connection
+  cleanupSocket()
   currentSessionId = sessionId
 
   try {
@@ -64,8 +61,8 @@ function connect(sessionId: string) {
   ws.onclose = () => {
     isConnected.value = false
 
-    // Don't reconnect if we intentionally disconnected or switched sessions
-    if (intentionalDisconnect || !currentSessionId) return
+    // Don't reconnect if we switched sessions
+    if (!currentSessionId) return
 
     // Auto-reconnect with exponential backoff (max 5 attempts, start at 2s)
     if (reconnectAttempts < 5) {
@@ -80,32 +77,46 @@ function connect(sessionId: string) {
   }
 
   ws.onerror = () => {
-    // Don't set error for intentional disconnects or during HMR reloads
-    if (!intentionalDisconnect) {
-      connectionError.value = 'Connection lost — retrying...'
-    }
+    connectionError.value = 'Connection lost — retrying...'
   }
 }
 
-function disconnect() {
+/**
+ * Tear down the current WebSocket without resetting session-level state.
+ * Silences the "WebSocket is closed before the connection is established"
+ * warning by stripping event handlers before closing a CONNECTING socket.
+ */
+function cleanupSocket() {
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null
   }
   reconnectAttempts = 0
-  currentSessionId = null
+
   if (ws) {
-    intentionalDisconnect = true
+    // Remove handlers first so the close/error events don't fire
+    ws.onopen = null
+    ws.onmessage = null
+    ws.onclose = null
+    ws.onerror = null
     ws.close()
     ws = null
-    intentionalDisconnect = false
   }
   isConnected.value = false
 }
 
-function sendMessage(text: string) {
+function disconnect() {
+  currentSessionId = null
+  cleanupSocket()
+}
+
+function sendMessage(text: string, attachments?: import('../api/client').Attachment[]) {
   if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'input', data: text }))
+    ws.send(JSON.stringify({
+      type: 'input',
+      data: text,
+      ...(attachments?.length ? { attachments } : {}),
+    }))
   }
 }
 

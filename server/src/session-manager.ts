@@ -7,6 +7,7 @@ import type {
   Session,
   SessionMeta,
   ChatMessage,
+  Attachment,
 } from './schemas.js'
 import type { IStorageLayer } from './storage.js'
 import type { ICLIAdapter } from './adapters/types.js'
@@ -42,7 +43,7 @@ export interface ISessionManager {
   deleteSession(sessionId: string): Promise<void>
   attachClient(sessionId: string, socket: WebSocket): void
   detachClient(sessionId: string, socket: WebSocket): void
-  handleInput(sessionId: string, text: string): void
+  handleInput(sessionId: string, text: string, attachments?: Attachment[]): void
   shutdown(): Promise<void>
 }
 
@@ -203,7 +204,7 @@ export class SessionManager implements ISessionManager {
   // 4.1.3 — handleInput
   // -----------------------------------------------------------------------
 
-  handleInput(sessionId: string, text: string): void {
+  handleInput(sessionId: string, text: string, attachments?: Attachment[]): void {
     const ctx = this.sessions.get(sessionId)
     if (!ctx) {
       log.error('session', `handleInput: Session ${sessionId} not found in active sessions`)
@@ -218,18 +219,22 @@ export class SessionManager implements ISessionManager {
     }
 
     log.info('session', `handleInput: Writing to pty for session ${sessionId}: "${text}"`)
+    if (attachments?.length) {
+      log.info('session', `handleInput: ${attachments.length} attachment(s): ${attachments.map(a => a.filename).join(', ')}`)
+    }
     log.debug('session', `handleInput: Attached clients: ${ctx.clients.size}`)
 
     // Finalize any in-progress streaming message before starting new input
     this.finalizeCurrentMessage(sessionId)
 
-    // Create user message
+    // Create user message (stores the human-readable text + attachment metadata)
     const userMessage: ChatMessage = {
       id: randomUUID(),
       role: 'user',
       content: text,
       timestamp: Date.now(),
       status: 'complete',
+      ...(attachments?.length ? { attachments } : {}),
     }
 
     // Add to in-memory session
@@ -244,11 +249,20 @@ export class SessionManager implements ISessionManager {
     // Broadcast to all attached clients
     this.broadcast(sessionId, { type: 'message', data: userMessage })
 
+    // Build the CLI prompt: attachment references + user text
+    // The adapter knows how to format file references for its specific CLI
+    let cliPrompt = text
+    if (attachments?.length) {
+      const refs = attachments.map(a => ctx.adapter.formatAttachment(a.path, a.mimeType))
+      cliPrompt = refs.join(' ') + ' ' + text
+    }
+
     // Notify the adapter that user input is being sent (state machine transition)
-    ctx.adapter.notifyUserInput(text)
+    // Use the full CLI prompt (with file refs) for echo detection
+    ctx.adapter.notifyUserInput(cliPrompt)
 
     // Write to pty stdin (\r is carriage return — what terminals send on Enter)
-    ctx.pty.write(text + '\r')
+    ctx.pty.write(cliPrompt + '\r')
   }
 
   // -----------------------------------------------------------------------

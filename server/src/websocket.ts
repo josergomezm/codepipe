@@ -83,7 +83,7 @@ function handleConnection(
         const msg = parsed.data
         if (msg.type === 'input') {
           log.debug('ws', `Routing input to handleInput: "${msg.data}"`)
-          sessionManager.handleInput(sessionId, msg.data)
+          sessionManager.handleInput(sessionId, msg.data, msg.attachments)
         }
       } catch (err) {
         log.error('ws', 'Error processing message', err)
