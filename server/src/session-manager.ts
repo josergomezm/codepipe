@@ -161,8 +161,17 @@ export class SessionManager implements ISessionManager {
   ): Promise<Session> {
     // If already live (race condition), just return it
     const existing = this.sessions.get(sessionId)
-    if (existing) {
+    if (existing && existing.session.status === 'live') {
       return existing.session
+    }
+
+    // If the session is in the map but archived (pty exited), remove the stale
+    // entry so we can create a fresh one below.
+    if (existing) {
+      if (existing.storageDebounceTimer) {
+        clearTimeout(existing.storageDebounceTimer)
+      }
+      this.sessions.delete(sessionId)
     }
 
     // Validate project still exists

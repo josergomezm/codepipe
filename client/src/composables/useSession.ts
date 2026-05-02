@@ -5,6 +5,9 @@ import { useSessionsStore } from '../stores/sessions'
 const isConnected = ref(false)
 const connectionError = ref<string | null>(null)
 
+/** Max delay between reconnect attempts (30 seconds). */
+const MAX_RECONNECT_DELAY_MS = 30_000
+
 let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let reconnectAttempts = 0
@@ -75,20 +78,23 @@ function connect(sessionId: string) {
     // Don't reconnect if we switched sessions
     if (!currentSessionId) return
 
-    // Auto-reconnect with exponential backoff (max 5 attempts, start at 2s)
-    if (reconnectAttempts < 5) {
-      const delay = Math.min(2000 * 2 ** reconnectAttempts, 30000)
-      reconnectTimer = setTimeout(() => {
-        reconnectAttempts++
-        if (currentSessionId) {
-          connect(currentSessionId)
-        }
-      }, delay)
-    }
+    // Auto-reconnect with exponential backoff, no attempt limit.
+    // Delay: 2s → 4s → 8s → 16s → 30s (capped), then 30s forever.
+    const delay = Math.min(2000 * 2 ** reconnectAttempts, MAX_RECONNECT_DELAY_MS)
+    connectionError.value = 'Connection lost — retrying...'
+    reconnectTimer = setTimeout(() => {
+      reconnectAttempts++
+      if (currentSessionId) {
+        connect(currentSessionId)
+      }
+    }, delay)
   }
 
   ws.onerror = () => {
-    connectionError.value = 'Connection lost — retrying...'
+    // Only set the error if we don't already have a more specific one from onclose
+    if (!connectionError.value) {
+      connectionError.value = 'Connection lost — retrying...'
+    }
   }
 }
 

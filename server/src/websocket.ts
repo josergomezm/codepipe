@@ -115,7 +115,7 @@ function handleConnection(
   // Check if session is live in SessionManager
   const liveSession = sessionManager.getSession(sessionId)
 
-  if (liveSession) {
+  if (liveSession && liveSession.status === 'live') {
     // Live session — attach client, replay history, send current status
     sessionManager.attachClient(sessionId, ws)
 
@@ -126,8 +126,13 @@ function handleConnection(
     return
   }
 
-  // Not live — check storage for archived session
-  storage.getSession(sessionId).then((archivedSession) => {
+  // Not live — check in-memory (pty exited but still in map) then storage
+  const inMemoryArchived = liveSession && liveSession.status !== 'live' ? liveSession : null
+  const archivePromise = inMemoryArchived
+    ? Promise.resolve(inMemoryArchived)
+    : storage.getSession(sessionId)
+
+  archivePromise.then((archivedSession) => {
     if (archivedSession) {
       // Archived session — replay history and send exited status
       ws.send(JSON.stringify({ type: 'history', data: archivedSession.messages }))

@@ -25,7 +25,7 @@ export interface IStorageLayer {
   deleteSession(sessionId: string): Promise<void>
   appendMessage(sessionId: string, message: ChatMessage): Promise<void>
   updateSessionStatus(sessionId: string, status: SessionStatus): Promise<void>
-
+  renameSession(sessionId: string, title: string): Promise<void>
   // Projects
   listProjects(): Promise<Project[]>
   addProject(project: Omit<Project, 'id'>): Promise<Project>
@@ -259,6 +259,16 @@ export class StorageLayer implements IStorageLayer {
       throw new Error(`Session ${sessionId} not found`)
     }
     session.status = status
+    session.updatedAt = Date.now()
+    await this.serializedWrite(this.sessionPath(sessionId), session)
+  }
+
+  async renameSession(sessionId: string, title: string): Promise<void> {
+    const session = await this.loadSession(sessionId)
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`)
+    }
+    session.title = title
     session.updatedAt = Date.now()
     await this.serializedWrite(this.sessionPath(sessionId), session)
   }

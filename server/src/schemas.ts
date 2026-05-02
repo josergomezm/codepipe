@@ -90,6 +90,10 @@ export const CreateSessionRequestSchema = z.object({
   projectId: z.string().uuid(),
 })
 
+export const RenameSessionRequestSchema = z.object({
+  title: z.string().min(1).max(200),
+})
+
 export const CreateProjectRequestSchema = z.object({
   name: z.string().min(1).max(100),
   path: z.string().min(1),
