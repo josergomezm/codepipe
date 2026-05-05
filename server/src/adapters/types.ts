@@ -93,7 +93,18 @@ export interface ICLIAdapter {
   readonly args: string[]
   readonly systemPrompt?: string
 
+  /**
+   * Whether this adapter uses non-interactive mode (spawn a short-lived
+   * process per message) rather than a persistent PTY process.
+   *
+   * When true, the SessionManager uses child_process.spawn per message
+   * instead of maintaining a long-lived PTY. The adapter's onData receives
+   * clean stdout lines instead of raw terminal output.
+   */
+  readonly nonInteractive?: boolean
+
   onData(cleanText: string): AdapterEvent[]
+  onStderr?(text: string): AdapterEvent[]
   notifyUserInput(text: string): void
   notifySystemInput(text: string): void
   reset(): void
@@ -116,6 +127,20 @@ export interface ICLIAdapter {
    * If the CLI doesn't support session resumption at all, return `null`.
    */
   getResumeCommand(cliSessionId: string | null): { command: string; args: string[] } | null
+
+  /**
+   * Build the command + args for a single non-interactive message invocation.
+   * Only used when `nonInteractive` is true.
+   *
+   * @param text — the user's message text
+   * @param cliSessionId — the CLI's session ID for multi-turn (null for first message)
+   * @param attachments — optional file attachments
+   */
+  buildMessageCommand?(
+    text: string,
+    cliSessionId: string | null,
+    attachments?: { path: string; mimeType: string }[],
+  ): { command: string; args: string[] }
 
   /**
    * Directory where the CLI tool stores its own session files.

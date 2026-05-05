@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import { readdir, readFile } from 'fs/promises'
 import { existsSync } from 'fs'
+import { spawn, type ChildProcess } from 'child_process'
 import path from 'path'
 import * as pty from 'node-pty'
 import type { WebSocket } from 'ws'
@@ -28,12 +29,17 @@ import { log } from './logger.js'
  */
 export interface SessionContext {
   session: Session
-  pty: pty.IPty
+  /** PTY process — only used for interactive (legacy) adapters. */
+  pty: pty.IPty | null
+  /** Child process — only used for non-interactive adapters (current message). */
+  childProcess: ChildProcess | null
   adapter: ICLIAdapter
   clients: Set<WebSocket>
   currentMessage: ChatMessage | null
   storageDebounceTimer: ReturnType<typeof setTimeout> | null
   pendingMessage: ChatMessage | null
+  /** The project path for this session (needed for spawning per-message processes). */
+  projectPath: string
 }
 
 /**
@@ -70,7 +76,7 @@ export class SessionManager implements ISessionManager {
   }
 
   // -----------------------------------------------------------------------
-  // 4.1.2 — createSession
+  // createSession
   // -----------------------------------------------------------------------
 
   async createSession(
@@ -102,10 +108,32 @@ export class SessionManager implements ISessionManager {
       messages: [],
     }
 
-    // Snapshot CLI session directory before spawning (for detecting the CLI's session ID)
+    if (adapter.nonInteractive) {
+      // Non-interactive mode: no process spawned at creation time.
+      // Each message will spawn its own short-lived process.
+      const ctx: SessionContext = {
+        session,
+        pty: null,
+        childProcess: null,
+        adapter,
+        clients: new Set(),
+        currentMessage: null,
+        storageDebounceTimer: null,
+        pendingMessage: null,
+        projectPath: project.path,
+      }
+
+      this.sessions.set(session.id, ctx)
+      await this.storage.saveSession(session)
+
+      return session
+    }
+
+    // --- Interactive (PTY) mode — legacy path for future providers ---
+
+    // Snapshot CLI session directory before spawning
     const preSpawnSessionFiles = await this.snapshotCliSessionDir(adapter)
 
-    // Spawn pty process
     const shell = adapter.command
     const args = adapter.args
     log.info('session', `Spawning: ${shell} ${args.join(' ')} in ${project.path}`)
@@ -117,56 +145,41 @@ export class SessionManager implements ISessionManager {
       env: { ...process.env } as Record<string, string>,
     })
 
-    // Build session context
     const ctx: SessionContext = {
       session,
       pty: ptyProcess,
+      childProcess: null,
       adapter,
       clients: new Set(),
       currentMessage: null,
       storageDebounceTimer: null,
       pendingMessage: null,
+      projectPath: project.path,
     }
 
     this.sessions.set(session.id, ctx)
-
-    // Persist session to storage BEFORE wiring events
     await this.storage.saveSession(session)
 
-    // Wire pty events and optionally send system prompt
     this.wirePtyToSession(session.id, ctx)
     this.scheduleSystemPrompt(session.id, adapter)
-
-    // Detect the CLI's own session ID asynchronously.
-    // We wait a bit for the CLI to create its session file, then diff against
-    // the pre-spawn snapshot. This runs in the background — it doesn't block
-    // session creation.
     this.detectAndStoreCliSessionId(session.id, adapter, preSpawnSessionFiles, project.path)
 
     return session
   }
 
   // -----------------------------------------------------------------------
-  // 4.1.2b — reviveSession
+  // reviveSession
   // -----------------------------------------------------------------------
 
-  /**
-   * Revive an archived session by spawning a new pty process.
-   * Keeps the original session ID and message history, but creates a
-   * fresh CLI process so the user can continue the conversation.
-   */
   async reviveSession(
     sessionId: string,
     archivedSession: Session,
   ): Promise<Session> {
-    // If already live (race condition), just return it
     const existing = this.sessions.get(sessionId)
     if (existing && existing.session.status === 'live') {
       return existing.session
     }
 
-    // If the session is in the map but archived (pty exited), remove the stale
-    // entry so we can create a fresh one below.
     if (existing) {
       if (existing.storageDebounceTimer) {
         clearTimeout(existing.storageDebounceTimer)
@@ -174,19 +187,16 @@ export class SessionManager implements ISessionManager {
       this.sessions.delete(sessionId)
     }
 
-    // Validate project still exists
     const project = await this.storage.getProject(archivedSession.projectId)
     if (!project) {
       throw new Error('Project not found — it may have been removed')
     }
 
-    // Resolve CLI adapter for provider
     const adapter = getAdapter(archivedSession.provider)
     if (!adapter) {
       throw new Error(`No adapter registered for provider "${archivedSession.provider}"`)
     }
 
-    // Update session record to live
     const now = Date.now()
     const session: Session = {
       ...archivedSession,
@@ -194,12 +204,31 @@ export class SessionManager implements ISessionManager {
       updatedAt: now,
     }
 
-    // Spawn pty process — use resume command if the adapter supports it
+    if (adapter.nonInteractive) {
+      // Non-interactive: just re-register the session, no process needed
+      const ctx: SessionContext = {
+        session,
+        pty: null,
+        childProcess: null,
+        adapter,
+        clients: new Set(),
+        currentMessage: null,
+        storageDebounceTimer: null,
+        pendingMessage: null,
+        projectPath: project.path,
+      }
+
+      this.sessions.set(sessionId, ctx)
+      await this.storage.updateSessionStatus(sessionId, 'live')
+
+      return session
+    }
+
+    // --- Interactive (PTY) mode ---
     const resumeCmd = adapter.getResumeCommand(archivedSession.cliSessionId ?? null)
     const shell = resumeCmd ? resumeCmd.command : adapter.command
     const args = resumeCmd ? resumeCmd.args : adapter.args
-    log.info('session', `Reviving session ${sessionId}: ${shell} ${args.join(' ')} in ${project.path}${resumeCmd ? ' (resume mode)' : ' (fresh start)'}`)
-    log.info('session', `CLI session ID for resume: ${archivedSession.cliSessionId ?? 'none — using fallback'}`)
+    log.info('session', `Reviving session ${sessionId}: ${shell} ${args.join(' ')} in ${project.path}`)
     const ptyProcess = pty.spawn(shell, args, {
       name: 'xterm-256color',
       cols: 120,
@@ -208,23 +237,21 @@ export class SessionManager implements ISessionManager {
       env: { ...process.env } as Record<string, string>,
     })
 
-    // Build session context
     const ctx: SessionContext = {
       session,
       pty: ptyProcess,
+      childProcess: null,
       adapter,
       clients: new Set(),
       currentMessage: null,
       storageDebounceTimer: null,
       pendingMessage: null,
+      projectPath: project.path,
     }
 
     this.sessions.set(sessionId, ctx)
-
-    // Persist updated status to storage
     await this.storage.updateSessionStatus(sessionId, 'live')
 
-    // Wire pty events; skip system prompt if resuming (CLI already has context)
     this.wirePtyToSession(sessionId, ctx)
     if (!resumeCmd) {
       this.scheduleSystemPrompt(sessionId, adapter)
@@ -234,7 +261,7 @@ export class SessionManager implements ISessionManager {
   }
 
   // -----------------------------------------------------------------------
-  // 4.1.3 — handleInput
+  // handleInput
   // -----------------------------------------------------------------------
 
   handleInput(sessionId: string, text: string, attachments?: Attachment[]): void {
@@ -251,16 +278,15 @@ export class SessionManager implements ISessionManager {
       throw new Error('Input text must be non-empty')
     }
 
-    log.info('session', `handleInput: Writing to pty for session ${sessionId}: "${text}"`)
+    log.info('session', `handleInput: session ${sessionId}: "${text}"`)
     if (attachments?.length) {
       log.info('session', `handleInput: ${attachments.length} attachment(s): ${attachments.map(a => a.filename).join(', ')}`)
     }
-    log.debug('session', `handleInput: Attached clients: ${ctx.clients.size}`)
 
-    // Finalize any in-progress streaming message before starting new input
+    // Finalize any in-progress streaming message
     this.finalizeCurrentMessage(sessionId)
 
-    // Create user message (stores the human-readable text + attachment metadata)
+    // Create and broadcast user message
     const userMessage: ChatMessage = {
       id: randomUUID(),
       role: 'user',
@@ -270,36 +296,192 @@ export class SessionManager implements ISessionManager {
       ...(attachments?.length ? { attachments } : {}),
     }
 
-    // Add to in-memory session
     ctx.session.messages.push(userMessage)
     ctx.session.updatedAt = userMessage.timestamp
 
-    // Persist to storage
     this.storage.appendMessage(sessionId, userMessage).catch((err) => {
       log.error('session', `Failed to persist user message for session ${sessionId}`, err)
     })
 
-    // Broadcast to all attached clients
     this.broadcast(sessionId, { type: 'message', data: userMessage })
 
-    // Build the CLI prompt: attachment references + user text
-    // The adapter knows how to format file references for its specific CLI
+    if (ctx.adapter.nonInteractive) {
+      this.handleNonInteractiveInput(sessionId, ctx, text, attachments)
+    } else {
+      this.handleInteractiveInput(sessionId, ctx, text, attachments)
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Non-interactive input (spawn per message)
+  // -----------------------------------------------------------------------
+
+  private handleNonInteractiveInput(
+    sessionId: string,
+    ctx: SessionContext,
+    text: string,
+    attachments?: Attachment[],
+  ): void {
+    const adapter = ctx.adapter
+
+    if (!adapter.buildMessageCommand) {
+      log.error('session', `Adapter for ${adapter.provider} is non-interactive but missing buildMessageCommand`)
+      throw new Error('Adapter configuration error')
+    }
+
+    // Kill any still-running child process from a previous message
+    if (ctx.childProcess) {
+      try { ctx.childProcess.kill() } catch { /* already dead */ }
+      ctx.childProcess = null
+    }
+
+    const isFirstMessage = !ctx.session.cliSessionId
+
+    const attachmentRefs = attachments?.map(a => ({ path: a.path, mimeType: a.mimeType }))
+    const { command, args } = adapter.buildMessageCommand!(
+      text,
+      ctx.session.cliSessionId ?? null,
+      attachmentRefs,
+    )
+
+    log.info('session', `Spawning: ${command} ${args.join(' ')} in ${ctx.projectPath}`)
+
+    const child = spawn(command, args, {
+      cwd: ctx.projectPath,
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false,
+    })
+
+    ctx.childProcess = child
+
+    // Signal typing status
+    this.broadcast(sessionId, { type: 'status', data: 'typing' })
+
+    // Buffer for partial lines
+    let stdoutBuffer = ''
+
+    child.stdout?.on('data', (data: Buffer) => {
+      // Strip ANSI escape codes (CLI still emits colors in non-interactive mode)
+      const clean = stripAnsi(data.toString())
+      stdoutBuffer += clean
+
+      // Process complete lines, keep the last partial line in the buffer
+      const lines = stdoutBuffer.split('\n')
+      stdoutBuffer = lines.pop() ?? ''
+
+      for (const line of lines) {
+        this.processNonInteractiveLine(sessionId, ctx, line)
+      }
+    })
+
+    // Capture stderr — parse for credits, log the rest
+    child.stderr?.on('data', (data: Buffer) => {
+      const text = data.toString()
+
+      // Parse stderr for credits (Kiro CLI sends credits to stderr)
+      if (adapter.onStderr) {
+        const stderrEvents = adapter.onStderr(text)
+        if (stderrEvents.length > 0) {
+          const validEvents = validateAdapterEvents(stderrEvents, (msg) => {
+            log.warn('adapter', msg)
+          })
+          if (validEvents.length > 0) {
+            this.processAdapterEvents(sessionId, validEvents)
+          }
+        }
+      }
+
+      // Log non-empty stderr for debugging (skip known noise)
+      const trimmed = text.trim()
+      if (trimmed.length > 0 && !trimmed.includes('Credits:') && !trimmed.includes('trusted')) {
+        log.debug('cli-stderr', trimmed)
+      }
+    })
+
+    child.on('close', (exitCode) => {
+      // Process any remaining buffered content
+      if (stdoutBuffer.trim().length > 0) {
+        this.processNonInteractiveLine(sessionId, ctx, stdoutBuffer)
+        stdoutBuffer = ''
+      }
+
+      ctx.childProcess = null
+
+      // Finalize the current streaming message
+      this.finalizeCurrentMessage(sessionId)
+
+      // Signal idle
+      this.broadcast(sessionId, { type: 'status', data: 'idle' })
+
+      log.info('session', `CLI process exited with code ${exitCode} for session ${sessionId}`)
+
+      // Detect CLI session ID after first message
+      if (isFirstMessage) {
+        this.detectCliSessionIdFromList(sessionId, ctx)
+      }
+    })
+
+    child.on('error', (err) => {
+      log.error('session', `CLI process error for session ${sessionId}`, err)
+      ctx.childProcess = null
+
+      // Send error as system message
+      const errorMsg: ChatMessage = {
+        id: randomUUID(),
+        role: 'system',
+        content: `CLI error: ${err.message}`,
+        timestamp: Date.now(),
+        status: 'complete',
+      }
+      ctx.session.messages.push(errorMsg)
+      this.storage.appendMessage(sessionId, errorMsg).catch(() => {})
+      this.broadcast(sessionId, { type: 'message', data: errorMsg })
+      this.broadcast(sessionId, { type: 'status', data: 'idle' })
+    })
+  }
+
+  /**
+   * Process a single line of stdout from a non-interactive CLI process.
+   */
+  private processNonInteractiveLine(
+    sessionId: string,
+    ctx: SessionContext,
+    line: string,
+  ): void {
+    const rawEvents = ctx.adapter.onData(line)
+    if (rawEvents.length === 0) return
+
+    const events = validateAdapterEvents(rawEvents, (msg) => {
+      log.warn('adapter', msg)
+    })
+    if (events.length === 0) return
+
+    this.processAdapterEvents(sessionId, events)
+  }
+
+  // -----------------------------------------------------------------------
+  // Interactive input (legacy PTY mode)
+  // -----------------------------------------------------------------------
+
+  private handleInteractiveInput(
+    sessionId: string,
+    ctx: SessionContext,
+    text: string,
+    attachments?: Attachment[],
+  ): void {
     let cliPrompt = text
     if (attachments?.length) {
       const refs = attachments.map(a => ctx.adapter.formatAttachment(a.path, a.mimeType))
       cliPrompt = refs.join(' ') + ' ' + text
     }
 
-    // Notify the adapter that user input is being sent (state machine transition)
-    // Use the full CLI prompt (with file refs) for echo detection
     ctx.adapter.notifyUserInput(cliPrompt)
-
-    // Write to pty stdin (\r is carriage return — what terminals send on Enter)
-    ctx.pty.write(cliPrompt + '\r')
+    ctx.pty!.write(cliPrompt + '\r')
   }
 
   // -----------------------------------------------------------------------
-  // 4.1.4 — processAdapterEvents
+  // processAdapterEvents
   // -----------------------------------------------------------------------
 
   processAdapterEvents(sessionId: string, events: AdapterEvent[]): void {
@@ -309,21 +491,12 @@ export class SessionManager implements ISessionManager {
     for (const event of events) {
       switch (event.type) {
         case 'chunk': {
-          if (!ctx.currentMessage || ctx.currentMessage.status === 'complete') {
-            // Start a new streaming message
-            ctx.currentMessage = {
-              id: randomUUID(),
-              role: event.role,
-              content: event.content,
-              timestamp: Date.now(),
-              status: 'streaming',
-            }
-            ctx.session.messages.push(ctx.currentMessage)
-            this.broadcast(sessionId, { type: 'message', data: ctx.currentMessage })
-            this.broadcast(sessionId, { type: 'status', data: 'typing' })
-          } else if (ctx.currentMessage.role !== event.role) {
-            // Role changed (e.g., tool output interrupted assistant text) —
-            // finalize the old message and start a new one
+          const needsNewMessage =
+            !ctx.currentMessage ||
+            ctx.currentMessage.status === 'complete' ||
+            ctx.currentMessage.role !== event.role
+
+          if (needsNewMessage) {
             this.finalizeCurrentMessage(sessionId)
             ctx.currentMessage = {
               id: randomUUID(),
@@ -336,23 +509,16 @@ export class SessionManager implements ISessionManager {
             this.broadcast(sessionId, { type: 'message', data: ctx.currentMessage })
             this.broadcast(sessionId, { type: 'status', data: 'typing' })
           } else {
-            // APPEND to existing streaming message (same role)
-            ctx.currentMessage.content += event.content
-            // Broadcast the updated message so the frontend can replace
-            this.broadcast(sessionId, {
-              type: 'message',
-              data: ctx.currentMessage,
-            })
+            ctx.currentMessage!.content += '\n' + event.content
+            this.broadcast(sessionId, { type: 'message', data: ctx.currentMessage })
           }
 
-          // Debounce storage write for streaming chunks
-          this.debounceStorageWrite(sessionId, ctx.currentMessage)
+          this.debounceStorageWrite(sessionId, ctx.currentMessage!)
           break
         }
 
         case 'message_complete': {
           if (ctx.currentMessage && ctx.currentMessage.status === 'streaming') {
-            // Attach credits/time metadata if present
             if (event.metadata) {
               ctx.currentMessage.metadata = {
                 ...ctx.currentMessage.metadata,
@@ -361,8 +527,6 @@ export class SessionManager implements ISessionManager {
             }
             this.finalizeCurrentMessage(sessionId)
           }
-          // Even if currentMessage is null (already finalized by tool_use flow),
-          // clear it to ensure clean state for the next message
           ctx.currentMessage = null
           break
         }
@@ -375,9 +539,6 @@ export class SessionManager implements ISessionManager {
         }
 
         case 'tool_use': {
-          // If there's an in-progress assistant message, finalize it first.
-          // Tool output is a separate message — it should NOT bleed into
-          // the assistant's content.
           if (ctx.currentMessage && ctx.currentMessage.status === 'streaming') {
             this.finalizeCurrentMessage(sessionId)
             ctx.currentMessage = null
@@ -400,11 +561,9 @@ export class SessionManager implements ISessionManager {
         }
 
         case 'interactive_prompt': {
-          // Finalize any in-progress message
           this.finalizeCurrentMessage(sessionId)
           ctx.currentMessage = null
 
-          // Create a system message showing the prompt
           const promptMsg: ChatMessage = {
             id: randomUUID(),
             role: 'system',
@@ -417,13 +576,11 @@ export class SessionManager implements ISessionManager {
             log.error('session', `Failed to persist interactive prompt for session ${sessionId}`, err)
           })
           this.broadcast(sessionId, { type: 'message', data: promptMsg })
-          // Signal that the CLI is waiting for user input
           this.broadcast(sessionId, { type: 'status', data: 'idle' })
           break
         }
 
         case 'thinking': {
-          // Thinking blocks are transient — broadcast typing status instead of a message
           this.broadcast(sessionId, { type: 'status', data: 'typing' })
           break
         }
@@ -432,7 +589,7 @@ export class SessionManager implements ISessionManager {
   }
 
   // -----------------------------------------------------------------------
-  // 4.1.5 — attachClient / detachClient
+  // attachClient / detachClient
   // -----------------------------------------------------------------------
 
   attachClient(sessionId: string, socket: WebSocket): void {
@@ -450,7 +607,7 @@ export class SessionManager implements ISessionManager {
   }
 
   // -----------------------------------------------------------------------
-  // 4.1.6 — getSession, listSessions, deleteSession
+  // getSession, listSessions, deleteSession
   // -----------------------------------------------------------------------
 
   getSession(sessionId: string): Session | undefined {
@@ -469,39 +626,30 @@ export class SessionManager implements ISessionManager {
   async deleteSession(sessionId: string): Promise<void> {
     const ctx = this.sessions.get(sessionId)
     if (ctx) {
-      // Kill pty if still running
-      if (ctx.session.status === 'live') {
-        try {
-          ctx.pty.kill()
-        } catch {
-          // pty may already be dead
-        }
+      // Kill pty or child process if still running
+      if (ctx.pty) {
+        try { ctx.pty.kill() } catch { /* already dead */ }
+      }
+      if (ctx.childProcess) {
+        try { ctx.childProcess.kill() } catch { /* already dead */ }
       }
 
-      // Clear timers
       if (ctx.storageDebounceTimer) {
         clearTimeout(ctx.storageDebounceTimer)
       }
 
-      // Close all attached clients
       for (const client of ctx.clients) {
-        try {
-          client.close()
-        } catch {
-          // client may already be closed
-        }
+        try { client.close() } catch { /* already closed */ }
       }
 
-      // Remove from in-memory map
       this.sessions.delete(sessionId)
     }
 
-    // Delete from storage
     await this.storage.deleteSession(sessionId)
   }
 
   // -----------------------------------------------------------------------
-  // 4.1.7 — shutdown
+  // shutdown
   // -----------------------------------------------------------------------
 
   async shutdown(): Promise<void> {
@@ -511,13 +659,11 @@ export class SessionManager implements ISessionManager {
       const ctx = this.sessions.get(sessionId)
       if (!ctx) continue
 
-      // Clear timers
       if (ctx.storageDebounceTimer) {
         clearTimeout(ctx.storageDebounceTimer)
         ctx.storageDebounceTimer = null
       }
 
-      // Flush any pending storage writes
       if (ctx.pendingMessage) {
         try {
           await this.storage.appendMessage(sessionId, ctx.pendingMessage)
@@ -527,15 +673,14 @@ export class SessionManager implements ISessionManager {
         ctx.pendingMessage = null
       }
 
-      // Kill pty
       if (ctx.session.status === 'live') {
-        try {
-          ctx.pty.kill()
-        } catch {
-          // pty may already be dead
+        if (ctx.pty) {
+          try { ctx.pty.kill() } catch { /* already dead */ }
+        }
+        if (ctx.childProcess) {
+          try { ctx.childProcess.kill() } catch { /* already dead */ }
         }
 
-        // Archive the session
         ctx.session.status = 'archived'
         try {
           await this.storage.updateSessionStatus(sessionId, 'archived')
@@ -544,13 +689,8 @@ export class SessionManager implements ISessionManager {
         }
       }
 
-      // Close all attached clients
       for (const client of ctx.clients) {
-        try {
-          client.close()
-        } catch {
-          // client may already be closed
-        }
+        try { client.close() } catch { /* already closed */ }
       }
     }
 
@@ -558,15 +698,12 @@ export class SessionManager implements ISessionManager {
   }
 
   // -----------------------------------------------------------------------
-  // Shared pty wiring
+  // PTY wiring (interactive mode only)
   // -----------------------------------------------------------------------
 
-  /**
-   * Wire a pty process's output and exit events to the session.
-   * Used by both createSession and reviveSession.
-   */
   private wirePtyToSession(sessionId: string, ctx: SessionContext): void {
     const { pty: ptyProcess, adapter } = ctx
+    if (!ptyProcess) return
 
     ptyProcess.onData((data: string) => {
       const cleanText = stripAnsi(data)
@@ -617,15 +754,12 @@ export class SessionManager implements ISessionManager {
     })
   }
 
-  /**
-   * Schedule sending the system prompt after a delay, if the adapter has one.
-   */
   private scheduleSystemPrompt(sessionId: string, adapter: ICLIAdapter): void {
     if (!adapter.systemPrompt) return
     const systemPrompt = adapter.systemPrompt
     setTimeout(() => {
       const currentCtx = this.sessions.get(sessionId)
-      if (currentCtx && currentCtx.session.status === 'live') {
+      if (currentCtx && currentCtx.session.status === 'live' && currentCtx.pty) {
         log.info('session', `Sending system prompt for session ${sessionId}`)
         currentCtx.adapter.notifySystemInput(systemPrompt)
         currentCtx.pty.write(systemPrompt + '\r')
@@ -634,14 +768,9 @@ export class SessionManager implements ISessionManager {
   }
 
   // -----------------------------------------------------------------------
-  // Finalize streaming message helper
+  // Helpers
   // -----------------------------------------------------------------------
 
-  /**
-   * If there's an in-progress streaming message, mark it complete,
-   * flush to storage, and broadcast the final state.
-   * Returns the finalized message, or null if there was nothing to finalize.
-   */
   private finalizeCurrentMessage(sessionId: string): ChatMessage | null {
     const ctx = this.sessions.get(sessionId)
     if (!ctx?.currentMessage || ctx.currentMessage.status !== 'streaming') return null
@@ -654,16 +783,6 @@ export class SessionManager implements ISessionManager {
     return finalized
   }
 
-  // -----------------------------------------------------------------------
-  // Storage write debouncing (500ms or on message completion)
-  // -----------------------------------------------------------------------
-
-  /**
-   * Debounce storage writes for streaming messages. Buffers the pending
-   * message and sets a 500ms timer. On timer fire, flushes to disk.
-   * On message_complete, flushPendingMessage is called directly for
-   * immediate persistence.
-   */
   private debounceStorageWrite(sessionId: string, message: ChatMessage): void {
     const ctx = this.sessions.get(sessionId)
     if (!ctx) return
@@ -685,15 +804,10 @@ export class SessionManager implements ISessionManager {
     }, STORAGE_DEBOUNCE_MS)
   }
 
-  /**
-   * Immediately flush a pending message to storage, cancelling any
-   * debounce timer. Called on message_complete and prompt_detected.
-   */
   private flushPendingMessage(sessionId: string, message: ChatMessage): void {
     const ctx = this.sessions.get(sessionId)
     if (!ctx) return
 
-    // Cancel any pending debounce timer
     if (ctx.storageDebounceTimer) {
       clearTimeout(ctx.storageDebounceTimer)
       ctx.storageDebounceTimer = null
@@ -706,13 +820,6 @@ export class SessionManager implements ISessionManager {
     })
   }
 
-  // -----------------------------------------------------------------------
-  // Broadcast helper
-  // -----------------------------------------------------------------------
-
-  /**
-   * Send a JSON message to all WebSocket clients attached to a session.
-   */
   private broadcast(
     sessionId: string,
     message: { type: string; data: unknown },
@@ -725,7 +832,7 @@ export class SessionManager implements ISessionManager {
       try {
         client.send(payload)
       } catch {
-        // Client may have disconnected; will be cleaned up on close event
+        // Client may have disconnected
       }
     }
   }
@@ -734,10 +841,6 @@ export class SessionManager implements ISessionManager {
   // CLI session ID detection
   // -----------------------------------------------------------------------
 
-  /**
-   * Snapshot the CLI's session directory to get a set of existing session
-   * file names. Called before spawning the pty so we can diff afterwards.
-   */
   private async snapshotCliSessionDir(adapter: ICLIAdapter): Promise<Set<string>> {
     const dir = adapter.cliSessionDir
     if (!dir || !existsSync(dir)) return new Set()
@@ -750,12 +853,55 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * After spawning a CLI process, detect the new session file it created
-   * by diffing against the pre-spawn snapshot. Stores the CLI session ID
-   * on the CodePipe session and persists it.
+   * Detect the CLI session ID by running `kiro-cli.exe chat --list-sessions`
+   * and parsing the most recent session ID from the output.
    *
-   * Runs asynchronously in the background — does not block session creation.
+   * This is used for non-interactive mode where the CLI doesn't store sessions
+   * in a predictable file location we can sniff.
    */
+  private detectCliSessionIdFromList(sessionId: string, ctx: SessionContext): void {
+    const adapter = ctx.adapter
+
+    const child = spawn(adapter.command, ['chat', '--list-sessions'], {
+      cwd: ctx.projectPath,
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false,
+    })
+
+    let output = ''
+
+    child.stdout?.on('data', (data: Buffer) => {
+      output += data.toString()
+    })
+
+    child.stderr?.on('data', (data: Buffer) => {
+      output += data.toString()
+    })
+
+    child.on('close', () => {
+      // Strip ANSI escape codes before parsing (CLI emits colors in list output)
+      const clean = stripAnsi(output)
+
+      // Parse the first "Chat SessionId: <uuid>" from the output
+      const match = /Chat SessionId:\s*([a-f0-9-]+)/i.exec(clean)
+      if (match) {
+        const cliSessionId = match[1]
+        log.info('session', `Detected CLI session ID for session ${sessionId}: ${cliSessionId}`)
+        ctx.session.cliSessionId = cliSessionId
+        this.storage.saveSession(ctx.session).catch((err) => {
+          log.error('session', `Failed to persist CLI session ID for session ${sessionId}`, err)
+        })
+      } else {
+        log.warn('session', `Could not detect CLI session ID for session ${sessionId} from --list-sessions output`)
+      }
+    })
+
+    child.on('error', (err) => {
+      log.error('session', `Failed to run --list-sessions for session ${sessionId}`, err)
+    })
+  }
+
   private detectAndStoreCliSessionId(
     sessionId: string,
     adapter: ICLIAdapter,
@@ -765,8 +911,6 @@ export class SessionManager implements ISessionManager {
     const dir = adapter.cliSessionDir
     if (!dir) return
 
-    // Poll a few times with increasing delays to catch the new file.
-    // The CLI typically creates its session file within the first few seconds.
     const delays = [2000, 4000, 8000]
     let attempt = 0
 
@@ -780,7 +924,6 @@ export class SessionManager implements ISessionManager {
         )
 
         if (newFiles.length === 0) {
-          // No new file yet — retry if we have attempts left
           attempt++
           if (attempt < delays.length) {
             setTimeout(tryDetect, delays[attempt])
@@ -790,14 +933,11 @@ export class SessionManager implements ISessionManager {
           return
         }
 
-        // If multiple new files, pick the one whose cwd matches our project path.
-        // If only one, use it directly.
         let cliSessionId: string | null = null
 
         if (newFiles.length === 1) {
           cliSessionId = newFiles[0].replace('.json', '')
         } else {
-          // Multiple new files — read each to find the one matching our project
           for (const file of newFiles) {
             try {
               const content = await readFile(path.join(dir, file), 'utf-8')
@@ -810,7 +950,6 @@ export class SessionManager implements ISessionManager {
               // Skip unreadable files
             }
           }
-          // Fallback: use the most recently modified file
           if (!cliSessionId) {
             cliSessionId = newFiles[newFiles.length - 1].replace('.json', '')
           }
@@ -821,7 +960,6 @@ export class SessionManager implements ISessionManager {
           const ctx = this.sessions.get(sessionId)
           if (ctx) {
             ctx.session.cliSessionId = cliSessionId
-            // Persist to storage
             this.storage.saveSession(ctx.session).catch((err) => {
               log.error('session', `Failed to persist CLI session ID for session ${sessionId}`, err)
             })

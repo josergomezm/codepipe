@@ -8,10 +8,57 @@ import { createServer, type Server as HttpServer } from 'http'
 import { WebSocket } from 'ws'
 
 // ---------------------------------------------------------------------------
-// Mock node-pty BEFORE importing SessionManager
+// Mock child_process.spawn for non-interactive adapter tests
 // ---------------------------------------------------------------------------
 
-/** Captured callbacks from the most recently spawned mock pty. */
+let mockSpawnStdoutCb: ((data: Buffer) => void) | null = null
+let mockSpawnCloseCb: ((code: number) => void) | null = null
+let mockSpawnErrorCb: ((err: Error) => void) | null = null
+let mockSpawnKilled = false
+let mockSpawnArgs: string[] = []
+
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal() as Record<string, unknown>
+  return {
+    ...actual,
+    spawn: vi.fn((_command: string, args: string[], _options: unknown) => {
+      mockSpawnStdoutCb = null
+      mockSpawnCloseCb = null
+      mockSpawnErrorCb = null
+      mockSpawnKilled = false
+      mockSpawnArgs = args
+
+      const stdout = {
+        on(event: string, cb: (data: Buffer) => void) {
+          if (event === 'data') mockSpawnStdoutCb = cb
+        },
+      }
+      const stderr = {
+        on(_event: string, _cb: (data: Buffer) => void) {
+          // no-op for tests
+        },
+      }
+
+      return {
+        stdout,
+        stderr,
+        on(event: string, cb: (...args: unknown[]) => void) {
+          if (event === 'close') mockSpawnCloseCb = cb as (code: number) => void
+          if (event === 'error') mockSpawnErrorCb = cb as (err: Error) => void
+        },
+        kill() {
+          mockSpawnKilled = true
+        },
+        pid: 12345,
+      }
+    }),
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Mock node-pty (still needed for the module import, even if Kiro doesn't use it)
+// ---------------------------------------------------------------------------
+
 let mockPtyOnDataCb: ((data: string) => void) | null = null
 let mockPtyOnExitCb: ((e: { exitCode: number; signal?: number }) => void) | null = null
 let mockPtyWritten: string[] = []
@@ -52,7 +99,7 @@ vi.mock('node-pty', () => ({
   }),
 }))
 
-// Import AFTER mock is set up (vitest hoists vi.mock, but imports must come after)
+// Import AFTER mock is set up
 import { StorageLayer } from './storage.js'
 import { SessionManager } from './session-manager.js'
 import { registerAdapter, clearAdapters } from './adapters/registry.js'
@@ -72,10 +119,6 @@ let app: express.Express
 let httpServer: HttpServer
 let serverPort: number
 
-/**
- * Build a fresh Express app + HTTP server wired to a temp storage directory.
- * Returns the port the server is listening on.
- */
 async function buildTestServer(): Promise<number> {
   tmpDir = await mkdtemp(path.join(os.tmpdir(), 'integration-test-'))
   storage = new StorageLayer(tmpDir)
@@ -111,15 +154,10 @@ async function teardownTestServer(): Promise<void> {
   await rm(tmpDir, { recursive: true, force: true })
 }
 
-/** Add a test project to storage and return it. */
 async function addTestProject(): Promise<{ id: string; name: string; path: string }> {
   return storage.addProject({ name: 'Test Project', path: '/tmp' })
 }
 
-/**
- * Helper: open a WebSocket, collecting all messages from the start.
- * Returns the socket and a function to wait for N messages.
- */
 function connectWs(sessionId: string): Promise<{
   ws: WebSocket
   collectMessages: (count: number, timeoutMs?: number) => Promise<unknown[]>
@@ -130,7 +168,6 @@ function connectWs(sessionId: string): Promise<{
     let waitResolve: ((msgs: unknown[]) => void) | null = null
     let waitCount = 0
 
-    // Start collecting messages immediately (before 'open' fires)
     ws.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => {
       const text = Buffer.isBuffer(raw) ? raw.toString() : typeof raw === 'string' ? raw : Buffer.from(raw as ArrayBuffer).toString()
       allMessages.push(JSON.parse(text))
@@ -149,7 +186,7 @@ function connectWs(sessionId: string): Promise<{
           waitCount = count
           const timer = setTimeout(() => {
             waitResolve = null
-            rej(new Error(`Timed out waiting for ${count} messages, got ${allMessages.length}`))
+            rej(new Error(`Timed out waiting for ${count} messages, got ${allMessages.length}: ${JSON.stringify(allMessages)}`))
           }, timeoutMs)
           waitResolve = (msgs) => {
             clearTimeout(timer)
@@ -177,9 +214,8 @@ describe('Integration tests', () => {
     await teardownTestServer()
   })
 
-
   // =========================================================================
-  // 4.5.1 — Session creation via REST API with mocked pty
+  // Session creation via REST API
   // =========================================================================
 
   describe('4.5.1 — Session creation via REST API', () => {
@@ -210,7 +246,6 @@ describe('Integration tests', () => {
 
       expect(res.status).toBe(201)
 
-      // Verify session is retrievable via GET
       const getRes = await request(app).get(`/api/sessions/${res.body.id}`)
       expect(getRes.status).toBe(200)
       expect(getRes.body.id).toBe(res.body.id)
@@ -228,13 +263,12 @@ describe('Integration tests', () => {
       expect(listRes.status).toBe(200)
       expect(listRes.body).toHaveLength(1)
       expect(listRes.body[0].id).toBe(createRes.body.id)
-      // SessionMeta should not include messages
       expect(listRes.body[0].messages).toBeUndefined()
     })
   })
 
   // =========================================================================
-  // 4.5.2 — WebSocket connection and history replay
+  // WebSocket connection and history replay
   // =========================================================================
 
   describe('4.5.2 — WebSocket connection and history replay', () => {
@@ -248,10 +282,7 @@ describe('Integration tests', () => {
       const { ws, collectMessages } = await connectWs(sessionId)
       try {
         const msgs = await collectMessages(2)
-
-        // First message: history (empty for a new session)
         expect(msgs[0]).toMatchObject({ type: 'history', data: [] })
-        // Second message: status idle
         expect(msgs[1]).toMatchObject({ type: 'status', data: 'idle' })
       } finally {
         ws.close()
@@ -270,11 +301,11 @@ describe('Integration tests', () => {
   })
 
   // =========================================================================
-  // 4.5.3 — User input flow
+  // User input flow (non-interactive mode)
   // =========================================================================
 
   describe('4.5.3 — User input flow', () => {
-    it('sending input via WebSocket writes to pty and broadcasts user message', async () => {
+    it('sending input via WebSocket spawns a child process and broadcasts user message', async () => {
       const project = await addTestProject()
       const createRes = await request(app)
         .post('/api/sessions')
@@ -283,7 +314,7 @@ describe('Integration tests', () => {
 
       const { ws, collectMessages } = await connectWs(sessionId)
       try {
-        // Consume the initial history + status messages
+        // Consume initial history + status
         await collectMessages(2)
 
         // Send user input
@@ -296,8 +327,54 @@ describe('Integration tests', () => {
         expect(userMsg.data.role).toBe('user')
         expect(userMsg.data.content).toBe('hello')
 
-        // Verify pty.write was called with 'hello\r' (carriage return for terminal)
-        expect(mockPtyWritten).toContain('hello\r')
+        // For non-interactive mode, child_process.spawn is called (not pty.write)
+        // The mock spawn should have been called with the message as the last arg
+        expect(mockSpawnArgs[mockSpawnArgs.length - 1]).toBe('hello')
+      } finally {
+        ws.close()
+      }
+    })
+
+    it('child process stdout is parsed and broadcast as assistant messages', async () => {
+      const project = await addTestProject()
+      const createRes = await request(app)
+        .post('/api/sessions')
+        .send({ provider: 'kiro', projectId: project.id })
+      const sessionId = createRes.body.id
+
+      const { ws, collectMessages } = await connectWs(sessionId)
+      try {
+        await collectMessages(2)
+
+        ws.send(JSON.stringify({ type: 'input', data: 'hello' }))
+
+        // Wait for user message + typing status
+        await collectMessages(4)
+
+        // Simulate CLI stdout
+        await new Promise(r => setTimeout(r, 50))
+        if (mockSpawnStdoutCb) {
+          mockSpawnStdoutCb(Buffer.from('> Hello! How can I help?\n'))
+        }
+
+        // Wait for assistant message
+        const msgs = await collectMessages(5)
+        const assistantMsg = msgs[4] as { type: string; data: { role: string; content: string } }
+        expect(assistantMsg.type).toBe('message')
+        expect(assistantMsg.data.role).toBe('assistant')
+        expect(assistantMsg.data.content).toContain('Hello! How can I help?')
+
+        // Simulate process exit
+        if (mockSpawnCloseCb) {
+          mockSpawnCloseCb(1)
+        }
+
+        // Should get idle status after process exits
+        const finalMsgs = await collectMessages(7, 5000)
+        const statusMsgs = (finalMsgs as { type: string; data: unknown }[]).filter(
+          m => m.type === 'status' && m.data === 'idle',
+        )
+        expect(statusMsgs.length).toBeGreaterThan(0)
       } finally {
         ws.close()
       }
@@ -305,11 +382,11 @@ describe('Integration tests', () => {
   })
 
   // =========================================================================
-  // 4.5.4 — Session deletion
+  // Session deletion
   // =========================================================================
 
   describe('4.5.4 — Session deletion', () => {
-    it('DELETE live session kills pty and returns ok', async () => {
+    it('DELETE live session returns ok', async () => {
       const project = await addTestProject()
       const createRes = await request(app)
         .post('/api/sessions')
@@ -320,10 +397,6 @@ describe('Integration tests', () => {
       expect(delRes.status).toBe(200)
       expect(delRes.body).toEqual({ ok: true })
 
-      // Verify pty.kill() was called
-      expect(mockPtyKilled).toBe(true)
-
-      // Session should no longer be retrievable as live
       const getRes = await request(app).get(`/api/sessions/${sessionId}`)
       expect(getRes.status).toBe(404)
     })
@@ -336,7 +409,7 @@ describe('Integration tests', () => {
   })
 
   // =========================================================================
-  // 4.5.5 — Error cases
+  // Error cases
   // =========================================================================
 
   describe('4.5.5 — Error cases', () => {
@@ -389,115 +462,73 @@ describe('Integration tests', () => {
   })
 
   // =========================================================================
-  // 4.5.6 — Session continuation (archived session reconnection)
+  // Session continuation (non-interactive mode)
   // =========================================================================
 
   describe('4.5.6 — Session continuation', () => {
-    it('WebSocket to archived session (pty exited) sends exited status, not idle', async () => {
+    it('non-interactive session stays live (no PTY to exit)', async () => {
       const project = await addTestProject()
       const createRes = await request(app)
         .post('/api/sessions')
         .send({ provider: 'kiro', projectId: project.id })
       const sessionId = createRes.body.id
 
-      // Simulate pty exit — session transitions to archived but stays in memory
-      expect(mockPtyOnExitCb).toBeTruthy()
-      mockPtyOnExitCb!({ exitCode: 0 })
+      // Session should always be live for non-interactive adapters
+      const getRes = await request(app).get(`/api/sessions/${sessionId}`)
+      expect(getRes.status).toBe(200)
+      expect(getRes.body.status).toBe('live')
+    })
 
-      // Small delay for the async storage write to complete
-      await new Promise((r) => setTimeout(r, 50))
+    it('archived session in storage can be loaded via WebSocket', async () => {
+      const project = await addTestProject()
+      const createRes = await request(app)
+        .post('/api/sessions')
+        .send({ provider: 'kiro', projectId: project.id })
+      const sessionId = createRes.body.id
 
-      // Connect a new WebSocket to the now-archived session
+      // Force-archive and remove from memory to simulate server restart
+      await storage.updateSessionStatus(sessionId, 'archived')
+      ;(sessionManager as unknown as { sessions: Map<string, unknown> }).sessions.delete(sessionId)
+
       const { ws, collectMessages } = await connectWs(sessionId)
       try {
         const msgs = await collectMessages(2)
-
-        // Should receive history (with the exit system message)
         expect(msgs[0]).toMatchObject({ type: 'history' })
-        const history = (msgs[0] as { type: string; data: unknown[] }).data
-        expect(history.length).toBeGreaterThan(0)
-
-        // Should receive 'exited' status, NOT 'idle'
         expect(msgs[1]).toMatchObject({ type: 'status', data: 'exited' })
       } finally {
         ws.close()
       }
     })
 
-    it('REST GET for archived session (pty exited) returns status archived', async () => {
+    it('sending input to archived session triggers revival', async () => {
       const project = await addTestProject()
       const createRes = await request(app)
         .post('/api/sessions')
         .send({ provider: 'kiro', projectId: project.id })
       const sessionId = createRes.body.id
 
-      // Simulate pty exit
-      mockPtyOnExitCb!({ exitCode: 0 })
-      await new Promise((r) => setTimeout(r, 50))
+      // Force-archive and remove from memory
+      await storage.updateSessionStatus(sessionId, 'archived')
+      ;(sessionManager as unknown as { sessions: Map<string, unknown> }).sessions.delete(sessionId)
 
-      const getRes = await request(app).get(`/api/sessions/${sessionId}`)
-      expect(getRes.status).toBe(200)
-      expect(getRes.body.status).toBe('archived')
-    })
-
-    it('sending input to archived session triggers revival and spawns new pty', async () => {
-      const project = await addTestProject()
-      const createRes = await request(app)
-        .post('/api/sessions')
-        .send({ provider: 'kiro', projectId: project.id })
-      const sessionId = createRes.body.id
-
-      // Simulate pty exit
-      mockPtyOnExitCb!({ exitCode: 0 })
-      await new Promise((r) => setTimeout(r, 50))
-
-      // Connect to the archived session
       const { ws, collectMessages } = await connectWs(sessionId)
       try {
         // Consume initial history + exited status
         const initial = await collectMessages(2)
         expect(initial[1]).toMatchObject({ type: 'status', data: 'exited' })
 
-        // Send input — this should trigger session revival
+        // Send input — triggers revival
         ws.send(JSON.stringify({ type: 'input', data: 'continue please' }))
 
-        // Should receive an idle status (session revived) and eventually a
-        // user message once the input is forwarded after the delay
+        // Should receive idle status (session revived) and eventually user message
         const msgs = await collectMessages(4, 8000)
-        const types = (msgs as { type: string }[]).map((m) => m.type)
+        const types = (msgs as { type: string }[]).map(m => m.type)
 
-        // After revival: status idle, then the user message
         expect(types).toContain('status')
         const statusMsgs = (msgs as { type: string; data: unknown }[]).filter(
-          (m) => m.type === 'status' && m.data === 'idle',
+          m => m.type === 'status' && m.data === 'idle',
         )
         expect(statusMsgs.length).toBeGreaterThan(0)
-      } finally {
-        ws.close()
-      }
-    })
-
-    it('archived session in storage (not in memory) can be loaded and revived', async () => {
-      const project = await addTestProject()
-      const createRes = await request(app)
-        .post('/api/sessions')
-        .send({ provider: 'kiro', projectId: project.id })
-      const sessionId = createRes.body.id
-
-      // Simulate pty exit
-      mockPtyOnExitCb!({ exitCode: 0 })
-      await new Promise((r) => setTimeout(r, 50))
-
-      // Force-remove from in-memory map to simulate server restart scenario
-      // (session only exists in storage)
-      ;(sessionManager as unknown as { sessions: Map<string, unknown> }).sessions.delete(sessionId)
-
-      // Connect via WebSocket — should load from storage
-      const { ws, collectMessages } = await connectWs(sessionId)
-      try {
-        const msgs = await collectMessages(2)
-        expect(msgs[0]).toMatchObject({ type: 'history' })
-        expect(msgs[1]).toMatchObject({ type: 'status', data: 'exited' })
       } finally {
         ws.close()
       }

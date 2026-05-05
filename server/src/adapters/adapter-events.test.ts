@@ -5,9 +5,7 @@ import { validateAdapterEvents, AdapterEventSchema } from './types.js'
 // AdapterEvent Zod schema — contract tests
 //
 // These verify the runtime validation boundary between adapters and the
-// session manager. The pipeline functions (cleanNoise, classifyLines, etc.)
-// are tested indirectly through the adapter-level tests in kiro.test.ts,
-// kiro-real-data.test.ts, and kiro-tool-interleave.test.ts.
+// session manager. Adapter parsing logic is tested in kiro.test.ts.
 // ---------------------------------------------------------------------------
 
 describe('AdapterEventSchema', () => {
