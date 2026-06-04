@@ -29,6 +29,7 @@ export interface IStorageLayer {
   // Projects
   listProjects(): Promise<Project[]>
   addProject(project: Omit<Project, 'id'>): Promise<Project>
+  updateProject(projectId: string, data: Partial<Omit<Project, 'id'>>): Promise<Project>
   removeProject(projectId: string): Promise<void>
   getProject(projectId: string): Promise<Project | null>
 }
@@ -169,6 +170,17 @@ export class StorageLayer implements IStorageLayer {
     const projects = await this.loadProjects()
     const filtered = projects.filter((p) => p.id !== projectId)
     await this.serializedWrite(this.projectsFile, filtered)
+  }
+
+  async updateProject(projectId: string, data: Partial<Omit<Project, 'id'>>): Promise<Project> {
+    const projects = await this.loadProjects()
+    const index = projects.findIndex((p) => p.id === projectId)
+    if (index === -1) {
+      throw new Error(`Project ${projectId} not found`)
+    }
+    projects[index] = { ...projects[index], ...data }
+    await this.serializedWrite(this.projectsFile, projects)
+    return projects[index]
   }
 
   async getProject(projectId: string): Promise<Project | null> {

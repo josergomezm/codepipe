@@ -33,6 +33,29 @@ export const useSessionsStore = defineStore('sessions', () => {
     }
   }
 
+  /**
+   * Create a session and queue an initial message to be sent once connected.
+   * Used for automated setup flows where we want to pre-fill a prompt.
+   */
+  let pendingInitialMessage: string | null = null
+
+  async function createSessionWithPrompt(
+    provider: ProviderType,
+    projectId: string,
+    prompt: string,
+  ): Promise<Session> {
+    const session = await createSession(provider, projectId)
+    pendingInitialMessage = prompt
+    await selectSession(session.id)
+    return session
+  }
+
+  function consumePendingMessage(): string | null {
+    const msg = pendingInitialMessage
+    pendingInitialMessage = null
+    return msg
+  }
+
   async function selectSession(sessionId: string) {
     try {
       activeSessionId.value = sessionId
@@ -85,14 +108,6 @@ export const useSessionsStore = defineStore('sessions', () => {
     }
   }
 
-  /** Append content to an existing message by ID. Reserved for future delta-based streaming. */
-  function appendDelta(messageId: string, content: string) {
-    const msg = activeMessages.value.find((m) => m.id === messageId)
-    if (msg) {
-      msg.content += content
-    }
-  }
-
   function setStatus(status: 'typing' | 'idle' | 'exited') {
     sessionStatus.value = status
   }
@@ -114,10 +129,11 @@ export const useSessionsStore = defineStore('sessions', () => {
     error,
     fetchSessions,
     createSession,
+    createSessionWithPrompt,
+    consumePendingMessage,
     selectSession,
     deleteSession,
     upsertMessage,
-    appendDelta,
     setStatus,
     setMessages,
     clearError,

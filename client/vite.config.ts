@@ -12,8 +12,16 @@ export default defineConfig({
     },
   },
   server: {
+    host: '0.0.0.0',
     port: 5552,
     allowedHosts: true,
+    hmr: process.env.TAILSCALE_HOST
+      ? {
+          protocol: 'wss',
+          host: process.env.TAILSCALE_HOST,
+          clientPort: parseInt(process.env.TAILSCALE_PORT || '443'),
+        }
+      : true,
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:5551',

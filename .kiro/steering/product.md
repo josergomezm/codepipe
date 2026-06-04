@@ -28,7 +28,50 @@ Each conversation is a live terminal session running one of the supported CLI to
 
 ## Networking
 
-CodePipe binds to localhost only. For remote access, use Tailscale serve to proxy the local port to your tailnet. No auth layer is built into the app — Tailscale handles that.
+CodePipe binds to localhost only. For remote access, use Tailscale Serve to proxy local ports to your tailnet. No auth layer is built into the app — Tailscale handles that.
+
+### Tailscale Setup
+
+**Tailnet hostname**: Detected automatically at runtime via `tailscale cert`
+
+**Ports**:
+- Backend (Express + WebSocket): `5551`
+- Frontend (Vite dev server): `5552`
+
+**Running Tailscale Serve**:
+```
+tailscale serve 5552
+```
+This maps `https://<hostname>` → `http://127.0.0.1:5552`. Tailscale terminates TLS and proxies both HTTP and WebSocket traffic. CodePipe will auto-create this mapping if missing when you start a dev server.
+
+**Starting the dev server for remote access**:
+```cmd
+set TAILSCALE_HOST=ks-mini.tail0293ef.ts.net & npm run dev
+```
+This enables Vite's HMR over the tunnel. Without `TAILSCALE_HOST` set, the dev server works normally for local development. When started via CodePipe's UI, these env vars are injected automatically.
+
+**Multiple projects on one machine**: Use different Tailscale Serve HTTPS ports:
+```cmd
+tailscale serve --bg --https 443 http://127.0.0.1:5552
+tailscale serve --bg --https 8443 http://127.0.0.1:5173
+```
+Set `TAILSCALE_PORT` to match the assigned HTTPS port for each project (defaults to `443` if unset). CodePipe creates these mappings automatically when starting a dev server.
+
+### How HMR Works Over Tailscale
+
+Vite's HMR WebSocket normally connects back to the same host/port that served the page. When behind Tailscale Serve, the browser loads the page over HTTPS on port 443, so the HMR client needs to know:
+- Use `wss://` (secure WebSocket, since Tailscale terminates TLS)
+- Connect to the Tailscale hostname (not localhost)
+- Use port 443 (or the configured HTTPS port), not Vite's actual listen port
+
+The `vite.config.ts` handles this via `TAILSCALE_HOST` and `TAILSCALE_PORT` environment variables. When unset, HMR uses its default behavior for local dev.
+
+### Important Notes
+
+- Tailscale Serve must be running (`tailscale serve status` to check)
+- The Vite server must bind to `0.0.0.0` (already configured) so Tailscale can reach it
+- `allowedHosts: true` is set in vite config — safe on a tailnet since only authenticated tailnet members can reach it
+- The app's own WebSocket (`/ws` for pty streaming) is proxied by Vite to the backend on 5551, and this chain works through Tailscale since Vite handles the WS upgrade
 
 ## Storage
 

@@ -39,6 +39,18 @@ function connect(sessionId: string) {
     isConnected.value = true
     connectionError.value = null
     reconnectAttempts = 0
+
+    // Send any pending initial message (e.g., from createSessionWithPrompt)
+    const store = useSessionsStore()
+    const pending = store.consumePendingMessage()
+    if (pending && ws && ws.readyState === WebSocket.OPEN) {
+      // Small delay to let the CLI process initialize
+      setTimeout(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'input', data: pending }))
+        }
+      }, 1000)
+    }
   }
 
   ws.onmessage = (event: MessageEvent) => {

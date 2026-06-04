@@ -38,10 +38,18 @@ export const ChatMessageSchema = z.object({
   attachments: z.array(AttachmentSchema).optional(),
 })
 
+export const ProjectDevServerSchema = z.object({
+  startCommand: z.string().min(1),
+  port: z.number().int().positive(),
+  tailscalePort: z.number().int().positive().optional(),
+  cwd: z.string().optional(),
+})
+
 export const ProjectSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1).max(100),
   path: z.string().min(1),
+  devServer: ProjectDevServerSchema.optional(),
 })
 
 // Base session object without the refinement — needed so .omit() works
@@ -108,6 +116,7 @@ export type MessageStatus = z.infer<typeof MessageStatusSchema>
 export type ChatMessageMetadata = z.infer<typeof ChatMessageMetadataSchema>
 export type Attachment = z.infer<typeof AttachmentSchema>
 export type ChatMessage = z.infer<typeof ChatMessageSchema>
+export type ProjectDevServer = z.infer<typeof ProjectDevServerSchema>
 export type Project = z.infer<typeof ProjectSchema>
 export type Session = z.infer<typeof SessionSchema>
 export type SessionMeta = z.infer<typeof SessionMetaSchema>
