@@ -2,3 +2,13 @@
 
 /* Dark mode: class strategy — toggle by adding/removing .dark on <html> */
 @custom-variant dark (&:where(.dark, .dark *));
+
+/* Breathing pulse animation for status dots */
+@keyframes breathe {
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.8); }
+}
+
+@utility animate-breathe {
+  animation: breathe 2.5s ease-in-out infinite;
+}

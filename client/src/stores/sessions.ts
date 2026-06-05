@@ -90,6 +90,19 @@ export const useSessionsStore = defineStore('sessions', () => {
     }
   }
 
+  async function renameSession(sessionId: string, title: string) {
+    try {
+      await api.renameSession(sessionId, title)
+      const session = sessions.value.find((s) => s.id === sessionId)
+      if (session) {
+        session.title = title
+      }
+      error.value = null
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to rename session'
+    }
+  }
+
   function clearError() {
     error.value = null
   }
@@ -133,6 +146,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     consumePendingMessage,
     selectSession,
     deleteSession,
+    renameSession,
     upsertMessage,
     setStatus,
     setMessages,

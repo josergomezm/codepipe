@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'child_process'
+import { spawn, execSync, type ChildProcess } from 'child_process'
 import { log } from './logger.js'
 import type { ProjectDevServer } from './schemas.js'
 import {
@@ -236,6 +236,7 @@ export class DevServerManager {
   /**
    * Get the status of a project's dev server.
    * Verifies the process is actually alive, not just tracked.
+   * Also checks if the configured port is listening (catches externally-started servers).
    */
   getStatus(projectId: string, config?: ProjectDevServer): DevServerInfo {
     const entry = this.processes.get(projectId)
@@ -259,12 +260,48 @@ export class DevServerManager {
       }
     }
 
+    // Fallback: check if the port is actually listening (externally started server)
+    if (port > 0 && this.isPortListening(port)) {
+      return {
+        status: 'running',
+        port,
+        tailscalePort,
+        url: buildTailscaleUrl(tailscalePort),
+        tailscaleMapped: mapped,
+      }
+    }
+
     return {
       status: 'stopped',
       port,
       tailscalePort,
       url: buildTailscaleUrl(tailscalePort),
       tailscaleMapped: mapped,
+    }
+  }
+
+  /**
+   * Check if a port is currently listening on localhost.
+   */
+  private isPortListening(port: number): boolean {
+    try {
+      if (process.platform === 'win32') {
+        const output = execSync(`netstat -aon | findstr :${port} | findstr LISTENING`, {
+          encoding: 'utf-8',
+          timeout: 3000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        })
+        return output.trim().length > 0
+      } else {
+        const output = execSync(`ss -tlnp 2>/dev/null | grep :${port} || lsof -i :${port} -sTCP:LISTEN 2>/dev/null`, {
+          encoding: 'utf-8',
+          timeout: 3000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        })
+        return output.trim().length > 0
+      }
+    } catch {
+      return false
     }
   }
 

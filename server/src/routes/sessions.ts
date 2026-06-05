@@ -2,7 +2,7 @@ import { Router } from 'express'
 
 import type { ISessionManager } from '../session-manager.js'
 import type { IStorageLayer } from '../storage.js'
-import { CreateSessionRequestSchema } from '../schemas.js'
+import { CreateSessionRequestSchema, RenameSessionRequestSchema } from '../schemas.js'
 import type { SessionMeta } from '../schemas.js'
 import { log } from '../logger.js'
 
@@ -100,6 +100,30 @@ export function createSessionRoutes(
     } catch (err) {
       log.error('api', `Failed to delete session ${id}`, err)
       res.status(500).json({ error: 'Failed to delete session' })
+    }
+  })
+
+  // PATCH /api/sessions/:id — rename a session
+  router.patch('/:id', async (req, res) => {
+    const { id } = req.params
+    const parsed = RenameSessionRequestSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.format() })
+      return
+    }
+
+    try {
+      // Update in-memory live session if present
+      const liveSession = sessionManager.getSession(id)
+      if (liveSession) {
+        liveSession.title = parsed.data.title
+      }
+      // Persist to storage
+      await storage.renameSession(id, parsed.data.title)
+      res.json({ ok: true, title: parsed.data.title })
+    } catch (err) {
+      log.error('api', `Failed to rename session ${id}`, err)
+      res.status(500).json({ error: 'Failed to rename session' })
     }
   })
 

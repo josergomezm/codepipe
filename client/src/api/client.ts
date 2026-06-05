@@ -100,6 +100,14 @@ export async function deleteSession(id: string): Promise<void> {
   await request<unknown>(`/api/sessions/${id}`, { method: 'DELETE' })
 }
 
+export async function renameSession(id: string, title: string): Promise<void> {
+  await request<unknown>(`/api/sessions/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  })
+}
+
 // --- Projects ---
 
 export interface ProjectsResponse {

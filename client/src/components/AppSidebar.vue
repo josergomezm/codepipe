@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { useUiStore } from '@/stores/ui'
 import NewSessionButton from '@/components/NewSessionButton.vue'
-import SessionList from '@/components/SessionList.vue'
 import ProjectList from '@/components/ProjectList.vue'
 
 const ui = useUiStore()
@@ -28,8 +27,7 @@ const ui = useUiStore()
     </div>
 
     <!-- Scrollable content -->
-    <div class="flex flex-1 flex-col gap-6 overflow-y-auto px-2 pb-4">
-      <SessionList />
+    <div class="flex flex-1 flex-col gap-4 overflow-y-auto px-2 pb-4">
       <ProjectList />
     </div>
   </aside>
