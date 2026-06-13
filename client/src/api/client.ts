@@ -55,6 +55,7 @@ export interface Session {
   updatedAt: number
   status: SessionStatus
   messages: ChatMessage[]
+  model?: string
 }
 
 export interface SessionMeta {
@@ -65,6 +66,17 @@ export interface SessionMeta {
   createdAt: number
   updatedAt: number
   status: SessionStatus
+  model?: string
+}
+
+export interface ModelOption {
+  id: string
+  name?: string
+}
+
+export interface ModelState {
+  available: ModelOption[]
+  current: string | null
 }
 
 // --- Helpers ---

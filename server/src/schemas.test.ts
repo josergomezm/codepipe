@@ -181,6 +181,11 @@ describe('WSClientMessageSchema', () => {
     const result = WSClientMessageSchema.safeParse({ type: 'unknown', data: 'hello' })
     expect(result.success).toBe(false)
   })
+
+  it('accepts a cancel message', () => {
+    const result = WSClientMessageSchema.safeParse({ type: 'cancel' })
+    expect(result.success).toBe(true)
+  })
 })
 
 describe('WSServerMessageSchema', () => {

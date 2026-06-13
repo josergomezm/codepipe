@@ -335,6 +335,73 @@ describe('Atomic write behavior', () => {
 })
 
 // =========================================================================
+// 2.3.4b — Session index
+// =========================================================================
+
+describe('Session index', () => {
+  it('rebuilds the index from existing session files on a fresh instance', async () => {
+    const s1 = makeSession({ title: 'One' })
+    const s2 = makeSession({ title: 'Two' })
+    await storage.saveSession(s1)
+    await storage.saveSession(s2)
+
+    // New instance over the same dir — no warm cache; must rebuild/read index.
+    const fresh = new StorageLayer(tmpDir)
+    await fresh.ensureDataDir()
+    const metas = await fresh.listSessions()
+    expect(metas.map((m) => m.id).sort()).toEqual([s1.id, s2.id].sort())
+  })
+
+  it('writes an index.json file', async () => {
+    await storage.saveSession(makeSession())
+    expect(existsSync(path.join(tmpDir, 'index.json'))).toBe(true)
+  })
+
+  it('reflects rename, status change, and delete in listings', async () => {
+    const s = makeSession({ title: 'Before' })
+    await storage.saveSession(s)
+
+    await storage.renameSession(s.id, 'After')
+    await storage.updateSessionStatus(s.id, 'archived')
+    let metas = await storage.listSessions()
+    expect(metas[0].title).toBe('After')
+    expect(metas[0].status).toBe('archived')
+
+    await storage.deleteSession(s.id)
+    metas = await storage.listSessions()
+    expect(metas).toHaveLength(0)
+  })
+
+  it('recovers from a corrupted index.json by rebuilding from session files', async () => {
+    const s = makeSession()
+    await storage.saveSession(s)
+    await writeFile(path.join(tmpDir, 'index.json'), '<<<garbage>>>', 'utf-8')
+
+    const fresh = new StorageLayer(tmpDir)
+    await fresh.ensureDataDir()
+    const metas = await fresh.listSessions()
+    expect(metas.map((m) => m.id)).toEqual([s.id])
+  })
+})
+
+describe('appendMessage idempotency', () => {
+  it('upserts by message id rather than duplicating (streaming flushes)', async () => {
+    const base = Date.now()
+    const session = makeSession({ createdAt: base, updatedAt: base })
+    await storage.saveSession(session)
+
+    const id = randomUUID()
+    await storage.appendMessage(session.id, makeMessage({ id, content: 'partial', timestamp: base + 1 }))
+    await storage.appendMessage(session.id, makeMessage({ id, content: 'partial answer', timestamp: base + 2 }))
+    await storage.appendMessage(session.id, makeMessage({ id, content: 'partial answer complete', timestamp: base + 3 }))
+
+    const loaded = await storage.getSession(session.id)
+    expect(loaded!.messages).toHaveLength(1)
+    expect(loaded!.messages[0].content).toBe('partial answer complete')
+  })
+})
+
+// =========================================================================
 // 2.3.5 — Property-based test: session round-trip integrity
 // =========================================================================
 

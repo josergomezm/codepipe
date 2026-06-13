@@ -75,6 +75,9 @@ function connect(sessionId: string) {
         case 'status':
           store.setStatus(msg.data)
           break
+        case 'model_state':
+          store.setModelState(msg.data)
+          break
         case 'error':
           connectionError.value = msg.data
           break
@@ -160,6 +163,27 @@ function sendMessage(text: string, attachments?: import('../api/client').Attachm
   return true
 }
 
+/**
+ * Cancel the in-flight turn (Stop button). Tells the backend to stop the CLI
+ * and drain the queue. Returns false if not connected to the active session.
+ */
+function cancel(): boolean {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false
+  const store = useSessionsStore()
+  if (!currentSessionId || currentSessionId !== store.activeSessionId) return false
+  ws.send(JSON.stringify({ type: 'cancel' }))
+  return true
+}
+
+/** Select the model for the active session. Returns false if not connected. */
+function setModel(model: string): boolean {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false
+  const store = useSessionsStore()
+  if (!currentSessionId || currentSessionId !== store.activeSessionId) return false
+  ws.send(JSON.stringify({ type: 'set_model', model }))
+  return true
+}
+
 function clearConnectionError() {
   connectionError.value = null
 }
@@ -169,6 +193,8 @@ export function useSession() {
     connect,
     disconnect,
     sendMessage,
+    cancel,
+    setModel,
     clearConnectionError,
     isConnected,
     connectionError: readonly(connectionError),

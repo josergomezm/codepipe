@@ -30,6 +30,13 @@ export function hasAdapter(provider: ProviderType): boolean {
 }
 
 /**
+ * List all registered provider types.
+ */
+export function listProviders(): ProviderType[] {
+  return [...adapters.keys()]
+}
+
+/**
  * Remove all registered adapters. Useful for testing.
  */
 export function clearAdapters(): void {

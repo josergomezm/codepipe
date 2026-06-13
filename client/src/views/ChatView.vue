@@ -6,6 +6,7 @@ import { useUiStore } from '@/stores/ui'
 import { useSession } from '@/composables/useSession'
 import MessageList from '@/components/MessageList.vue'
 import ChatInput from '@/components/ChatInput.vue'
+import ModelPicker from '@/components/ModelPicker.vue'
 
 const store = useSessionsStore()
 const projectsStore = useProjectsStore()
@@ -79,6 +80,11 @@ const devServerUrl = computed(() => {
 
     <!-- Active chat -->
     <template v-else>
+      <!-- Model picker bar -->
+      <div class="flex items-center justify-end border-b border-gray-200 px-4 py-1.5 dark:border-gray-800">
+        <ModelPicker />
+      </div>
+
       <!-- Dev server link bar -->
       <div
         v-if="devServerUrl"

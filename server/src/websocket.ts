@@ -80,6 +80,22 @@ function createMessageHandler(
           const message = inputErr instanceof Error ? inputErr.message : 'Failed to send message'
           ws.send(JSON.stringify({ type: 'error', data: message }))
         }
+      } else if (msg.type === 'cancel') {
+        log.debug('ws', `Routing cancel for session ${sessionId}`)
+        try {
+          sessionManager.cancelTurn(sessionId)
+        } catch (cancelErr) {
+          log.error('ws', `cancelTurn failed for session ${sessionId}`, cancelErr)
+        }
+      } else if (msg.type === 'set_model') {
+        log.debug('ws', `Routing set_model (${msg.model}) for session ${sessionId}`)
+        try {
+          sessionManager.setModel(sessionId, msg.model)
+        } catch (modelErr) {
+          log.error('ws', `setModel failed for session ${sessionId}`, modelErr)
+          const message = modelErr instanceof Error ? modelErr.message : 'Failed to set model'
+          ws.send(JSON.stringify({ type: 'error', data: message }))
+        }
       }
     } catch (err) {
       log.error('ws', 'Error processing message', err)
@@ -120,6 +136,13 @@ function handleConnection(
 
     ws.send(JSON.stringify({ type: 'history', data: liveSession.messages }))
     ws.send(JSON.stringify({ type: 'status', data: 'idle' }))
+
+    // Only send model state when there's something to show (a known model or a
+    // discovered list) — avoids noise for sessions with no model info yet.
+    const modelState = sessionManager.getModelState(sessionId)
+    if (modelState && (modelState.available.length > 0 || modelState.current)) {
+      ws.send(JSON.stringify({ type: 'model_state', data: modelState }))
+    }
 
     attachLiveHandlers(ws, sessionId, sessionManager)
     return

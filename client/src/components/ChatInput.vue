@@ -1,10 +1,19 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useSession } from '@/composables/useSession'
+import { useSessionsStore } from '@/stores/sessions'
 import { uploadFile } from '@/api/client'
 import type { Attachment } from '@/api/client'
 
-const { sendMessage } = useSession()
+const { sendMessage, cancel } = useSession()
+const sessionsStore = useSessionsStore()
+
+// The CLI is working when the session status is 'typing' — show Stop then.
+const isBusy = computed(() => sessionsStore.sessionStatus === 'typing')
+
+function stop() {
+  cancel()
+}
 
 const text = ref('')
 const textarea = ref<HTMLTextAreaElement | null>(null)
@@ -190,8 +199,22 @@ function onDrop(e: DragEvent) {
         @input="onInput"
       ></textarea>
 
+      <!-- Stop button — shown while the CLI is working -->
+      <button
+        v-if="isBusy"
+        class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gray-800 text-white transition hover:bg-black dark:bg-gray-200 dark:text-gray-900 dark:hover:bg-white"
+        @click="stop"
+        title="Stop"
+        aria-label="Stop the current response"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4">
+          <rect x="5" y="5" width="10" height="10" rx="1.5" />
+        </svg>
+      </button>
+
       <!-- Send button -->
       <button
+        v-else
         :disabled="!canSend"
         class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
         @click="send"

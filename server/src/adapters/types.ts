@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { ProviderType } from '../schemas.js'
 import { MessageRoleSchema } from '../schemas.js'
+import type { AcpProfile } from '../acp/profile.js'
 
 // ---------------------------------------------------------------------------
 // AdapterEvent — Zod schemas + TypeScript types
@@ -44,6 +45,20 @@ const InteractivePromptEventSchema = z.object({
   options: z.array(z.string().min(1)).optional(),
 })
 
+const CliSessionEventSchema = z.object({
+  type: z.literal('cli_session'),
+  /** The CLI tool's own session ID, captured inline from structured output. */
+  sessionId: z.string().min(1),
+})
+
+const ModelInfoEventSchema = z.object({
+  type: z.literal('model_info'),
+  /** The model the CLI reports it is currently using. */
+  current: z.string().min(1).optional(),
+  /** Models the provider can switch to (empty/absent when not discoverable). */
+  available: z.array(z.object({ id: z.string().min(1), name: z.string().optional() })).optional(),
+})
+
 export const AdapterEventSchema = z.discriminatedUnion('type', [
   ChunkEventSchema,
   MessageCompleteEventSchema,
@@ -51,6 +66,8 @@ export const AdapterEventSchema = z.discriminatedUnion('type', [
   ToolUseEventSchema,
   ThinkingEventSchema,
   InteractivePromptEventSchema,
+  CliSessionEventSchema,
+  ModelInfoEventSchema,
 ])
 
 export type AdapterEvent = z.infer<typeof AdapterEventSchema>
@@ -103,6 +120,40 @@ export interface ICLIAdapter {
    */
   readonly nonInteractive?: boolean
 
+  /**
+   * Transport the SessionManager should use to drive this adapter:
+   *   - `'pty'` (default when unset and nonInteractive is false): persistent
+   *     pseudo-terminal, output parsed via `onData`.
+   *   - `'oneshot'` (implied by `nonInteractive: true`): spawn a short-lived
+   *     process per message, stdout parsed via `onData`.
+   *   - `'acp'`: persistent process speaking the Agent Client Protocol
+   *     (JSON-RPC). Output is structured, so `onData` is unused — the
+   *     SessionManager runs an AcpSessionDriver instead.
+   */
+  readonly transport?: 'pty' | 'oneshot' | 'acp'
+
+  /**
+   * ACP dialect for this adapter (only meaningful when transport === 'acp').
+   * Captures provider-specific method names / launch args / post-session setup.
+   */
+  readonly acpProfile?: AcpProfile
+
+  /**
+   * Models to offer in the picker for providers that can't enumerate their
+   * own models (e.g. Claude Code). These should be stable, forward-compatible
+   * selectors (aliases), not pinned versions. Ignored when the provider
+   * advertises a model list dynamically.
+   */
+  readonly suggestedModels?: { id: string; name?: string }[]
+
+  /**
+   * When true, the SessionManager detects the CLI's session ID by running the
+   * adapter's session-list command after the first message (legacy Kiro
+   * non-interactive behavior). Adapters that report their session ID inline
+   * (via a `cli_session` event) leave this unset.
+   */
+  readonly usesSessionListDetection?: boolean
+
   onData(cleanText: string): AdapterEvent[]
   onStderr?(text: string): AdapterEvent[]
   notifyUserInput(text: string): void
@@ -140,6 +191,7 @@ export interface ICLIAdapter {
     text: string,
     cliSessionId: string | null,
     attachments?: { path: string; mimeType: string }[],
+    model?: string | null,
   ): { command: string; args: string[] }
 
   /**

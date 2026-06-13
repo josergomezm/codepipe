@@ -6,11 +6,17 @@ import { SessionManager } from './session-manager.js'
 import { DevServerManager } from './dev-server-manager.js'
 import { registerAdapter } from './adapters/registry.js'
 import { KiroAdapter } from './adapters/kiro.js'
+import { KiroAcpAdapter } from './adapters/kiro-acp.js'
+import { GeminiAdapter } from './adapters/gemini.js'
+import { ClaudeAdapter } from './adapters/claude.js'
 import { createSessionRoutes } from './routes/sessions.js'
 import { createProjectRoutes } from './routes/projects.js'
 import { createBrowseRoutes } from './routes/browse.js'
 import { createUploadRoutes } from './routes/upload.js'
 import { setupWebSocket } from './websocket.js'
+import { getProviderHealth } from './provider-health.js'
+import { PushService } from './push.js'
+import { createPushRoutes } from './routes/push.js'
 import { log } from './logger.js'
 
 // ---------------------------------------------------------------------------
@@ -20,14 +26,29 @@ import { log } from './logger.js'
 const storage = new StorageLayer('./data')
 await storage.ensureDataDir()
 
-const sessionManager = new SessionManager(storage)
+// Web Push (disabled unless VAPID keys are set — see `npm run gen-vapid`).
+const pushService = new PushService({ dataDir: './data' })
+log.info('server', `Push notifications: ${pushService.isEnabled() ? 'enabled' : 'disabled (no VAPID keys)'}`)
+
+const sessionManager = new SessionManager(storage, pushService)
 const devServerManager = new DevServerManager()
 
 // ---------------------------------------------------------------------------
 // Register CLI adapters
 // ---------------------------------------------------------------------------
 
-registerAdapter('kiro', () => new KiroAdapter())
+// Kiro transport is selectable: `KIRO_TRANSPORT=acp` uses the structured
+// Agent Client Protocol path (recommended); anything else keeps the legacy
+// non-interactive text-parsing adapter.
+const useKiroAcp = (process.env['KIRO_TRANSPORT'] ?? '').toLowerCase() === 'acp'
+registerAdapter('kiro', () => (useKiroAcp ? new KiroAcpAdapter() : new KiroAdapter()))
+log.info('server', `Kiro transport: ${useKiroAcp ? 'acp' : 'non-interactive'}`)
+
+// Gemini CLI over ACP (`gemini --acp`).
+registerAdapter('gemini', () => new GeminiAdapter())
+
+// Claude Code over stream-json (`claude -p --output-format stream-json`).
+registerAdapter('claude', () => new ClaudeAdapter())
 
 // ---------------------------------------------------------------------------
 // Express app
@@ -36,9 +57,12 @@ registerAdapter('kiro', () => new KiroAdapter())
 const app = express()
 app.use(express.json())
 
-// Health check
+// Health check — reports server status plus per-provider binary availability,
+// so clients can detect that, e.g., kiro-cli isn't installed before a session
+// is created and fails opaquely.
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok' })
+  const providers = getProviderHealth()
+  res.json({ status: 'ok', providers })
 })
 
 // Mount REST routes
@@ -46,6 +70,7 @@ app.use('/api/sessions', createSessionRoutes(sessionManager, storage))
 app.use('/api/projects', createProjectRoutes(storage, devServerManager))
 app.use('/api/browse', createBrowseRoutes())
 app.use('/api/upload', createUploadRoutes('./data/uploads'))
+app.use('/api/push', createPushRoutes(pushService))
 
 // ---------------------------------------------------------------------------
 // HTTP + WebSocket server

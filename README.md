@@ -4,38 +4,85 @@ A web app that makes AI CLI tools look and feel like a chat application.
 
 CodePipe wraps terminal-based AI agents — Kiro CLI, Gemini CLI, Claude Code, and eventually Codex — in a clean messaging interface. You get conversation history, multiple concurrent sessions, project-scoped workspaces, and markdown-rendered output, all while running the real CLI tools under the hood.
 
+## Quick Start
+
+You'll need Node.js 22+ and at least one supported AI CLI installed and authenticated (`kiro-cli`, `claude`, or `gemini`).
+
+```bash
+# 1. Backend (http://127.0.0.1:5551)
+cd server
+npm install
+npm run dev          # or: KIRO_TRANSPORT=acp npm run dev  (recommended for Kiro)
+
+# 2. Frontend (http://127.0.0.1:5552) — in a second terminal
+cd client
+npm install
+npm run dev
+```
+
+Open http://127.0.0.1:5552, pick a project directory and a provider, and start chatting. To use it from your phone with notifications, see [Remote Access](#remote-access-with-tailscale) and [Install on your phone](#install-on-your-phone--notifications-pwa). For configuration options, see [Configuration](#configuration).
+
 ## How It Works
 
-The backend spawns CLI processes using `node-pty` and parses their raw terminal output with `xterm-headless`. A WebSocket connection streams the parsed output to a Vue frontend that renders it as chat bubbles. User input goes back through the WebSocket to the terminal as keystrokes. Each conversation is a live terminal session tied to a specific project directory and AI provider.
+The backend runs the real CLI tool for each conversation and normalizes its output into chat messages, which it streams to a Vue frontend over a WebSocket. Each conversation is tied to a specific project directory and AI provider.
+
+CodePipe supports two ways of talking to a CLI, chosen per adapter:
+
+- **Structured (ACP)** — for tools that speak the [Agent Client Protocol](https://agentclientprotocol.com), CodePipe drives a persistent process over JSON-RPC and reads typed events (message chunks, tool calls, turn boundaries). This is robust and is the recommended path. Kiro CLI supports it via `kiro-cli acp`.
+- **Text parsing** — for tools without a structured mode, CodePipe spawns the process (PTY or one-shot) and parses its terminal output with a per-provider adapter. This is inherently more fragile and exists as a fallback.
 
 ## Tech Stack
 
-**Backend** — Node.js, TypeScript, Express, `ws`, `node-pty`, `xterm-headless`
+**Backend** — Node.js, TypeScript, Express, `ws` (WebSocket), `web-push` (notifications). Structured CLIs are driven over JSON-RPC (ACP) or newline-delimited JSON (`stream-json`); `node-pty` is available for the legacy terminal-parsing fallback.
 
-**Frontend** — Vue 3, Tailwind CSS, Vite, Pinia
+**Frontend** — Vue 3, Tailwind CSS, Vite, Pinia, plus a service worker + Web App Manifest for PWA install and push notifications.
 
-**Storage** — JSON files (one per session, lightweight and portable)
+**Storage** — JSON files: one per session, a metadata index for fast listing, and a `projects.json`. Lightweight and portable, no database required.
 
 ## Supported Providers
 
-| Provider    | Status  |
-|-------------|---------|
-| Kiro CLI    | First   |
-| Gemini CLI  | Next    |
-| Claude Code | Planned |
-| Codex       | Future  |
+| Provider    | Transport                              | Status      |
+|-------------|----------------------------------------|-------------|
+| Kiro CLI    | ACP (`kiro-cli acp`) or text-parsing   | Implemented |
+| Claude Code | stream-json (`claude -p`)              | Implemented |
+| Gemini CLI  | ACP (`gemini --acp`)                   | Implemented |
+| Codex       | —                                      | Future      |
 
-Each provider has a dedicated adapter that handles its specific output patterns, prompt detection, and message parsing.
+Each provider has a dedicated adapter. Kiro ships in two flavors: the structured ACP transport (recommended, set `KIRO_TRANSPORT=acp`) and a legacy non-interactive text-parsing transport (default). Claude Code uses its native newline-delimited `stream-json` output. Gemini CLI is driven over ACP, the same JSON-RPC protocol as Kiro.
+
+> The ACP details for Kiro and Gemini, and the Claude stream-json event mapping, were built against published docs. Verify against your installed CLIs — the adapters are defensive and every binary/flag is overridable via env (see Configuration).
+
+## Configuration
+
+The server reads these environment variables:
+
+| Variable          | Default       | Description                                                                 |
+|-------------------|---------------|-----------------------------------------------------------------------------|
+| `PORT`            | `5551`        | Backend HTTP/WebSocket port.                                                |
+| `HOST`            | `127.0.0.1`   | Backend bind address.                                                       |
+| `KIRO_TRANSPORT`  | _(unset)_     | Set to `acp` to drive Kiro CLI over the Agent Client Protocol (recommended) instead of the legacy text-parsing path. |
+| `KIRO_CLI_BIN`    | platform name | Override the Kiro binary (absolute path or name on `PATH`). Defaults to `kiro-cli` (`kiro-cli.exe` on Windows). |
+| `GEMINI_CLI_BIN`  | `gemini`      | Override the Gemini CLI binary.                                            |
+| `CLAUDE_CLI_BIN`  | `claude`      | Override the Claude Code binary (`claude.cmd` on Windows).                 |
+| `CLAUDE_PERMISSION_MODE` | `acceptEdits` | Claude Code `--permission-mode`. See SECURITY.md before broadening.   |
+| `CLAUDE_EXTRA_ARGS` | _(unset)_   | Extra flags appended to Claude Code (e.g. `--dangerously-skip-permissions`). |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | _(unset)_ | Web Push keys. Generate with `npm run gen-vapid`. Push is disabled without them. |
+| `VAPID_SUBJECT`   | `mailto:admin@codepipe.local` | Contact URI sent with push (a `mailto:` or `https:` URL). |
+
+`GET /api/health` reports server status plus, for each registered provider, the resolved binary and whether it appears to be installed — useful for catching a missing CLI before creating a session.
 
 ## Features
 
-- Chat-style UI with conversation sidebar and message bubbles
-- Multiple concurrent sessions (different terminals running in parallel)
-- Project selector — pick a directory for the CLI to work in
-- Persistent session history saved as JSON
-- Markdown rendering for assistant output
-- Typing indicator while the CLI is producing output
-- Live and archived session states
+- Chat-style UI with conversation sidebar, message bubbles, and markdown rendering
+- Multiple providers — Kiro CLI, Claude Code, and Gemini CLI — behind one interface
+- Structured output parsing (ACP / stream-json) for reliable messages, tool calls, and turn boundaries, with a terminal-parsing fallback
+- Multiple concurrent sessions, each scoped to a project directory
+- **Stop button** to cancel an in-flight turn, and input **queueing** so messages sent mid-turn run in order instead of interrupting
+- **Per-session model selection** — a dynamic dropdown for providers that advertise their models (Kiro, Gemini), a free-text override for those that don't (Claude Code)
+- **Installable PWA** with **push notifications** when an agent finishes — use it on your phone like Slack
+- Remote access over Tailscale (HTTPS, private tailnet, no public exposure)
+- File attachments, typing indicator, persistent history, and live/archived session states
+- Per-provider binary auto-detection via `GET /api/health`
 
 ## Remote Access with Tailscale
 
@@ -59,6 +106,8 @@ All traffic goes through the Vite dev server, which already proxies `/api` and `
 
 Tailscale provisions a TLS certificate automatically, so you get valid HTTPS with no extra config.
 
+For hot-module reload to work over the tailnet, the Vite dev server needs your tailnet hostname. Copy `client/.env.example` to `client/.env.remote`, set `TAILSCALE_HOST` (find it with `tailscale status`), and start the frontend with `npm run dev:remote`. These env files are gitignored — no hostnames are committed to the repo.
+
 ### Access
 
 Open your browser on the other device and go to:
@@ -76,3 +125,59 @@ To remove the serve config:
 ```bash
 tailscale serve reset
 ```
+
+## Install on your phone + notifications (PWA)
+
+CodePipe is an installable PWA, so you can add it to your phone's home screen
+and get push notifications when an agent finishes a turn — like Slack or
+WhatsApp.
+
+This requires a secure context (HTTPS). Tailscale serve provides that
+automatically, so set it up as above, then:
+
+1. **Generate Web Push keys** (once) and add them to the backend's environment:
+
+   ```bash
+   cd server
+   npm run gen-vapid          # prints a public + private key
+   # then set them before starting the server, e.g.:
+   export VAPID_PUBLIC_KEY=...   # the printed public key
+   export VAPID_PRIVATE_KEY=...  # the printed private key
+   npm run dev
+   ```
+
+2. **Open the tailnet URL on your phone** (`https://<machine>.<tailnet>.ts.net`).
+3. **Install it**: in your phone browser's share/menu, choose "Add to Home
+   Screen". On iOS this is required before notifications will work.
+4. **Open the installed app** and tap **Enable notifications** in the sidebar,
+   then allow the permission prompt.
+
+After that, when an agent finishes responding while the app is backgrounded,
+you'll get a notification; tapping it opens that conversation. Notifications are
+suppressed while you're actively looking at the app. The same flow works on
+desktop browsers.
+
+## Choosing a model
+
+Each session has a model picker in the chat header. How the choices are
+discovered depends on the provider — nothing is hardcoded:
+
+- **Kiro and Gemini (ACP)**: the available models are pulled from the agent
+  itself over the protocol, so the picker is a real dropdown. (The exact way
+  agents advertise models is an optional ACP extension and varies, so this is
+  best-effort and worth confirming against your installed CLIs.)
+- **Claude Code**: the CLI has no command to enumerate models, so the picker
+  offers Claude Code's documented aliases — `sonnet`, `opus`, `haiku`, `fable`
+  (each always maps to the current version) — plus a **Custom…** option to pin
+  a full model id (e.g. `claude-sonnet-4-6`). The choice is passed via `--model`
+  on the next message. These aliases live in the Claude adapter, so updating
+  them is a one-line change rather than a UI edit.
+
+Your selection is saved per session and applied automatically when you resume.
+
+## Stopping a response
+
+While an agent is working, the send button becomes a **Stop** button. Stopping
+cancels the in-flight turn and clears anything queued. Messages you send while
+the agent is still working are queued and run in order rather than interrupting
+the current turn.

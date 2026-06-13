@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import {
   SessionSchema,
+  SessionMetaSchema,
   ProjectSchema,
   type Session,
   type SessionMeta,
@@ -44,13 +45,22 @@ export class StorageLayer implements IStorageLayer {
   private readonly dataDir: string
   private readonly sessionsDir: string
   private readonly projectsFile: string
+  private readonly indexFile: string
   /** Per-file write locks to prevent concurrent writes to the same file. */
   private readonly writeLocks = new Map<string, Promise<void>>()
+  /**
+   * In-memory session-metadata index, keyed by session ID. Lets `listSessions`
+   * answer from memory instead of reading (and parsing) every session file on
+   * each call. Lazily built from disk on first use, then kept in sync on every
+   * mutation, and persisted to `index.json` so it survives restarts.
+   */
+  private indexCache: Record<string, SessionMeta> | null = null
 
   constructor(dataDir: string) {
     this.dataDir = dataDir
     this.sessionsDir = path.join(dataDir, 'sessions')
     this.projectsFile = path.join(dataDir, 'projects.json')
+    this.indexFile = path.join(dataDir, 'index.json')
   }
 
   // -----------------------------------------------------------------------
@@ -219,8 +229,72 @@ export class StorageLayer implements IStorageLayer {
     }
   }
 
+  // ----- Session index (fast listing) -----
+
+  private static metaOf(session: Session): SessionMeta {
+    const { messages: _messages, ...meta } = session
+    return meta
+  }
+
+  /** Load the index from memory, or from disk, rebuilding from session files if absent/corrupt. */
+  private async loadIndex(): Promise<Record<string, SessionMeta>> {
+    if (this.indexCache) return this.indexCache
+
+    if (existsSync(this.indexFile)) {
+      try {
+        const raw = await readFile(this.indexFile, 'utf-8')
+        const parsed = JSON.parse(raw)
+        const result = z.record(SessionMetaSchema).safeParse(parsed)
+        if (result.success) {
+          this.indexCache = result.data
+          return this.indexCache
+        }
+        console.error('Storage: index.json failed validation, rebuilding')
+      } catch (err) {
+        console.error('Storage: failed to read index.json, rebuilding:', err)
+      }
+    }
+
+    this.indexCache = await this.rebuildIndex()
+    await this.persistIndex()
+    return this.indexCache
+  }
+
+  /** Rebuild the index by scanning every session file (migration / recovery path). */
+  private async rebuildIndex(): Promise<Record<string, SessionMeta>> {
+    const index: Record<string, SessionMeta> = {}
+    if (!existsSync(this.sessionsDir)) return index
+    const files = await readdir(this.sessionsDir)
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue
+      const session = await this.loadSession(file.replace('.json', ''))
+      if (session) index[session.id] = StorageLayer.metaOf(session)
+    }
+    return index
+  }
+
+  private async persistIndex(): Promise<void> {
+    if (this.indexCache) await this.serializedWrite(this.indexFile, this.indexCache)
+  }
+
+  /** Upsert one session's metadata into the index and persist. */
+  private async updateIndexEntry(session: Session): Promise<void> {
+    const index = await this.loadIndex()
+    index[session.id] = StorageLayer.metaOf(session)
+    await this.persistIndex()
+  }
+
+  private async removeIndexEntry(sessionId: string): Promise<void> {
+    const index = await this.loadIndex()
+    if (sessionId in index) {
+      delete index[sessionId]
+      await this.persistIndex()
+    }
+  }
+
   async saveSession(session: Session): Promise<void> {
     await this.serializedWrite(this.sessionPath(session.id), session)
+    await this.updateIndexEntry(session)
   }
 
   async getSession(sessionId: string): Promise<Session | null> {
@@ -228,24 +302,8 @@ export class StorageLayer implements IStorageLayer {
   }
 
   async listSessions(): Promise<SessionMeta[]> {
-    if (!existsSync(this.sessionsDir)) {
-      return []
-    }
-    const files = await readdir(this.sessionsDir)
-    const metas: SessionMeta[] = []
-
-    for (const file of files) {
-      if (!file.endsWith('.json')) continue
-      const sessionId = file.replace('.json', '')
-      const session = await this.loadSession(sessionId)
-      if (session) {
-        // Omit messages to return metadata only
-        const { messages: _, ...meta } = session
-        metas.push(meta)
-      }
-    }
-
-    return metas
+    const index = await this.loadIndex()
+    return Object.values(index)
   }
 
   async deleteSession(sessionId: string): Promise<void> {
@@ -253,6 +311,7 @@ export class StorageLayer implements IStorageLayer {
     if (existsSync(filePath)) {
       await unlink(filePath)
     }
+    await this.removeIndexEntry(sessionId)
   }
 
   async appendMessage(sessionId: string, message: ChatMessage): Promise<void> {
@@ -260,9 +319,17 @@ export class StorageLayer implements IStorageLayer {
     if (!session) {
       throw new Error(`Session ${sessionId} not found`)
     }
-    session.messages.push(message)
+    // Upsert by id: a streaming message is persisted repeatedly as it grows,
+    // so replace an existing entry rather than appending duplicates.
+    const existing = session.messages.findIndex((m) => m.id === message.id)
+    if (existing >= 0) {
+      session.messages[existing] = message
+    } else {
+      session.messages.push(message)
+    }
     session.updatedAt = message.timestamp
     await this.serializedWrite(this.sessionPath(sessionId), session)
+    await this.updateIndexEntry(session)
   }
 
   async updateSessionStatus(sessionId: string, status: SessionStatus): Promise<void> {
@@ -273,6 +340,7 @@ export class StorageLayer implements IStorageLayer {
     session.status = status
     session.updatedAt = Date.now()
     await this.serializedWrite(this.sessionPath(sessionId), session)
+    await this.updateIndexEntry(session)
   }
 
   async renameSession(sessionId: string, title: string): Promise<void> {
@@ -283,5 +351,6 @@ export class StorageLayer implements IStorageLayer {
     session.title = title
     session.updatedAt = Date.now()
     await this.serializedWrite(this.sessionPath(sessionId), session)
+    await this.updateIndexEntry(session)
   }
 }

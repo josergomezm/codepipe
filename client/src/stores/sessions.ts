@@ -1,13 +1,16 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as api from '../api/client'
-import type { ChatMessage, SessionMeta, Session, ProviderType } from '../api/client'
+import type { ChatMessage, SessionMeta, Session, ProviderType, ModelOption } from '../api/client'
 
 export const useSessionsStore = defineStore('sessions', () => {
   const sessions = ref<SessionMeta[]>([])
   const activeSessionId = ref<string | null>(null)
   const activeMessages = ref<ChatMessage[]>([])
   const sessionStatus = ref<'typing' | 'idle' | 'exited'>('idle')
+  /** Model picker state for the active session. */
+  const availableModels = ref<ModelOption[]>([])
+  const currentModel = ref<string | null>(null)
   /** User-facing error message, cleared on next successful action. */
   const error = ref<string | null>(null)
 
@@ -66,6 +69,10 @@ export const useSessionsStore = defineStore('sessions', () => {
       if (activeSessionId.value !== sessionId) return
       activeMessages.value = session.messages
       sessionStatus.value = session.status === 'archived' ? 'exited' : 'idle'
+      // Reset model state; the live model_state message (on WS connect) fills
+      // in the available list. Seed current from the persisted selection.
+      availableModels.value = []
+      currentModel.value = session.model ?? null
       error.value = null
     } catch (e) {
       // Only show the error if this is still the active session
@@ -125,6 +132,11 @@ export const useSessionsStore = defineStore('sessions', () => {
     sessionStatus.value = status
   }
 
+  function setModelState(state: { available: ModelOption[]; current: string | null }) {
+    availableModels.value = state.available
+    currentModel.value = state.current
+  }
+
   function setMessages(messages: ChatMessage[]) {
     // Deduplicate by id — the last occurrence wins, preserving order
     const seen = new Map<string, ChatMessage>()
@@ -139,6 +151,8 @@ export const useSessionsStore = defineStore('sessions', () => {
     activeSessionId,
     activeMessages,
     sessionStatus,
+    availableModels,
+    currentModel,
     error,
     fetchSessions,
     createSession,
@@ -149,6 +163,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     renameSession,
     upsertMessage,
     setStatus,
+    setModelState,
     setMessages,
     clearError,
   }

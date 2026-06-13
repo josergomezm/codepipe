@@ -8,9 +8,13 @@ import type { AdapterEvent } from './types.js'
  * --no-interactive mode, sends multiple messages, and validates
  * the adapter's output per message.
  *
- * This test consumes real API credits — run it intentionally.
- * Run with: npx vitest run src/adapters/kiro-live.test.ts
+ * This test consumes real API credits and requires kiro-cli to be installed,
+ * so it is opt-in. It is skipped by default (including in CI) and only runs
+ * when RUN_LIVE_TESTS is set.
+ * Run with: RUN_LIVE_TESTS=1 npx vitest run src/adapters/kiro-live.test.ts
  */
+
+const runLive = !!process.env['RUN_LIVE_TESTS']
 
 interface MessageResult {
   content: string
@@ -122,7 +126,7 @@ function validateMessage(label: string, result: MessageResult): void {
   expect(result.events.some(e => e.type === 'message_complete')).toBe(true)
 }
 
-describe('KiroAdapter — live non-interactive 3-message conversation', () => {
+describe.runIf(runLive)('KiroAdapter — live non-interactive 3-message conversation', () => {
   it('handles a 3-message conversation with clean output per message', async () => {
     const adapter = new KiroAdapter()
     const cwd = process.cwd()

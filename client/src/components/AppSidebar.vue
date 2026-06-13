@@ -2,6 +2,7 @@
 import { useUiStore } from '@/stores/ui'
 import NewSessionButton from '@/components/NewSessionButton.vue'
 import ProjectList from '@/components/ProjectList.vue'
+import NotificationToggle from '@/components/NotificationToggle.vue'
 
 const ui = useUiStore()
 </script>
@@ -29,6 +30,11 @@ const ui = useUiStore()
     <!-- Scrollable content -->
     <div class="flex flex-1 flex-col gap-4 overflow-y-auto px-2 pb-4">
       <ProjectList />
+    </div>
+
+    <!-- Footer -->
+    <div class="border-t border-gray-200 py-2 dark:border-gray-800">
+      <NotificationToggle />
     </div>
   </aside>
 </template>

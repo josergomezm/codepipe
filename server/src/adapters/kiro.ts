@@ -13,7 +13,7 @@
  */
 
 import path from 'path'
-import { homedir } from 'os'
+import { homedir, platform } from 'os'
 
 import type { ProviderType } from '../schemas.js'
 import type { ICLIAdapter, AdapterEvent } from './types.js'
@@ -24,9 +24,25 @@ import {
   TOOL_NAME_PATTERN,
 } from './kiro-patterns.js'
 
+/**
+ * Resolve the Kiro CLI binary name for the current platform.
+ *
+ * Precedence:
+ *   1. `KIRO_CLI_BIN` env var (absolute path or name on PATH) — explicit override.
+ *   2. Platform default: `kiro-cli.exe` on Windows, `kiro-cli` elsewhere.
+ *
+ * The original hardcoded `kiro-cli.exe` only resolved on Windows; on
+ * macOS/Linux the binary is `kiro-cli`, so the app could never spawn there.
+ */
+export function resolveKiroBinary(): string {
+  const override = process.env['KIRO_CLI_BIN']
+  if (override && override.trim().length > 0) return override.trim()
+  return platform() === 'win32' ? 'kiro-cli.exe' : 'kiro-cli'
+}
+
 export class KiroAdapter implements ICLIAdapter {
   readonly provider: ProviderType = 'kiro'
-  readonly command = 'kiro-cli.exe'
+  readonly command = resolveKiroBinary()
   readonly args: string[] = ['chat', '--no-interactive', '--trust-all-tools', '--wrap', 'never']
   readonly systemPrompt: string | undefined = undefined
   readonly cliSessionDir: string = path.join(homedir(), '.kiro', 'sessions', 'cli')
@@ -36,6 +52,9 @@ export class KiroAdapter implements ICLIAdapter {
    * rather than a persistent PTY process.
    */
   readonly nonInteractive = true
+
+  /** Kiro non-interactive reports its session ID only via `--list-sessions`. */
+  readonly usesSessionListDetection = true
 
   private lastToolName = 'tool'
 

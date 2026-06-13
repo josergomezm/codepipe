@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { KiroAdapter } from './kiro.js'
+import { KiroAdapter, resolveKiroBinary } from './kiro.js'
 import { stripAnsi } from './strip-ansi.js'
 import { registerAdapter, getAdapter, clearAdapters } from './registry.js'
 
@@ -44,7 +44,7 @@ describe('KiroAdapter — properties', () => {
   it('has correct provider, command, and args', () => {
     const adapter = new KiroAdapter()
     expect(adapter.provider).toBe('kiro')
-    expect(adapter.command).toBe('kiro-cli.exe')
+    expect(adapter.command).toBe(resolveKiroBinary())
     expect(adapter.args).toContain('--no-interactive')
     expect(adapter.args).toContain('--trust-all-tools')
     expect(adapter.args).toContain('--wrap')
@@ -201,7 +201,7 @@ describe('KiroAdapter — buildMessageCommand', () => {
 
   it('first message has no --resume-id', () => {
     const { command, args } = adapter.buildMessageCommand('hello', null)
-    expect(command).toBe('kiro-cli.exe')
+    expect(command).toBe(resolveKiroBinary())
     expect(args).not.toContain('--resume-id')
     expect(args[args.length - 1]).toBe('hello')
   })

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:remote": "set TAILSCALE_HOST=ks-mini.tail0293ef.ts.net && vite",
+    "dev:remote": "vite --mode remote",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview"
   },

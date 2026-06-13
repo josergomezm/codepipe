@@ -9,11 +9,30 @@ const sessionsStore = useSessionsStore()
 const projectsStore = useProjectsStore()
 const ui = useUiStore()
 
+function openSessionFromId(sessionId: string | null | undefined) {
+  if (sessionId) sessionsStore.selectSession(sessionId)
+}
+
 onMounted(async () => {
   await Promise.all([
     sessionsStore.fetchSessions(),
     projectsStore.fetchProjects(),
   ])
+
+  // Deep-link: opened from a push notification (/?session=<id>).
+  const fromUrl = new URLSearchParams(window.location.search).get('session')
+  if (fromUrl) {
+    openSessionFromId(fromUrl)
+    // Clean the URL so a refresh doesn't keep forcing this session.
+    window.history.replaceState({}, '', window.location.pathname)
+  }
+
+  // Notification tapped while the app was already open.
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      if (event.data?.type === 'open-session') openSessionFromId(event.data.sessionId)
+    })
+  }
 })
 </script>
 

@@ -13,10 +13,11 @@ const md = new MarkdownIt({
   breaks: true,
 })
 
-// Only render markdown when the message is complete — avoids expensive
-// re-renders on every streaming chunk
+// Only render markdown for completed assistant messages — avoids expensive
+// re-renders on every streaming chunk, and keeps tool calls (which are concise
+// argument summaries, not prose) out of the markdown pipeline.
 const renderedContent = computed(() => {
-  if (props.message.role !== 'assistant' && props.message.role !== 'tool') return ''
+  if (props.message.role !== 'assistant') return ''
   if (props.message.status === 'streaming') return ''
   return md.render(props.message.content)
 })
@@ -55,17 +56,13 @@ const isSystem = computed(() => props.message.role === 'system')
     </div>
   </div>
 
-  <!-- Tool message: left-aligned with badge -->
+  <!-- Tool message: left-aligned with a tool badge + concise argument -->
   <div v-else-if="isTool" class="flex items-start gap-2 px-4 py-1">
-    <div class="max-w-[75%] overflow-hidden rounded-2xl bg-gray-100 px-4 py-2.5 dark:bg-gray-800">
-      <div class="mb-1 flex items-center gap-1.5">
-        <span class="inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">
-          🔧 {{ message.metadata?.toolName ?? 'tool' }}
-        </span>
-      </div>
-      <!-- Streaming: show raw text. Complete: render markdown -->
-      <p v-if="isStreaming" class="whitespace-pre-wrap break-words text-sm text-gray-900 dark:text-gray-100">{{ message.content }}</p>
-      <div v-else class="prose prose-sm max-w-none break-words dark:prose-invert" v-html="renderedContent"></div>
+    <div class="flex max-w-[75%] items-center gap-2 overflow-hidden rounded-xl border border-gray-200 bg-gray-50 px-3 py-1.5 dark:border-gray-700 dark:bg-gray-900/50">
+      <span class="inline-flex shrink-0 items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">
+        🔧 {{ message.metadata?.toolName ?? 'tool' }}
+      </span>
+      <code class="truncate font-mono text-xs text-gray-600 dark:text-gray-400" :title="message.content">{{ message.content }}</code>
     </div>
   </div>
 

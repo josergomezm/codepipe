@@ -8,9 +8,10 @@ client/dist/
 # Data directory (runtime storage)
 data/
 
-# Environment
+# Environment — ignore all local env files, keep the committed example
 .env
-.env.local
+.env.*
+!.env.example
 
 # OS files
 .DS_Store

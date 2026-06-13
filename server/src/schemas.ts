@@ -65,6 +65,19 @@ const SessionObjectSchema = z.object({
   messages: z.array(ChatMessageSchema),
   /** The CLI tool's own session ID, used for --resume-id on reconnection. */
   cliSessionId: z.string().optional(),
+  /** Selected model for this session (provider-specific id). */
+  model: z.string().optional(),
+})
+
+// A model the provider can run, for the picker.
+export const ModelOptionSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().optional(),
+})
+
+export const ModelStateSchema = z.object({
+  available: z.array(ModelOptionSchema),
+  current: z.string().nullable(),
 })
 
 export const SessionSchema = SessionObjectSchema.refine(
@@ -82,12 +95,22 @@ export const WSClientMessageSchema = z.discriminatedUnion('type', [
     data: z.string().min(1),
     attachments: z.array(AttachmentSchema).optional(),
   }),
+  // Cancel the in-flight turn (Stop button). Also drains the input queue.
+  z.object({
+    type: z.literal('cancel'),
+  }),
+  // Choose the model for this session.
+  z.object({
+    type: z.literal('set_model'),
+    model: z.string().min(1),
+  }),
 ])
 
 export const WSServerMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('message'), data: ChatMessageSchema }),
   z.object({ type: z.literal('status'), data: z.enum(['typing', 'idle', 'exited']) }),
   z.object({ type: z.literal('history'), data: z.array(ChatMessageSchema) }),
+  z.object({ type: z.literal('model_state'), data: ModelStateSchema }),
   z.object({ type: z.literal('error'), data: z.string() }),
 ])
 
@@ -122,5 +145,7 @@ export type Session = z.infer<typeof SessionSchema>
 export type SessionMeta = z.infer<typeof SessionMetaSchema>
 export type WSClientMessage = z.infer<typeof WSClientMessageSchema>
 export type WSServerMessage = z.infer<typeof WSServerMessageSchema>
+export type ModelOption = z.infer<typeof ModelOptionSchema>
+export type ModelState = z.infer<typeof ModelStateSchema>
 export type CreateSessionRequest = z.infer<typeof CreateSessionRequestSchema>
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequestSchema>

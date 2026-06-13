@@ -10,7 +10,17 @@ describe('GET /api/health', () => {
   it('returns { status: "ok" } with 200', async () => {
     const res = await request(app).get('/api/health')
     expect(res.status).toBe(200)
-    expect(res.body).toEqual({ status: 'ok' })
+    expect(res.body.status).toBe('ok')
+  })
+
+  it('reports provider availability', async () => {
+    const res = await request(app).get('/api/health')
+    expect(Array.isArray(res.body.providers)).toBe(true)
+    for (const p of res.body.providers) {
+      expect(typeof p.provider).toBe('string')
+      expect(typeof p.command).toBe('string')
+      expect(typeof p.available).toBe('boolean')
+    }
   })
 
   it('returns JSON content type', async () => {
