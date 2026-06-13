@@ -213,7 +213,7 @@ async function setupProject() {
 
   const prompt = `Set up this project for CodePipe remote dev access. Here's what needs to happen:
 
-1. Add a \`dev:remote\` script to package.json that sets TAILSCALE_HOST and TAILSCALE_PORT env vars before running the dev server. Use \`set\` for Windows CMD (this is a Windows machine). The tailscale host is "${store.tailscaleHostname || 'ks-mini.tail0293ef.ts.net'}" and the tailscale port is ${tp}.
+1. Add a \`dev:remote\` script to package.json that sets TAILSCALE_HOST and TAILSCALE_PORT env vars before running the dev server. Use \`set\` for Windows CMD (this is a Windows machine). The tailscale host is "${store.tailscaleHostname || '<your-tailscale-host>'}" and the tailscale port is ${tp}.
 
 2. Configure the dev server (Vite, Next, etc.) for HMR over Tailscale:
    - Bind to 0.0.0.0

@@ -32,12 +32,12 @@ In `package.json`:
 ```json
 {
   "scripts": {
-    "dev:remote": "set TAILSCALE_HOST=ks-mini.tail0293ef.ts.net && set TAILSCALE_PORT=YOUR_TS_PORT && vite"
+    "dev:remote": "set TAILSCALE_HOST=your-host.ts.net && set TAILSCALE_PORT=YOUR_TS_PORT && vite"
   }
 }
 ```
 
-Replace `YOUR_TS_PORT` with the Tailscale HTTPS port assigned to this project (see port table below).
+Replace `your-host.ts.net` with your tailnet FQDN (find it with `tailscale status`) and `YOUR_TS_PORT` with the Tailscale HTTPS port assigned to this project (see port table below).
 
 ### 3. Register Tailscale Serve (one-time)
 
