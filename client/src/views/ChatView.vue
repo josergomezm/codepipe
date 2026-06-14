@@ -39,6 +39,10 @@ const devServerUrl = computed(() => {
   if (!activeSession.value) return null
   return projectsStore.getProjectDevUrl(activeSession.value.projectId)
 })
+
+function openDevServer() {
+  if (devServerUrl.value) window.location.href = devServerUrl.value
+}
 </script>
 
 <template>
@@ -90,10 +94,9 @@ const devServerUrl = computed(() => {
         v-if="devServerUrl"
         class="flex items-center border-b border-gray-200 px-4 py-1.5 dark:border-gray-800"
       >
-        <a
-          :href="devServerUrl"
-          target="_blank"
+        <button
           class="inline-flex items-center gap-1.5 rounded-full bg-green-50 px-2.5 py-0.5 text-xs font-medium text-green-700 transition hover:bg-green-100 dark:bg-green-900/20 dark:text-green-400 dark:hover:bg-green-900/40"
+          @click="openDevServer"
         >
           <span class="h-1.5 w-1.5 rounded-full bg-green-500" />
           Dev Server
@@ -101,7 +104,7 @@ const devServerUrl = computed(() => {
             <path d="M8.75 3.5a.75.75 0 0 0 0-1.5h-5.5a.75.75 0 0 0-.75.75v10.5c0 .414.336.75.75.75h10.5a.75.75 0 0 0 .75-.75v-5.5a.75.75 0 0 0-1.5 0v4.75H3.5V3.5h5.25Z" />
             <path d="M10.25 1a.75.75 0 0 0 0 1.5h2.19L6.72 8.22a.75.75 0 1 0 1.06 1.06l5.72-5.72v2.19a.75.75 0 0 0 1.5 0v-4a.75.75 0 0 0-.75-.75h-4Z" />
           </svg>
-        </a>
+        </button>
       </div>
 
       <MessageList />

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import MarkdownIt from 'markdown-it'
 import type { ChatMessage } from '@/api/client'
 
@@ -12,6 +12,14 @@ const md = new MarkdownIt({
   linkify: true,
   breaks: true,
 })
+
+// Open all rendered links in a new window (system browser in PWA context).
+const defaultRender = md.renderer.rules.link_open || function (tokens, idx, options, _env, self) { return self.renderToken(tokens, idx, options) }
+md.renderer.rules.link_open = function (tokens, idx, options, env, self) {
+  tokens[idx].attrSet('target', '_blank')
+  tokens[idx].attrSet('rel', 'noopener')
+  return defaultRender(tokens, idx, options, env, self)
+}
 
 // Only render markdown for completed assistant messages — avoids expensive
 // re-renders on every streaming chunk, and keeps tool calls (which are concise
@@ -27,6 +35,13 @@ const isUser = computed(() => props.message.role === 'user')
 const isAssistant = computed(() => props.message.role === 'assistant')
 const isTool = computed(() => props.message.role === 'tool')
 const isSystem = computed(() => props.message.role === 'system')
+
+const copied = ref(false)
+async function copyContent() {
+  await navigator.clipboard.writeText(props.message.content)
+  copied.value = true
+  setTimeout(() => (copied.value = false), 1500)
+}
 </script>
 
 <template>
@@ -67,7 +82,7 @@ const isSystem = computed(() => props.message.role === 'system')
   </div>
 
   <!-- Assistant message: left-aligned, gray -->
-  <div v-else-if="isAssistant" class="flex items-start px-4 py-1">
+  <div v-else-if="isAssistant" class="group relative flex items-start px-4 py-1">
     <div class="max-w-[75%] overflow-hidden rounded-2xl bg-gray-100 px-4 py-2.5 dark:bg-gray-800">
       <!-- Streaming: show raw text to avoid markdown re-parsing flicker -->
       <p v-if="isStreaming" class="whitespace-pre-wrap break-words text-sm text-gray-900 dark:text-gray-100">{{ message.content }}</p>
@@ -80,5 +95,15 @@ const isSystem = computed(() => props.message.role === 'system')
         <span v-if="message.metadata.time">{{ message.metadata.time }}</span>
       </div>
     </div>
+    <!-- Copy button: appears on hover -->
+    <button
+      v-if="!isStreaming"
+      class="ml-1 mt-1 opacity-0 transition-opacity group-hover:opacity-100 rounded p-1 text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+      title="Copy response"
+      @click="copyContent"
+    >
+      <svg v-if="!copied" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      <svg v-else xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-green-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+    </button>
   </div>
 </template>

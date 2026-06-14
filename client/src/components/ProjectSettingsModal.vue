@@ -30,6 +30,7 @@ const customCommand = ref('')
 const useCustomCommand = ref(false)
 const saving = ref(false)
 const detecting = ref(false)
+const serverLoading = ref(false)
 const detectedFramework = ref<string | null>(null)
 const detectedSubDir = ref<string | null>(null)
 
@@ -190,17 +191,27 @@ async function removeConfig() {
 
 async function startServer() {
   if (!props.projectId) return
-  await store.startDevServer(props.projectId)
+  serverLoading.value = true
+  try {
+    await store.startDevServer(props.projectId)
+  } finally {
+    serverLoading.value = false
+  }
 }
 
 async function stopServer() {
   if (!props.projectId) return
-  await store.stopDevServer(props.projectId)
+  serverLoading.value = true
+  try {
+    await store.stopDevServer(props.projectId)
+  } finally {
+    serverLoading.value = false
+  }
 }
 
 function openDevUrl() {
   if (devUrl.value) {
-    window.open(devUrl.value, '_blank')
+    window.location.href = devUrl.value
   }
 }
 
@@ -276,14 +287,16 @@ function close() {
               </div>
               <button
                 v-if="isRunning"
-                class="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-red-700"
+                :disabled="serverLoading"
+                class="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-red-700 disabled:opacity-50"
                 @click="stopServer"
-              >Stop</button>
+              >{{ serverLoading ? 'Stopping…' : 'Stop' }}</button>
               <button
                 v-else-if="hasDevRemoteScript"
-                class="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-green-700"
+                :disabled="serverLoading"
+                class="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-green-700 disabled:opacity-50"
                 @click="startServer"
-              >Start</button>
+              >{{ serverLoading ? 'Starting…' : 'Start' }}</button>
               <span
                 v-else
                 class="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-400 dark:bg-gray-800"

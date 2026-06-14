@@ -131,7 +131,7 @@ function openSettings(id: string) {
 
 function openDevServer(url: string) {
   openMenuId.value = null
-  window.open(url, '_blank')
+  window.location.href = url // navigates out of PWA scope → opens in browser
 }
 
 async function startDevServer(id: string) {
