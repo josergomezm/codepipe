@@ -58,6 +58,8 @@ export interface SessionContext {
   availableModels?: ModelOption[]
   /** Model the agent reports it's actually running (vs. the user's selection). */
   currentModel?: string
+  /** True when revive couldn't restore CLI context (missing cliSessionId or loadSession failed). */
+  contextLost?: boolean
 }
 
 interface QueuedInput {
@@ -429,9 +431,10 @@ export class SessionManager implements ISessionManager {
     // non-assistant message (e.g. an error) or was cancelled (cancel doesn't
     // call finishTurn). Only notify when nothing else is queued — the user is
     // genuinely waiting on this result.
-    if (this.notifier && ctx.inputQueue && ctx.inputQueue.length === 0) {
-      const last = ctx.session.messages[ctx.session.messages.length - 1]
-      if (last && last.role === 'assistant' && last.id !== ctx.lastNotifiedMessageId) {
+    if (this.notifier && (!ctx.inputQueue || ctx.inputQueue.length === 0)) {
+      const last = ctx.session.messages.findLast((m) => m.role === 'assistant')
+      log.info('push', `finishTurn: last assistant msg id=${last?.id ?? 'none'}, lastNotified=${ctx.lastNotifiedMessageId ?? 'none'}`)
+      if (last && last.id !== ctx.lastNotifiedMessageId) {
         ctx.lastNotifiedMessageId = last.id
         try {
           this.notifier.notifyTurnComplete(ctx.session, last.content)

@@ -2,8 +2,11 @@
  *
  * Intentionally minimal: no offline caching (the app needs the live backend
  * anyway). Its job is to make CodePipe installable and to show push
- * notifications when the agent finishes a turn while the app is backgrounded.
+ * notifications when the agent finishes a turn while the app is backgrounded
+ * or the user is viewing a different conversation.
  */
+
+let activeSessionId = null
 
 self.addEventListener('install', () => {
   self.skipWaiting()
@@ -11,6 +14,12 @@ self.addEventListener('install', () => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim())
+})
+
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'active-session') {
+    activeSessionId = event.data.sessionId || null
+  }
 })
 
 self.addEventListener('push', (event) => {
@@ -27,11 +36,10 @@ self.addEventListener('push', (event) => {
 
   event.waitUntil(
     (async () => {
-      // If a window is already focused/visible, the user is actively using the
-      // app — don't buzz them for the reply they're watching arrive.
+      // Suppress only if a window is focused AND viewing this exact session.
       const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
-      const focused = windows.some((c) => c.focused || c.visibilityState === 'visible')
-      if (focused) return
+      const focused = windows.some((c) => c.focused)
+      if (focused && sessionId === activeSessionId) return
 
       await self.registration.showNotification(title, {
         body,

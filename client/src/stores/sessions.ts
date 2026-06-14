@@ -62,6 +62,8 @@ export const useSessionsStore = defineStore('sessions', () => {
   async function selectSession(sessionId: string) {
     try {
       activeSessionId.value = sessionId
+      localStorage.setItem('codepipe:activeSession', sessionId)
+      navigator.serviceWorker?.controller?.postMessage({ type: 'active-session', sessionId })
       const session = await api.fetchSession(sessionId)
       // Guard: only apply the fetched data if this is still the active session.
       // Without this, a slow fetch for a previous session can overwrite the
@@ -90,6 +92,8 @@ export const useSessionsStore = defineStore('sessions', () => {
         activeSessionId.value = null
         activeMessages.value = []
         sessionStatus.value = 'idle'
+        localStorage.removeItem('codepipe:activeSession')
+        navigator.serviceWorker?.controller?.postMessage({ type: 'active-session', sessionId: null })
       }
       error.value = null
     } catch (e) {

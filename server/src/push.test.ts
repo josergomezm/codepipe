@@ -44,6 +44,22 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 }
 
 describe('PushService enablement', () => {
+  let savedPub: string | undefined
+  let savedPriv: string | undefined
+
+  beforeEach(() => {
+    savedPub = process.env['VAPID_PUBLIC_KEY']
+    savedPriv = process.env['VAPID_PRIVATE_KEY']
+    delete process.env['VAPID_PUBLIC_KEY']
+    delete process.env['VAPID_PRIVATE_KEY']
+  })
+  afterEach(() => {
+    if (savedPub !== undefined) process.env['VAPID_PUBLIC_KEY'] = savedPub
+    else delete process.env['VAPID_PUBLIC_KEY']
+    if (savedPriv !== undefined) process.env['VAPID_PRIVATE_KEY'] = savedPriv
+    else delete process.env['VAPID_PRIVATE_KEY']
+  })
+
   it('is disabled without VAPID keys', () => {
     const svc = new PushService({ dataDir: tmpDir })
     expect(svc.isEnabled()).toBe(false)

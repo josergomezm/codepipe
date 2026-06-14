@@ -1,6 +1,15 @@
 import express from 'express'
 import { createServer } from 'http'
 
+// Load environment variables from a local `.env` file if present (e.g. VAPID
+// keys for Web Push). Optional — the app runs fine without it, push just stays
+// disabled. Uses Node's built-in loader (no dependency).
+try {
+  process.loadEnvFile('./.env')
+} catch {
+  /* no .env file — fine */
+}
+
 import { StorageLayer } from './storage.js'
 import { SessionManager } from './session-manager.js'
 import { DevServerManager } from './dev-server-manager.js'

@@ -142,6 +142,7 @@ export class PushService implements TurnNotifier {
 
   notifyTurnComplete(session: Session, lastAssistantText: string): void {
     if (!this.enabled) return
+    log.info('push', `Turn complete for "${session.title || session.id}", sending push…`)
     void this.sendToAll({
       title: session.title || 'CodePipe',
       body: snippet(lastAssistantText),
@@ -153,6 +154,7 @@ export class PushService implements TurnNotifier {
   async sendToAll(payload: PushPayload): Promise<void> {
     if (!this.enabled) return
     await this.ensureLoaded()
+    log.info('push', `Sending to ${this.subscriptions.size} subscriber(s): "${payload.title}"`)
     const json = JSON.stringify(payload)
     let pruned = false
 

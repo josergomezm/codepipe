@@ -25,6 +25,12 @@ onMounted(async () => {
     openSessionFromId(fromUrl)
     // Clean the URL so a refresh doesn't keep forcing this session.
     window.history.replaceState({}, '', window.location.pathname)
+  } else {
+    // Restore last active session (survives PWA minimize/kill).
+    const saved = localStorage.getItem('codepipe:activeSession')
+    if (saved && sessionsStore.sessions.some((s) => s.id === saved)) {
+      openSessionFromId(saved)
+    }
   }
 
   // Notification tapped while the app was already open.
