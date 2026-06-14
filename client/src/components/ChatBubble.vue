@@ -95,10 +95,10 @@ async function copyContent() {
         <span v-if="message.metadata.time">{{ message.metadata.time }}</span>
       </div>
     </div>
-    <!-- Copy button: appears on hover -->
+    <!-- Copy button: always visible on mobile, hover-reveal on desktop -->
     <button
       v-if="!isStreaming"
-      class="ml-1 mt-1 opacity-0 transition-opacity group-hover:opacity-100 rounded p-1 text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+      class="ml-1 mt-1 rounded p-1 text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
       title="Copy response"
       @click="copyContent"
     >
