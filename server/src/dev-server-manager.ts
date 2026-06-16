@@ -6,6 +6,8 @@ import {
   getTailscaleHostname,
   hasServeMapping,
   createServeMapping,
+  removeServeMapping,
+  invalidateServeCache,
 } from './tailscale.js'
 import path from 'path'
 
@@ -51,6 +53,9 @@ export class DevServerManager {
     }
 
     const tailscalePort = config.tailscalePort ?? 443
+
+    // Invalidate cache so we get fresh Tailscale state after a stop/restart cycle
+    invalidateServeCache()
 
     // Ensure Tailscale Serve mapping exists
     const existingMapping = hasServeMapping(config.port, tailscalePort)
@@ -106,11 +111,11 @@ export class DevServerManager {
     this.processes.set(projectId, entry)
 
     child.stdout?.on('data', (data: Buffer) => {
-      log.debug('dev-server', `[${projectId}] ${data.toString().trim()}`)
+      log.info('dev-server', `[${projectId}] stdout: ${data.toString().trim()}`)
     })
 
     child.stderr?.on('data', (data: Buffer) => {
-      log.debug('dev-server', `[${projectId}] ${data.toString().trim()}`)
+      log.info('dev-server', `[${projectId}] stderr: ${data.toString().trim()}`)
     })
 
     child.on('close', (exitCode) => {
@@ -118,6 +123,11 @@ export class DevServerManager {
       log.info('dev-server', `Dev server for project ${projectId} exited with code ${exitCode}`)
       if (this.processes.get(projectId) === entry) {
         this.processes.delete(projectId)
+      }
+      // Remove Tailscale mapping so the URL doesn't serve a 502
+      const tsPort = entry.config.tailscalePort ?? 443
+      if (tsPort !== 443) {
+        removeServeMapping(tsPort).catch(() => {})
       }
     })
 
@@ -127,7 +137,31 @@ export class DevServerManager {
       if (this.processes.get(projectId) === entry) {
         this.processes.delete(projectId)
       }
+      const tsPort = entry.config.tailscalePort ?? 443
+      if (tsPort !== 443) {
+        removeServeMapping(tsPort).catch(() => {})
+      }
     })
+
+    // Wait for the port to be ready or the process to die
+    const ready = await this.waitForPort(config.port, entry)
+
+    if (!ready) {
+      log.warn('dev-server', `Dev server for project ${projectId} failed to start (port ${config.port} never became ready)`)
+      // Clean up if process is still somehow tracked
+      if (this.processes.get(projectId) === entry) {
+        this.processes.delete(projectId)
+      }
+      this.killProcess(entry)
+      // Mapping cleanup happens in the close handler
+      return {
+        status: 'stopped',
+        port: config.port,
+        tailscalePort,
+        url: buildTailscaleUrl(tailscalePort),
+        tailscaleMapped: false,
+      }
+    }
 
     return {
       status: 'running',
@@ -139,9 +173,9 @@ export class DevServerManager {
   }
 
   /**
-   * Stop a running dev server. Returns immediately (does not wait for exit).
+   * Stop a running dev server. Kills the process and removes the Tailscale mapping.
    */
-  stop(projectId: string): boolean {
+  async stop(projectId: string): Promise<boolean> {
     const entry = this.processes.get(projectId)
     if (!entry) return false
 
@@ -152,22 +186,30 @@ export class DevServerManager {
     // (handles case where our PID tracking lost the process)
     this.killByPort(entry.config.port)
 
+    // Remove the Tailscale Serve mapping so the port isn't left dangling
+    const tsPort = entry.config.tailscalePort ?? 443
+    // Don't remove port 443 — that's CodePipe itself
+    if (tsPort !== 443) {
+      await removeServeMapping(tsPort)
+    }
+
     return true
   }
 
   /**
    * Stop a running dev server and wait for the process to fully exit.
+   * Also removes the Tailscale Serve mapping (same as stop()).
    */
-  private stopAndWait(projectId: string): Promise<void> {
+  private async stopAndWait(projectId: string): Promise<void> {
     const entry = this.processes.get(projectId)
     if (!entry || entry.exited) {
       if (entry) this.processes.delete(projectId)
-      return Promise.resolve()
+      return
     }
 
     this.processes.delete(projectId)
 
-    return new Promise<void>((resolve) => {
+    await new Promise<void>((resolve) => {
       const timeout = setTimeout(() => {
         log.warn('dev-server', `Timeout waiting for dev server ${projectId} to exit`)
         resolve()
@@ -188,6 +230,12 @@ export class DevServerManager {
 
       this.killProcess(entry)
     })
+
+    // Remove the Tailscale Serve mapping so the port isn't left dangling
+    const tsPort = entry.config.tailscalePort ?? 443
+    if (tsPort !== 443) {
+      await removeServeMapping(tsPort)
+    }
   }
 
   /**
@@ -215,18 +263,33 @@ export class DevServerManager {
   }
 
   /**
-   * Fallback: kill whatever is listening on a port.
+   * Fallback: kill whatever is listening on a port on localhost.
    * Handles cases where our tracked PID is stale but the process is still running.
+   * Only targets 127.0.0.1 and 0.0.0.0 bindings to avoid killing tailscaled.
    */
   private killByPort(port: number): void {
     try {
       if (process.platform === 'win32') {
-        // Find PIDs listening on this port and kill them
-        const result = spawn('cmd', ['/c', `for /f "tokens=5" %a in ('netstat -aon ^| findstr :${port} ^| findstr LISTENING') do taskkill /pid %a /f /t`], {
-          stdio: 'ignore',
-          shell: false,
+        const output = execSync(`netstat -aon | findstr :${port} | findstr LISTENING`, {
+          encoding: 'utf-8',
+          timeout: 3000,
+          stdio: ['pipe', 'pipe', 'pipe'],
         })
-        result.on('error', () => { /* ignore */ })
+        const pids = new Set<string>()
+        for (const line of output.trim().split('\n')) {
+          const trimmed = line.trim()
+          // Only match local bindings, not Tailscale interface
+          if (!trimmed.startsWith('TCP    127.0.0.1:') && !trimmed.startsWith('TCP    0.0.0.0:')) continue
+          // Verify the port is in the local address column (column format: TCP    addr:port    ...)
+          const parts = trimmed.split(/\s+/)
+          const localAddr = parts[1] // e.g. "0.0.0.0:30222"
+          if (!localAddr?.endsWith(`:${port}`)) continue
+          const pid = parts[4]
+          if (pid && pid !== '0') pids.add(pid)
+        }
+        for (const pid of pids) {
+          spawn('taskkill', ['/pid', pid, '/f', '/t'], { stdio: 'ignore' })
+        }
       }
     } catch {
       // Best-effort
@@ -281,7 +344,36 @@ export class DevServerManager {
   }
 
   /**
+   * Wait for a port to start listening, or for the process to exit.
+   */
+  private waitForPort(port: number, entry: DevServerProcess, timeoutMs = 30000): Promise<boolean> {
+    log.info('dev-server', `Waiting for port ${port} to be ready (timeout: ${timeoutMs}ms)`)
+    return new Promise((resolve) => {
+      const interval = 500
+      let elapsed = 0
+      const check = () => {
+        if (entry.exited) {
+          log.info('dev-server', `Process exited while waiting for port ${port} (after ${elapsed}ms)`)
+          return resolve(false)
+        }
+        if (this.isPortListening(port)) {
+          log.info('dev-server', `Port ${port} is ready (took ${elapsed}ms)`)
+          return resolve(true)
+        }
+        elapsed += interval
+        if (elapsed >= timeoutMs) {
+          log.warn('dev-server', `Timeout waiting for port ${port} after ${timeoutMs}ms`)
+          return resolve(false)
+        }
+        setTimeout(check, interval)
+      }
+      setTimeout(check, interval)
+    })
+  }
+
+  /**
    * Check if a port is currently listening on localhost.
+   * Filters out Tailscale's own listeners (100.x.x.x) to avoid false positives.
    */
   private isPortListening(port: number): boolean {
     try {
@@ -291,7 +383,12 @@ export class DevServerManager {
           timeout: 3000,
           stdio: ['pipe', 'pipe', 'pipe'],
         })
-        return output.trim().length > 0
+        // Only count 127.0.0.1 or 0.0.0.0 bindings — not Tailscale interface (100.x.x.x)
+        const lines = output.trim().split('\n')
+        return lines.some((line) => {
+          const trimmed = line.trim()
+          return trimmed.startsWith('TCP    127.0.0.1:') || trimmed.startsWith('TCP    0.0.0.0:')
+        })
       } else {
         const output = execSync(`ss -tlnp 2>/dev/null | grep :${port} || lsof -i :${port} -sTCP:LISTEN 2>/dev/null`, {
           encoding: 'utf-8',

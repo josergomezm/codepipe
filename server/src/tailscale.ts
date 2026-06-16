@@ -188,6 +188,48 @@ export async function createServeMapping(
 }
 
 /**
+ * Remove a Tailscale Serve mapping for a given HTTPS port.
+ */
+export async function removeServeMapping(tailscalePort: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const args = ['serve', '--https', String(tailscalePort), 'off']
+
+    log.info('tailscale', `Removing serve mapping: tailscale ${args.join(' ')}`)
+
+    const child = spawn('tailscale', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+
+    let stderr = ''
+    child.stdout?.on('data', () => {})
+    child.stderr?.on('data', (data: Buffer) => { stderr += data.toString() })
+
+    child.on('close', (exitCode) => {
+      if (exitCode === 0) {
+        log.info('tailscale', `Serve mapping removed for port :${tailscalePort}`)
+        cachedServeStatus = null
+        resolve(true)
+      } else {
+        log.error('tailscale', `Failed to remove serve mapping (exit ${exitCode}): ${stderr}`)
+        resolve(false)
+      }
+    })
+
+    child.on('error', (err) => {
+      log.error('tailscale', `Failed to run tailscale serve off`, err)
+      resolve(false)
+    })
+  })
+}
+
+/**
+ * Invalidate the serve status cache so the next call fetches fresh data.
+ */
+export function invalidateServeCache(): void {
+  cachedServeStatus = null
+}
+
+/**
  * Build the full Tailscale URL for a given port.
  */
 export function buildTailscaleUrl(tailscalePort: number): string | null {

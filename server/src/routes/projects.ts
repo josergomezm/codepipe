@@ -165,7 +165,7 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
   router.post('/:id/dev-server/stop', async (req, res) => {
     const { id } = req.params
 
-    const stopped = devServerManager.stop(id)
+    const stopped = await devServerManager.stop(id)
     if (!stopped) {
       // Even if we don't have it tracked, report success —
       // the user's intent is "make it not running" which is already true
