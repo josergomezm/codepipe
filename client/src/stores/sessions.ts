@@ -11,6 +11,8 @@ export const useSessionsStore = defineStore('sessions', () => {
   /** Model picker state for the active session. */
   const availableModels = ref<ModelOption[]>([])
   const currentModel = ref<string | null>(null)
+  /** True while a session is being loaded (REST fetch + WS connect). */
+  const loading = ref(false)
   /** User-facing error message, cleared on next successful action. */
   const error = ref<string | null>(null)
 
@@ -62,6 +64,7 @@ export const useSessionsStore = defineStore('sessions', () => {
   async function selectSession(sessionId: string) {
     try {
       activeSessionId.value = sessionId
+      loading.value = true
       localStorage.setItem('codepipe:activeSession', sessionId)
       navigator.serviceWorker?.controller?.postMessage({ type: 'active-session', sessionId })
       const session = await api.fetchSession(sessionId)
@@ -80,6 +83,10 @@ export const useSessionsStore = defineStore('sessions', () => {
       // Only show the error if this is still the active session
       if (activeSessionId.value === sessionId) {
         error.value = e instanceof Error ? e.message : 'Failed to load session'
+      }
+    } finally {
+      if (activeSessionId.value === sessionId) {
+        loading.value = false
       }
     }
   }
@@ -157,6 +164,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     sessionStatus,
     availableModels,
     currentModel,
+    loading,
     error,
     fetchSessions,
     createSession,

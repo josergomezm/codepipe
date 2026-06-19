@@ -6,6 +6,7 @@ import { useUiStore } from '@/stores/ui'
 import { useSession } from '@/composables/useSession'
 import MessageList from '@/components/MessageList.vue'
 import ChatInput from '@/components/ChatInput.vue'
+import ChatLoader from '@/components/ChatLoader.vue'
 import ModelPicker from '@/components/ModelPicker.vue'
 
 const store = useSessionsStore()
@@ -107,8 +108,11 @@ function openDevServer() {
         </button>
       </div>
 
-      <MessageList />
-      <ChatInput />
+      <ChatLoader v-if="store.loading" />
+      <template v-else>
+        <MessageList />
+        <ChatInput />
+      </template>
     </template>
   </div>
 </template>
