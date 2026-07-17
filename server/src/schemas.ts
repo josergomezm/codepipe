@@ -45,11 +45,20 @@ export const ProjectDevServerSchema = z.object({
   cwd: z.string().optional(),
 })
 
+export const ProjectServiceConfigSchema = z.object({
+  id: z.string().uuid(),
+  type: z.string().min(1),         // e.g. 'firebase-emulators'
+  label: z.string().min(1),
+  startCommand: z.string().min(1),
+  cwd: z.string().optional(),
+})
+
 export const ProjectSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1).max(100),
   path: z.string().min(1),
   devServer: ProjectDevServerSchema.optional(),
+  services: z.array(ProjectServiceConfigSchema).optional(),
 })
 
 // Base session object without the refinement — needed so .omit() works
@@ -140,6 +149,7 @@ export type ChatMessageMetadata = z.infer<typeof ChatMessageMetadataSchema>
 export type Attachment = z.infer<typeof AttachmentSchema>
 export type ChatMessage = z.infer<typeof ChatMessageSchema>
 export type ProjectDevServer = z.infer<typeof ProjectDevServerSchema>
+export type ProjectServiceConfig = z.infer<typeof ProjectServiceConfigSchema>
 export type Project = z.infer<typeof ProjectSchema>
 export type Session = z.infer<typeof SessionSchema>
 export type SessionMeta = z.infer<typeof SessionMetaSchema>

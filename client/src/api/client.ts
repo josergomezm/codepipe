@@ -38,12 +38,41 @@ export interface DevServerInfo {
   tailscaleMapped: boolean
 }
 
+export type ServiceStatus = 'running' | 'stopped' | 'error'
+
+export interface ServicePortInfo {
+  host: string
+  port: number
+}
+
+export interface ServiceConfig {
+  id: string
+  type: string
+  label: string
+  startCommand: string
+  cwd?: string
+}
+
+export interface ServiceState {
+  status: ServiceStatus
+  pid?: number
+  ports: Record<string, ServicePortInfo>
+  uiUrl?: string
+  logs: string[]
+  error?: string
+}
+
+export interface ServiceWithState extends ServiceConfig {
+  state: ServiceState
+}
+
 export interface Project {
   id: string
   name: string
   path: string
   devServer?: ProjectDevServer
   devServerStatus?: DevServerInfo | null
+  services?: ServiceConfig[]
 }
 
 export interface Session {
@@ -176,6 +205,65 @@ export interface DetectedDevServer {
 
 export function detectDevServer(projectId: string): Promise<DetectedDevServer> {
   return request<DetectedDevServer>(`/api/projects/${projectId}/detect-dev-server`)
+}
+
+// --- Services ---
+
+export interface FirebaseDetectionResult {
+  found: boolean
+  firebaseDir: string | null
+  scriptName: string | null
+  startCommand: string | null
+  defaultPorts: Record<string, number>
+}
+
+export interface DetectFirebaseResponse {
+  detection: FirebaseDetectionResult
+  suggested: ServiceConfig | null
+}
+
+export function fetchServices(projectId: string): Promise<{ services: ServiceWithState[] }> {
+  return request<{ services: ServiceWithState[] }>(`/api/projects/${projectId}/services`)
+}
+
+export function addService(projectId: string, config: Omit<ServiceConfig, 'id'> & { id?: string }): Promise<ServiceConfig> {
+  return request<ServiceConfig>(`/api/projects/${projectId}/services`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  })
+}
+
+export function updateService(projectId: string, serviceId: string, data: Partial<ServiceConfig>): Promise<ServiceConfig> {
+  return request<ServiceConfig>(`/api/projects/${projectId}/services/${serviceId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+}
+
+export async function deleteService(projectId: string, serviceId: string): Promise<void> {
+  await request<unknown>(`/api/projects/${projectId}/services/${serviceId}`, { method: 'DELETE' })
+}
+
+export function startService(projectId: string, serviceId: string): Promise<ServiceState> {
+  return request<ServiceState>(`/api/projects/${projectId}/services/${serviceId}/start`, {
+    method: 'POST',
+  })
+}
+
+export function stopService(projectId: string, serviceId: string): Promise<{ ok: boolean; wasRunning: boolean }> {
+  return request<{ ok: boolean; wasRunning: boolean }>(`/api/projects/${projectId}/services/${serviceId}/stop`, {
+    method: 'POST',
+  })
+}
+
+export function getServiceStatus(projectId: string, serviceId: string): Promise<ServiceState> {
+  return request<ServiceState>(`/api/projects/${projectId}/services/${serviceId}/status`)
+}
+
+export function detectFirebase(projectId: string): Promise<DetectFirebaseResponse> {
+  return request<DetectFirebaseResponse>(`/api/projects/${projectId}/services/detect/firebase`)
 }
 
 // --- Browse (filesystem directory picker) ---

@@ -5,6 +5,7 @@ import { useSessionsStore } from '@/stores/sessions'
 import { useSession } from '@/composables/useSession'
 import FolderPicker from '@/components/FolderPicker.vue'
 import ProjectSettingsModal from '@/components/ProjectSettingsModal.vue'
+import ProjectServicesModal from '@/components/ProjectServicesModal.vue'
 import IconPlus from '@/components/icons/IconPlus.vue'
 
 const projectStore = useProjectsStore()
@@ -18,6 +19,7 @@ const showFolderPicker = ref(false)
 const openMenuId = ref<string | null>(null)
 const openSessionMenuId = ref<string | null>(null)
 const settingsProjectId = ref<string | null>(null)
+const servicesProjectId = ref<string | null>(null)
 const expandedProjects = ref<Set<string>>(new Set())
 const renamingSessionId = ref<string | null>(null)
 const renameInput = ref('')
@@ -129,6 +131,11 @@ function openSettings(id: string) {
   settingsProjectId.value = id
 }
 
+function openServices(id: string) {
+  openMenuId.value = null
+  servicesProjectId.value = id
+}
+
 function openDevServer(url: string) {
   openMenuId.value = null
   window.location.href = url // navigates out of PWA scope → opens in browser
@@ -191,6 +198,15 @@ async function stopDevServer(id: string) {
           >
             <span class="absolute inline-flex h-full w-full rounded-full bg-green-400 animate-breathe"></span>
             <span class="relative inline-flex h-2 w-2 rounded-full bg-green-500"></span>
+          </span>
+          <!-- Orange dot for running service (e.g. Firebase emulators) -->
+          <span
+            v-else-if="projectStore.hasRunningService(project.id)"
+            class="relative flex h-2 w-2 shrink-0"
+            title="Service running"
+          >
+            <span class="absolute inline-flex h-full w-full rounded-full bg-orange-400 animate-breathe"></span>
+            <span class="relative inline-flex h-2 w-2 rounded-full bg-orange-500"></span>
           </span>
         </div>
 
@@ -255,6 +271,21 @@ async function stopDevServer(id: string) {
               <path fill-rule="evenodd" d="M6.455 1.45A.5.5 0 0 1 6.952 1h2.096a.5.5 0 0 1 .497.45l.186 1.858a4.996 4.996 0 0 1 1.466.848l1.77-.712a.5.5 0 0 1 .618.224l1.048 1.815a.5.5 0 0 1-.12.665l-1.584 1.146a5.027 5.027 0 0 1 0 1.412l1.584 1.146a.5.5 0 0 1 .12.665l-1.048 1.815a.5.5 0 0 1-.618.224l-1.77-.712a4.996 4.996 0 0 1-1.466.848l-.186 1.858a.5.5 0 0 1-.497.45H6.952a.5.5 0 0 1-.497-.45l-.186-1.858a4.993 4.993 0 0 1-1.466-.848l-1.77.712a.5.5 0 0 1-.618-.224L1.367 12.55a.5.5 0 0 1 .12-.665l1.584-1.146a5.027 5.027 0 0 1 0-1.412L1.487 8.18a.5.5 0 0 1-.12-.665l1.048-1.815a.5.5 0 0 1 .618-.224l1.77.712a4.996 4.996 0 0 1 1.466-.848l.186-1.858ZM8 10.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" clip-rule="evenodd" />
             </svg>
             Settings
+          </button>
+
+          <!-- Manage services -->
+          <button
+            class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
+            @click="openServices(project.id)"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-3.5 w-3.5">
+              <path d="M2 3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3ZM2 8.5a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-1ZM3 13a1 1 0 0 0 0 2h10a1 1 0 0 0 0-2H3Z" />
+            </svg>
+            <span class="flex-1">Services</span>
+            <span
+              v-if="projectStore.hasRunningService(project.id)"
+              class="h-1.5 w-1.5 rounded-full bg-orange-500"
+            />
           </button>
 
           <div class="my-1 border-t border-gray-200 dark:border-gray-700" />
@@ -411,5 +442,6 @@ async function stopDevServer(id: string) {
 
     <FolderPicker v-model="showFolderPicker" @select="onFolderSelected" />
     <ProjectSettingsModal :project-id="settingsProjectId" @close="settingsProjectId = null" />
+    <ProjectServicesModal :project-id="servicesProjectId" @close="servicesProjectId = null" />
   </div>
 </template>

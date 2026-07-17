@@ -1,7 +1,10 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as api from '../api/client'
-import type { Project, ProjectDevServer, DevServerInfo } from '../api/client'
+import type { Project, ProjectDevServer, DevServerInfo, ServiceWithState, ServiceConfig, ServiceState } from '../api/client'
+
+// Per-project service state (runtime, not persisted in project object)
+const serviceStateMap = ref<Map<string, ServiceWithState[]>>(new Map())
 
 export const useProjectsStore = defineStore('projects', () => {
   const projects = ref<Project[]>([])
@@ -96,6 +99,91 @@ export const useProjectsStore = defineStore('projects', () => {
     return project.devServerStatus.url
   }
 
+  // --- Services ---
+
+  function getServices(projectId: string): ServiceWithState[] {
+    return serviceStateMap.value.get(projectId) ?? []
+  }
+
+  function hasRunningService(projectId: string): boolean {
+    return getServices(projectId).some((s) => s.state.status === 'running')
+  }
+
+  async function fetchServices(projectId: string) {
+    try {
+      const { services } = await api.fetchServices(projectId)
+      serviceStateMap.value.set(projectId, services)
+      error.value = null
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to load services'
+    }
+  }
+
+  async function addService(projectId: string, config: Omit<ServiceConfig, 'id'> & { id?: string }): Promise<ServiceConfig | null> {
+    try {
+      const saved = await api.addService(projectId, config)
+      // Re-fetch to get state alongside config
+      await fetchServices(projectId)
+      error.value = null
+      return saved
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to add service'
+      return null
+    }
+  }
+
+  async function removeService(projectId: string, serviceId: string) {
+    try {
+      await api.deleteService(projectId, serviceId)
+      const current = serviceStateMap.value.get(projectId) ?? []
+      serviceStateMap.value.set(projectId, current.filter((s) => s.id !== serviceId))
+      error.value = null
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to remove service'
+    }
+  }
+
+  async function startService(projectId: string, serviceId: string): Promise<ServiceState | null> {
+    try {
+      const state = await api.startService(projectId, serviceId)
+      _updateServiceState(projectId, serviceId, state)
+      error.value = null
+      return state
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to start service'
+      return null
+    }
+  }
+
+  async function stopService(projectId: string, serviceId: string) {
+    try {
+      await api.stopService(projectId, serviceId)
+      _updateServiceState(projectId, serviceId, { status: 'stopped', ports: {}, logs: [] })
+      error.value = null
+    } catch {
+      // Optimistically mark stopped even if request failed
+      _updateServiceState(projectId, serviceId, { status: 'stopped', ports: {}, logs: [] })
+    }
+  }
+
+  async function refreshServiceStatus(projectId: string, serviceId: string) {
+    try {
+      const state = await api.getServiceStatus(projectId, serviceId)
+      _updateServiceState(projectId, serviceId, state)
+    } catch {
+      // Best-effort
+    }
+  }
+
+  function _updateServiceState(projectId: string, serviceId: string, state: ServiceState) {
+    const current = serviceStateMap.value.get(projectId) ?? []
+    const idx = current.findIndex((s) => s.id === serviceId)
+    if (idx !== -1) {
+      current[idx] = { ...current[idx], state }
+      serviceStateMap.value.set(projectId, [...current])
+    }
+  }
+
   function clearError() {
     error.value = null
   }
@@ -111,6 +199,15 @@ export const useProjectsStore = defineStore('projects', () => {
     startDevServer,
     stopDevServer,
     getProjectDevUrl,
+    // Services
+    getServices,
+    hasRunningService,
+    fetchServices,
+    addService,
+    removeService,
+    startService,
+    stopService,
+    refreshServiceStatus,
     clearError,
   }
 })

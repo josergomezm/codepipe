@@ -1,0 +1,146 @@
+import { Router } from 'express'
+import type { Request } from 'express'
+import type { IStorageLayer } from '../storage.js'
+import type { ServiceManager } from '../service-manager.js'
+import { ProjectServiceConfigSchema } from '../schemas.js'
+import { log } from '../logger.js'
+import { detectFirebaseEmulators, buildFirebaseServiceConfig, firebasePortParser } from '../services/firebase-detector.js'
+
+// TypeScript doesn't reflect mergeParams at the type level, so we cast params
+// explicitly in each handler.
+type P = { id: string }
+type SP = { id: string; serviceId: string }
+
+export function createServiceRoutes(storage: IStorageLayer, serviceManager: ServiceManager): Router {
+  const router = Router({ mergeParams: true })
+
+  // GET /api/projects/:id/services — list services with runtime state
+  router.get('/', async (req, res) => {
+    const { id } = req.params as unknown as P
+    try {
+      const project = await storage.getProject(id)
+      if (!project) { res.status(404).json({ error: 'Project not found' }); return }
+
+      const services = (project.services ?? []).map((svc) => ({
+        ...svc,
+        state: serviceManager.getState(id, svc.id),
+      }))
+      res.json({ services })
+    } catch (err) {
+      log.error('api', `Failed to list services for project ${id}`, err)
+      res.status(500).json({ error: 'Failed to list services' })
+    }
+  })
+
+  // POST /api/projects/:id/services — add a service config
+  router.post('/', async (req, res) => {
+    const { id } = req.params as unknown as P
+    try {
+      const project = await storage.getProject(id)
+      if (!project) { res.status(404).json({ error: 'Project not found' }); return }
+
+      const parsed = ProjectServiceConfigSchema.safeParse(req.body)
+      if (!parsed.success) { res.status(400).json({ error: parsed.error.format() }); return }
+
+      const services = [...(project.services ?? []), parsed.data]
+      await storage.updateProject(id, { services })
+      res.status(201).json(parsed.data)
+    } catch (err) {
+      log.error('api', `Failed to add service to project ${id}`, err)
+      res.status(500).json({ error: 'Failed to add service' })
+    }
+  })
+
+  // GET /api/projects/:id/services/detect/firebase — auto-detect
+  // Registered before /:serviceId routes so Express doesn't match "detect" as a serviceId.
+  router.get('/detect/firebase', async (req, res) => {
+    const { id } = req.params as unknown as P
+    try {
+      const project = await storage.getProject(id)
+      if (!project) { res.status(404).json({ error: 'Project not found' }); return }
+
+      const detection = await detectFirebaseEmulators(project.path)
+      const suggested = detection.found ? buildFirebaseServiceConfig(detection) : null
+      res.json({ detection, suggested })
+    } catch (err) {
+      log.error('api', `Failed to detect firebase for project ${id}`, err)
+      res.status(500).json({ error: 'Detection failed' })
+    }
+  })
+
+  // PATCH /api/projects/:id/services/:serviceId — update a service config
+  router.patch('/:serviceId', async (req, res) => {
+    const { id, serviceId } = req.params as unknown as SP
+    try {
+      const project = await storage.getProject(id)
+      if (!project) { res.status(404).json({ error: 'Project not found' }); return }
+
+      const services = [...(project.services ?? [])]
+      const idx = services.findIndex((s) => s.id === serviceId)
+      if (idx === -1) { res.status(404).json({ error: 'Service not found' }); return }
+
+      const updated = { ...services[idx], ...req.body, id: serviceId }
+      const check = ProjectServiceConfigSchema.safeParse(updated)
+      if (!check.success) { res.status(400).json({ error: check.error.format() }); return }
+
+      services[idx] = check.data
+      await storage.updateProject(id, { services })
+      res.json(check.data)
+    } catch (err) {
+      log.error('api', `Failed to update service ${(req as Request<SP>).params.serviceId}`, err)
+      res.status(500).json({ error: 'Failed to update service' })
+    }
+  })
+
+  // DELETE /api/projects/:id/services/:serviceId — remove a service config
+  router.delete('/:serviceId', async (req, res) => {
+    const { id, serviceId } = req.params as unknown as SP
+    try {
+      const project = await storage.getProject(id)
+      if (!project) { res.status(404).json({ error: 'Project not found' }); return }
+
+      serviceManager.stop(id, serviceId)
+      const services = (project.services ?? []).filter((s) => s.id !== serviceId)
+      await storage.updateProject(id, { services })
+      res.json({ ok: true })
+    } catch (err) {
+      log.error('api', `Failed to remove service ${(req as Request<SP>).params.serviceId}`, err)
+      res.status(500).json({ error: 'Failed to remove service' })
+    }
+  })
+
+  // POST /api/projects/:id/services/:serviceId/start
+  router.post('/:serviceId/start', async (req, res) => {
+    const { id, serviceId } = req.params as unknown as SP
+    try {
+      const project = await storage.getProject(id)
+      if (!project) { res.status(404).json({ error: 'Project not found' }); return }
+
+      const config = (project.services ?? []).find((s) => s.id === serviceId)
+      if (!config) { res.status(404).json({ error: 'Service not found' }); return }
+
+      const parser = config.type === 'firebase-emulators' ? firebasePortParser : undefined
+      const state = serviceManager.start(id, project.path, config, parser)
+      res.json(state)
+    } catch (err) {
+      log.error('api', `Failed to start service ${(req as Request<SP>).params.serviceId}`, err)
+      res.status(500).json({ error: 'Failed to start service' })
+    }
+  })
+
+  // POST /api/projects/:id/services/:serviceId/stop
+  router.post('/:serviceId/stop', async (req, res) => {
+    const { id, serviceId } = req.params as unknown as SP
+    const stopped = serviceManager.stop(id, serviceId)
+    res.json({ ok: true, wasRunning: stopped })
+  })
+
+  // GET /api/projects/:id/services/:serviceId/status
+  router.get('/:serviceId/status', async (req, res) => {
+    const { id, serviceId } = req.params as unknown as SP
+    const state = serviceManager.getState(id, serviceId)
+    res.json(state)
+  })
+
+  return router
+}

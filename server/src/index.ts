@@ -13,6 +13,7 @@ try {
 import { StorageLayer } from './storage.js'
 import { SessionManager } from './session-manager.js'
 import { DevServerManager } from './dev-server-manager.js'
+import { ServiceManager } from './service-manager.js'
 import { registerAdapter } from './adapters/registry.js'
 import { KiroAdapter } from './adapters/kiro.js'
 import { KiroAcpAdapter } from './adapters/kiro-acp.js'
@@ -20,6 +21,7 @@ import { GeminiAdapter } from './adapters/gemini.js'
 import { ClaudeAdapter } from './adapters/claude.js'
 import { createSessionRoutes } from './routes/sessions.js'
 import { createProjectRoutes } from './routes/projects.js'
+import { createServiceRoutes } from './routes/services.js'
 import { createBrowseRoutes } from './routes/browse.js'
 import { createUploadRoutes } from './routes/upload.js'
 import { setupWebSocket } from './websocket.js'
@@ -41,6 +43,7 @@ log.info('server', `Push notifications: ${pushService.isEnabled() ? 'enabled' : 
 
 const sessionManager = new SessionManager(storage, pushService)
 const devServerManager = new DevServerManager()
+const serviceManager = new ServiceManager()
 
 // ---------------------------------------------------------------------------
 // Register CLI adapters
@@ -77,6 +80,7 @@ app.get('/api/health', (_req, res) => {
 // Mount REST routes
 app.use('/api/sessions', createSessionRoutes(sessionManager, storage))
 app.use('/api/projects', createProjectRoutes(storage, devServerManager))
+app.use('/api/projects/:id/services', createServiceRoutes(storage, serviceManager))
 app.use('/api/browse', createBrowseRoutes())
 app.use('/api/upload', createUploadRoutes('./data/uploads'))
 app.use('/api/push', createPushRoutes(pushService))
@@ -105,6 +109,7 @@ if (isMainModule) {
 
     try {
       await devServerManager.shutdownAll()
+      await serviceManager.shutdownAll()
       await sessionManager.shutdown()
     } catch (err) {
       log.error('server', 'Error during shutdown', err)

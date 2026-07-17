@@ -13,17 +13,29 @@
  * SECURITY.md before broadening this.
  */
 
-import { platform } from 'os'
+import { existsSync } from 'fs'
+import { homedir, platform } from 'os'
+import { join } from 'path'
 
 import type { ProviderType } from '../schemas.js'
 import type { ICLIAdapter, AdapterEvent } from './types.js'
 import { translateStreamJsonLine } from './claude-stream-json.js'
 
-/** Resolve the Claude Code binary: `CLAUDE_CLI_BIN` override, else `claude`. */
+/**
+ * Resolve the Claude Code binary: `CLAUDE_CLI_BIN` override, else the native
+ * installer location (`~/.local/bin`, which is often not on PATH on Windows),
+ * else the PATH-based name (`claude.cmd` from an npm global install on
+ * Windows, `claude` elsewhere).
+ */
 export function resolveClaudeBinary(): string {
   const override = process.env['CLAUDE_CLI_BIN']
   if (override && override.trim().length > 0) return override.trim()
-  return platform() === 'win32' ? 'claude.cmd' : 'claude'
+
+  const isWindows = platform() === 'win32'
+  const native = join(homedir(), '.local', 'bin', isWindows ? 'claude.exe' : 'claude')
+  if (existsSync(native)) return native
+
+  return isWindows ? 'claude.cmd' : 'claude'
 }
 
 /** Extra args from `CLAUDE_EXTRA_ARGS` (space-separated), for power users. */

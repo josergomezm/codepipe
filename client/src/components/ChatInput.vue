@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useSession } from '@/composables/useSession'
 import { useSessionsStore } from '@/stores/sessions'
 import { uploadFile } from '@/api/client'
@@ -16,6 +16,27 @@ function stop() {
 }
 
 const text = ref('')
+
+// Persist draft per session
+const draftKey = (id: string) => `codepipe:draft:${id}`
+
+watch(() => sessionsStore.activeSessionId, (newId, oldId) => {
+  // Save current draft for the session we're leaving
+  if (oldId) {
+    const draft = text.value
+    if (draft) localStorage.setItem(draftKey(oldId), draft)
+    else localStorage.removeItem(draftKey(oldId))
+  }
+  // Restore draft for the session we're entering
+  text.value = newId ? (localStorage.getItem(draftKey(newId)) ?? '') : ''
+}, { immediate: true })
+
+watch(text, (val) => {
+  const id = sessionsStore.activeSessionId
+  if (!id) return
+  if (val) localStorage.setItem(draftKey(id), val)
+  else localStorage.removeItem(draftKey(id))
+})
 const textarea = ref<HTMLTextAreaElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const pendingFiles = ref<File[]>([])
