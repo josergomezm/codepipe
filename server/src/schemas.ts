@@ -113,6 +113,10 @@ export const WSClientMessageSchema = z.discriminatedUnion('type', [
     type: z.literal('set_model'),
     model: z.string().min(1),
   }),
+  // Restart the CLI process (kill + respawn). Used when the agent hangs.
+  z.object({
+    type: z.literal('restart'),
+  }),
 ])
 
 export const WSServerMessageSchema = z.discriminatedUnion('type', [

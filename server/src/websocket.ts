@@ -96,6 +96,13 @@ function createMessageHandler(
           const message = modelErr instanceof Error ? modelErr.message : 'Failed to set model'
           ws.send(JSON.stringify({ type: 'error', data: message }))
         }
+      } else if (msg.type === 'restart') {
+        log.debug('ws', `Routing restart for session ${sessionId}`)
+        sessionManager.restartSession(sessionId).catch((restartErr) => {
+          log.error('ws', `restartSession failed for session ${sessionId}`, restartErr)
+          const message = restartErr instanceof Error ? restartErr.message : 'Failed to restart session'
+          ws.send(JSON.stringify({ type: 'error', data: message }))
+        })
       }
     } catch (err) {
       log.error('ws', 'Error processing message', err)

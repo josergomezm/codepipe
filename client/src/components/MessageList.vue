@@ -60,7 +60,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="relative flex-1 overflow-hidden">
+  <div class="relative min-h-0 flex-1 overflow-hidden">
     <div
       ref="container"
       class="h-full overflow-y-auto overflow-x-hidden py-4"

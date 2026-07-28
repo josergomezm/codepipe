@@ -184,6 +184,15 @@ function setModel(model: string): boolean {
   return true
 }
 
+/** Restart the CLI process (kill + respawn). Returns false if not connected. */
+function restart(): boolean {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false
+  const store = useSessionsStore()
+  if (!currentSessionId || currentSessionId !== store.activeSessionId) return false
+  ws.send(JSON.stringify({ type: 'restart' }))
+  return true
+}
+
 function clearConnectionError() {
   connectionError.value = null
 }
@@ -195,6 +204,7 @@ export function useSession() {
     sendMessage,
     cancel,
     setModel,
+    restart,
     clearConnectionError,
     isConnected,
     connectionError: readonly(connectionError),

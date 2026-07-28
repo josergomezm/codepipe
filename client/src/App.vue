@@ -61,7 +61,7 @@ onMounted(async () => {
     </Transition>
 
     <AppSidebar />
-    <main class="flex-1 overflow-hidden">
+    <main class="min-w-0 flex-1 overflow-hidden">
       <router-view />
     </main>
   </div>

@@ -79,6 +79,7 @@ export interface ISessionManager {
   detachClient(sessionId: string, socket: WebSocket): void
   handleInput(sessionId: string, text: string, attachments?: Attachment[]): void
   cancelTurn(sessionId: string): void
+  restartSession(sessionId: string): Promise<void>
   setModel(sessionId: string, model: string): void
   getModelState(sessionId: string): ModelState | null
   reviveSession(sessionId: string, archivedSession: Session): Promise<Session>
@@ -474,6 +475,70 @@ export class SessionManager implements ISessionManager {
     // Non-ACP processes emit 'close' which calls finishTurn; for ACP (cancel is
     // a fire-and-forget notification) clear busy now so the UI returns to idle.
     ctx.busy = false
+    this.broadcast(sessionId, { type: 'status', data: 'idle' })
+  }
+
+  // -----------------------------------------------------------------------
+  // restartSession — kill the CLI process and respawn a fresh one
+  // -----------------------------------------------------------------------
+
+  async restartSession(sessionId: string): Promise<void> {
+    const ctx = this.sessions.get(sessionId)
+    if (!ctx) throw new Error(`Session ${sessionId} not found`)
+
+    log.info('session', `Restarting CLI for session ${sessionId}`)
+
+    // 1. Cancel any in-flight work and drain the queue
+    ctx.inputQueue = []
+    ctx.busy = false
+
+    // 2. Kill the existing process
+    if (ctx.adapter.transport === 'acp') {
+      if (ctx.acpDriver) {
+        try { ctx.acpDriver.dispose() } catch { /* already dead */ }
+        ctx.acpDriver = null
+      }
+    } else if (ctx.childProcess) {
+      try { ctx.childProcess.kill() } catch { /* already dead */ }
+      ctx.childProcess = null
+    } else if (ctx.pty) {
+      try { ctx.pty.kill() } catch { /* already dead */ }
+      ctx.pty = null
+    }
+
+    // Finalize any streaming message
+    this.finalizeCurrentMessage(sessionId)
+    ctx.currentMessage = null
+
+    // 3. Emit a system message so the user knows what happened
+    this.emitSystemMessage(sessionId, ctx, 'CLI restarted.')
+
+    // 4. Respawn
+    if (ctx.adapter.transport === 'acp') {
+      await this.startAcpDriver(sessionId, ctx, ctx.session.cliSessionId ?? null)
+    } else if (ctx.adapter.nonInteractive) {
+      // Nothing to spawn — non-interactive adapters spawn per-message
+    } else {
+      // Interactive (PTY) mode
+      const resumeCmd = ctx.adapter.getResumeCommand(ctx.session.cliSessionId ?? null)
+      const shell = resumeCmd ? resumeCmd.command : ctx.adapter.command
+      const args = resumeCmd ? resumeCmd.args : ctx.adapter.args
+      log.info('session', `Respawning PTY: ${shell} ${args.join(' ')} in ${ctx.projectPath}`)
+      const ptyProcess = pty.spawn(shell, args, {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 40,
+        cwd: ctx.projectPath,
+        env: { ...process.env } as Record<string, string>,
+      })
+      ctx.pty = ptyProcess
+      this.wirePtyToSession(sessionId, ctx)
+      if (!resumeCmd) {
+        this.scheduleSystemPrompt(sessionId, ctx.adapter)
+      }
+    }
+
+    // 5. Tell clients we're idle and ready
     this.broadcast(sessionId, { type: 'status', data: 'idle' })
   }
 

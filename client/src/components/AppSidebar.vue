@@ -3,6 +3,7 @@ import { useUiStore } from '@/stores/ui'
 import NewSessionButton from '@/components/NewSessionButton.vue'
 import ProjectList from '@/components/ProjectList.vue'
 import NotificationToggle from '@/components/NotificationToggle.vue'
+import DarkModeToggle from '@/components/DarkModeToggle.vue'
 
 const ui = useUiStore()
 </script>
@@ -35,6 +36,7 @@ const ui = useUiStore()
     <!-- Footer -->
     <div class="border-t border-gray-200 py-2 dark:border-gray-800">
       <NotificationToggle />
+      <DarkModeToggle />
     </div>
   </aside>
 </template>
