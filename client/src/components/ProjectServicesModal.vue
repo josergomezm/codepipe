@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { useProjectsStore } from '@/stores/projects'
+import { useSessionsStore } from '@/stores/sessions'
 import { detectFirebase } from '@/api/client'
 import type { ServiceWithState, DetectFirebaseResponse } from '@/api/client'
 
@@ -13,6 +14,7 @@ const emit = defineEmits<{
 }>()
 
 const store = useProjectsStore()
+const sessionsStore = useSessionsStore()
 
 const project = computed(() => store.projects.find((p) => p.id === props.projectId))
 const services = computed<ServiceWithState[]>(() =>
@@ -96,6 +98,7 @@ async function addDetected() {
 async function startService(serviceId: string) {
   if (!props.projectId) return
   loadingId.value = serviceId
+  store.clearError()
   await store.startService(props.projectId, serviceId)
   loadingId.value = null
   startPolling()
@@ -104,6 +107,7 @@ async function startService(serviceId: string) {
 async function stopService(serviceId: string) {
   if (!props.projectId) return
   loadingId.value = serviceId
+  store.clearError()
   await store.stopService(props.projectId, serviceId)
   loadingId.value = null
 }
@@ -113,6 +117,47 @@ async function removeService(serviceId: string) {
   loadingId.value = serviceId
   await store.removeService(props.projectId, serviceId)
   loadingId.value = null
+}
+
+// True when the shown error is a port conflict — enables the fix-ports flow
+const isPortConflictError = computed(
+  () => !!store.error && store.error.toLowerCase().includes('port'),
+)
+
+/**
+ * Open an AI session that rewrites this project's firebase.json with a
+ * unique emulator port block and updates code references to the old ports.
+ */
+async function fixEmulatorPorts() {
+  if (!props.projectId) return
+
+  // Every local port we know is taken on this machine
+  const taken = new Set<number>()
+  for (const r of store.portRegistry?.reserved ?? []) taken.add(r.port)
+  for (const m of store.portRegistry?.tailscaleMappings ?? []) taken.add(m.localPort)
+  for (const p of store.projects) {
+    if (p.devServer) taken.add(p.devServer.port)
+  }
+  const takenList = [...taken].sort((a, b) => a - b).join(', ')
+
+  const conflictContext = isPortConflictError.value
+    ? `The emulators just failed to start with this error: "${store.error}"\n\n`
+    : ''
+
+  const prompt = `${conflictContext}Fix the Firebase emulator ports of this project so its emulators can run alongside other projects on this machine. Firebase's default ports are the same for every project, so this project needs its own unique port block.
+
+1. Locate firebase.json (project root or an immediate subdirectory).
+
+2. In its "emulators" section, set an explicit unique "port" for EVERY emulator this project uses — including "ui" and "hub" even if they currently have no entry. Firebase defaults for reference: auth 9099, functions 5001, firestore 8080, database 9000, hosting 5000, pubsub 8085, storage 9199, eventarc 9299, ui 4000, hub 4400.
+
+3. Pick one consistent offset from those defaults (e.g. +100 or +1000) so the block is easy to remember, and make sure NONE of the new ports are in this list of ports already taken on this machine: ${takenList || '(none known)'}. Also avoid the plain Firebase defaults, since other projects use them.
+
+4. Search this codebase for references to the old emulator ports and update them to the new ones — connectAuthEmulator / connectFirestoreEmulator / connectFunctionsEmulator / connectStorageEmulator / connectDatabaseEmulator calls, .env files, test configs, and scripts.
+
+5. Change nothing else in firebase.json.`
+
+  close()
+  await sessionsStore.createSessionWithPrompt('kiro', props.projectId, prompt)
 }
 
 function statusColor(status: string) {
@@ -126,6 +171,7 @@ function openUrl(url: string) {
 }
 
 function close() {
+  store.clearError()
   emit('close')
 }
 </script>
@@ -156,6 +202,20 @@ function close() {
 
         <!-- Body -->
         <div class="flex flex-col gap-4 overflow-y-auto px-5 py-4">
+          <!-- Server-side error (e.g. emulator port conflicts) -->
+          <div v-if="store.error" class="rounded-lg bg-red-50 px-3 py-2 dark:bg-red-900/20">
+            <div class="flex items-start gap-2 text-xs text-red-700 dark:text-red-400">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="mt-0.5 h-4 w-4 shrink-0">
+                <path fill-rule="evenodd" d="M6.701 2.25c.577-1 2.02-1 2.598 0l5.196 9a1.5 1.5 0 0 1-1.299 2.25H2.804a1.5 1.5 0 0 1-1.3-2.25l5.197-9ZM8 4a.75.75 0 0 1 .75.75v3a.75.75 0 0 1-1.5 0v-3A.75.75 0 0 1 8 4Zm0 8a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clip-rule="evenodd" />
+              </svg>
+              <span>{{ store.error }}</span>
+            </div>
+            <button
+              v-if="isPortConflictError"
+              class="mt-2 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-red-700"
+              @click="fixEmulatorPorts"
+            >Fix ports with AI</button>
+          </div>
 
           <!-- Existing services -->
           <div v-if="services.length > 0" class="flex flex-col gap-2">
@@ -179,6 +239,17 @@ function close() {
                 </div>
                 <!-- Controls -->
                 <div class="flex shrink-0 items-center gap-1.5">
+                  <button
+                    v-if="svc.type === 'firebase-emulators' && svc.state.status !== 'running'"
+                    :disabled="loadingId === svc.id"
+                    class="rounded p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-blue-500 dark:hover:bg-gray-800 dark:hover:text-blue-400"
+                    title="Fix emulator ports with AI"
+                    @click="fixEmulatorPorts"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-3.5 w-3.5">
+                      <path fill-rule="evenodd" d="M11.5 1.5a3 3 0 0 0-2.87 3.87L4.94 9.06a3 3 0 1 0 2 2l3.69-3.69A3 3 0 1 0 11.5 1.5Zm-6 9a1 1 0 1 1-2 0 1 1 0 0 1 2 0Zm7.5-6a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z" clip-rule="evenodd" />
+                    </svg>
+                  </button>
                   <button
                     v-if="svc.state.status !== 'running'"
                     :disabled="loadingId === svc.id"

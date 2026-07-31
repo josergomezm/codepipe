@@ -9,6 +9,27 @@ import { randomUUID } from 'crypto'
 // Detection
 // ---------------------------------------------------------------------------
 
+/**
+ * Firebase's built-in default ports — used when firebase.json configures an
+ * emulator without an explicit port. Identical for every project, which is
+ * why two projects on defaults collide.
+ */
+const FIREBASE_DEFAULT_PORTS: Record<string, number> = {
+  auth: 9099,
+  functions: 5001,
+  firestore: 8080,
+  database: 9000,
+  hosting: 5000,
+  pubsub: 8085,
+  storage: 9199,
+  eventarc: 9299,
+  dataconnect: 9399,
+  tasks: 9499,
+  ui: 4000,
+  hub: 4400,
+  logging: 4500,
+}
+
 export interface FirebaseDetectionResult {
   found: boolean
   firebaseDir: string | null       // relative path from project root
@@ -37,15 +58,23 @@ export async function detectFirebaseEmulators(projectPath: string): Promise<Fire
   const firebaseDir = path.dirname(firebasePath)
   result.firebaseDir = path.relative(projectPath, firebaseDir) || null
 
-  // Parse firebase.json for default emulator ports
+  // Parse firebase.json for the ports the emulators will actually bind:
+  // explicit ports win, otherwise Firebase's built-in defaults apply.
   try {
     const raw = await readFile(firebasePath, 'utf-8')
     const config = JSON.parse(raw)
     if (config.emulators) {
       for (const [service, cfg] of Object.entries(config.emulators)) {
-        if (cfg && typeof cfg === 'object' && 'port' in (cfg as Record<string, unknown>)) {
-          result.defaultPorts[service] = (cfg as { port: number }).port
+        const obj = (cfg && typeof cfg === 'object' ? cfg : {}) as Record<string, unknown>
+        if (typeof obj.port === 'number') {
+          result.defaultPorts[service] = obj.port
+        } else if (obj.enabled !== false && FIREBASE_DEFAULT_PORTS[service] !== undefined) {
+          result.defaultPorts[service] = FIREBASE_DEFAULT_PORTS[service]
         }
+      }
+      // The emulator hub always runs alongside the emulators
+      if (result.defaultPorts['hub'] === undefined) {
+        result.defaultPorts['hub'] = FIREBASE_DEFAULT_PORTS['hub']
       }
     }
   } catch {

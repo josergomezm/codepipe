@@ -143,7 +143,11 @@ function openDevServer(url: string) {
 
 async function startDevServer(id: string) {
   openMenuId.value = null
-  await projectStore.startDevServer(id)
+  const info = await projectStore.startDevServer(id)
+  if (!info) {
+    // Start failed (e.g. port conflict) — open settings so the error is visible
+    settingsProjectId.value = id
+  }
 }
 
 async function stopDevServer(id: string) {

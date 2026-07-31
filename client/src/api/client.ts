@@ -151,9 +151,27 @@ export async function renameSession(id: string, title: string): Promise<void> {
 
 // --- Projects ---
 
+export interface ReservedPort {
+  port: number
+  type: 'local'
+  owner: string
+}
+
+export interface TailscaleMapping {
+  tailscalePort: number
+  localPort: number
+  owner: string
+}
+
+export interface PortRegistry {
+  reserved: ReservedPort[]
+  tailscaleMappings: TailscaleMapping[]
+}
+
 export interface ProjectsResponse {
   projects: Project[]
   tailscaleHostname: string | null
+  portRegistry?: PortRegistry
 }
 
 export async function fetchProjects(): Promise<ProjectsResponse> {

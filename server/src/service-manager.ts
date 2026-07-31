@@ -44,9 +44,17 @@ interface ServiceProcess {
   process: ChildProcess
   projectId: string
   serviceId: string
+  label: string
   state: ServiceState
   portParser?: PortParser
   exited: boolean
+}
+
+export interface RunningService {
+  projectId: string
+  serviceId: string
+  label: string
+  state: ServiceState
 }
 
 export class ServiceManager {
@@ -99,6 +107,7 @@ export class ServiceManager {
       process: child,
       projectId,
       serviceId: config.id,
+      label: config.label,
       state,
       portParser,
       exited: false,
@@ -155,6 +164,21 @@ export class ServiceManager {
     entry.state.status = 'stopped'
     this.processes.delete(key)
     return true
+  }
+
+  /** All currently running services across every project. */
+  listRunning(): RunningService[] {
+    const out: RunningService[] = []
+    for (const entry of this.processes.values()) {
+      if (entry.exited) continue
+      out.push({
+        projectId: entry.projectId,
+        serviceId: entry.serviceId,
+        label: entry.label,
+        state: entry.state,
+      })
+    }
+    return out
   }
 
   getState(projectId: string, serviceId: string): ServiceState {

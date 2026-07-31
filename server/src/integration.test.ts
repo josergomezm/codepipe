@@ -103,6 +103,7 @@ vi.mock('node-pty', () => ({
 import { StorageLayer } from './storage.js'
 import { SessionManager } from './session-manager.js'
 import { DevServerManager } from './dev-server-manager.js'
+import { ServiceManager } from './service-manager.js'
 import { registerAdapter, clearAdapters } from './adapters/registry.js'
 import { KiroAdapter } from './adapters/kiro.js'
 import { createSessionRoutes } from './routes/sessions.js'
@@ -133,7 +134,7 @@ async function buildTestServer(): Promise<number> {
   app = express()
   app.use(express.json())
   app.use('/api/sessions', createSessionRoutes(sessionManager, storage))
-  app.use('/api/projects', createProjectRoutes(storage, new DevServerManager()))
+  app.use('/api/projects', createProjectRoutes(storage, new DevServerManager(), new ServiceManager()))
 
   httpServer = createServer(app)
   setupWebSocket(httpServer, sessionManager, storage)

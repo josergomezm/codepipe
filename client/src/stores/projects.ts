@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as api from '../api/client'
-import type { Project, ProjectDevServer, DevServerInfo, ServiceWithState, ServiceConfig, ServiceState } from '../api/client'
+import type { Project, ProjectDevServer, DevServerInfo, ServiceWithState, ServiceConfig, ServiceState, PortRegistry } from '../api/client'
 
 // Per-project service state (runtime, not persisted in project object)
 const serviceStateMap = ref<Map<string, ServiceWithState[]>>(new Map())
@@ -9,6 +9,7 @@ const serviceStateMap = ref<Map<string, ServiceWithState[]>>(new Map())
 export const useProjectsStore = defineStore('projects', () => {
   const projects = ref<Project[]>([])
   const tailscaleHostname = ref<string | null>(null)
+  const portRegistry = ref<PortRegistry | null>(null)
   const error = ref<string | null>(null)
 
   async function fetchProjects() {
@@ -16,6 +17,9 @@ export const useProjectsStore = defineStore('projects', () => {
       const response = await api.fetchProjects()
       projects.value = response.projects
       tailscaleHostname.value = response.tailscaleHostname
+      if (response.portRegistry) {
+        portRegistry.value = response.portRegistry
+      }
       error.value = null
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to load projects'
@@ -191,6 +195,7 @@ export const useProjectsStore = defineStore('projects', () => {
   return {
     projects,
     tailscaleHostname,
+    portRegistry,
     error,
     fetchProjects,
     addProject,

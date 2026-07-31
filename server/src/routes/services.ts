@@ -5,6 +5,7 @@ import type { ServiceManager } from '../service-manager.js'
 import { ProjectServiceConfigSchema } from '../schemas.js'
 import { log } from '../logger.js'
 import { detectFirebaseEmulators, buildFirebaseServiceConfig, firebasePortParser } from '../services/firebase-detector.js'
+import { isLocalPortListening, identifyLocalPortOwner, servicePortsAsReserved } from '../ports.js'
 
 // TypeScript doesn't reflect mergeParams at the type level, so we cast params
 // explicitly in each handler.
@@ -118,6 +119,34 @@ export function createServiceRoutes(storage: IStorageLayer, serviceManager: Serv
 
       const config = (project.services ?? []).find((s) => s.id === serviceId)
       if (!config) { res.status(404).json({ error: 'Service not found' }); return }
+
+      // Pre-start guard: Firebase's default ports are identical for every
+      // project, so check the ports this instance will bind before spawning.
+      if (config.type === 'firebase-emulators') {
+        const detection = await detectFirebaseEmulators(project.path)
+        const allProjects = await storage.listProjects()
+
+        // Ports held by this same service are fine — start() restarts it
+        const own = serviceManager.getState(id, serviceId)
+        const ownPorts = new Set(Object.values(own.ports).map((p) => p.port))
+        const otherRunning = serviceManager
+          .listRunning()
+          .filter((s) => !(s.projectId === id && s.serviceId === serviceId))
+        const reserved = servicePortsAsReserved(otherRunning, allProjects)
+
+        const conflicts: string[] = []
+        for (const [emulator, port] of Object.entries(detection.defaultPorts)) {
+          if (ownPorts.has(port)) continue
+          if (!isLocalPortListening(port)) continue
+          conflicts.push(`port ${port} (${emulator}) is in use by ${identifyLocalPortOwner(port, allProjects, reserved)}`)
+        }
+        if (conflicts.length > 0) {
+          res.status(409).json({
+            error: `Cannot start Firebase emulators: ${conflicts.join(', ')}. Stop the other service or set unique ports in this project's firebase.json.`,
+          })
+          return
+        }
+      }
 
       const parser = config.type === 'firebase-emulators' ? firebasePortParser : undefined
       const state = serviceManager.start(id, project.path, config, parser)

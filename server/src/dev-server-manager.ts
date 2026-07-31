@@ -4,11 +4,13 @@ import type { ProjectDevServer } from './schemas.js'
 import {
   buildTailscaleUrl,
   getTailscaleHostname,
+  getServeStatus,
   hasServeMapping,
   createServeMapping,
   removeServeMapping,
   invalidateServeCache,
 } from './tailscale.js'
+import { PortConflictError, CODEPIPE_TAILSCALE_PORT, isLocalPortListening } from './ports.js'
 import path from 'path'
 
 // ---------------------------------------------------------------------------
@@ -54,12 +56,28 @@ export class DevServerManager {
 
     const tailscalePort = config.tailscalePort ?? 443
 
+    // 443 serves the CodePipe frontend itself — creating a mapping there
+    // would replace it and take down remote access to CodePipe.
+    if (tailscalePort === CODEPIPE_TAILSCALE_PORT) {
+      throw new PortConflictError(
+        'Tailscale port 443 is reserved by CodePipe. Set a dedicated Tailscale port (e.g. 8443) in project settings.',
+      )
+    }
+
     // Invalidate cache so we get fresh Tailscale state after a stop/restart cycle
     invalidateServeCache()
 
     // Ensure Tailscale Serve mapping exists
     const existingMapping = hasServeMapping(config.port, tailscalePort)
     if (!existingMapping) {
+      // `tailscale serve` silently replaces whatever was mapped on this HTTPS
+      // port — refuse instead of clobbering someone else's mapping.
+      const clash = getServeStatus().mappings.find((m) => m.tailscalePort === tailscalePort)
+      if (clash) {
+        throw new PortConflictError(
+          `Tailscale port ${tailscalePort} already proxies to local port ${clash.localPort}. Pick a different Tailscale port in project settings.`,
+        )
+      }
       log.info('dev-server', `No Tailscale mapping for port ${config.port} on TS port ${tailscalePort}, creating one...`)
       const created = await createServeMapping(tailscalePort, config.port)
       if (!created) {
@@ -373,33 +391,10 @@ export class DevServerManager {
 
   /**
    * Check if a port is currently listening on localhost.
-   * Filters out Tailscale's own listeners (100.x.x.x) to avoid false positives.
+   * Delegates to the shared probe in ports.ts.
    */
   private isPortListening(port: number): boolean {
-    try {
-      if (process.platform === 'win32') {
-        const output = execSync(`netstat -aon | findstr :${port} | findstr LISTENING`, {
-          encoding: 'utf-8',
-          timeout: 3000,
-          stdio: ['pipe', 'pipe', 'pipe'],
-        })
-        // Only count 127.0.0.1 or 0.0.0.0 bindings — not Tailscale interface (100.x.x.x)
-        const lines = output.trim().split('\n')
-        return lines.some((line) => {
-          const trimmed = line.trim()
-          return trimmed.startsWith('TCP    127.0.0.1:') || trimmed.startsWith('TCP    0.0.0.0:')
-        })
-      } else {
-        const output = execSync(`ss -tlnp 2>/dev/null | grep :${port} || lsof -i :${port} -sTCP:LISTEN 2>/dev/null`, {
-          encoding: 'utf-8',
-          timeout: 3000,
-          stdio: ['pipe', 'pipe', 'pipe'],
-        })
-        return output.trim().length > 0
-      }
-    } catch {
-      return false
-    }
+    return isLocalPortListening(port)
   }
 
   /**

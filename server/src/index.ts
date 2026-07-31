@@ -79,7 +79,7 @@ app.get('/api/health', (_req, res) => {
 
 // Mount REST routes
 app.use('/api/sessions', createSessionRoutes(sessionManager, storage))
-app.use('/api/projects', createProjectRoutes(storage, devServerManager))
+app.use('/api/projects', createProjectRoutes(storage, devServerManager, serviceManager))
 app.use('/api/projects/:id/services', createServiceRoutes(storage, serviceManager))
 app.use('/api/browse', createBrowseRoutes())
 app.use('/api/upload', createUploadRoutes('./data/uploads'))

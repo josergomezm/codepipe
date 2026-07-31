@@ -8,11 +8,13 @@ import { CreateProjectRequestSchema, ProjectDevServerSchema } from '../schemas.j
 import { log } from '../logger.js'
 import type { DevServerManager } from '../dev-server-manager.js'
 import { getServeStatus, getTailscaleHostname } from '../tailscale.js'
+import { buildPortRegistry, checkPortConflicts, formatConflicts, servicePortsAsReserved, PortConflictError } from '../ports.js'
+import type { ServiceManager } from '../service-manager.js'
 
 /**
  * Create an Express Router for project CRUD endpoints.
  */
-export function createProjectRoutes(storage: IStorageLayer, devServerManager: DevServerManager): Router {
+export function createProjectRoutes(storage: IStorageLayer, devServerManager: DevServerManager, serviceManager: ServiceManager): Router {
   const router = Router()
 
   // GET /api/projects — list all projects
@@ -27,7 +29,13 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
           ? devServerManager.getStatus(p.id, p.devServer)
           : null,
       }))
-      res.json({ projects: result, tailscaleHostname: hostname })
+
+      // Port registry: CodePipe's own ports, ports held by running services
+      // (e.g. Firebase emulators), and all Tailscale serve mappings
+      const servicePorts = servicePortsAsReserved(serviceManager.listRunning(), projects)
+      const portRegistry = buildPortRegistry(projects, servicePorts)
+
+      res.json({ projects: result, tailscaleHostname: hostname, portRegistry })
     } catch (err) {
       log.error('api', 'Failed to list projects', err)
       res.status(500).json({ error: 'Failed to list projects' })
@@ -101,6 +109,15 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
             res.status(400).json({ error: parsed.error.format() })
             return
           }
+
+          const allProjects = await storage.listProjects()
+          const servicePorts = servicePortsAsReserved(serviceManager.listRunning(), allProjects)
+          const conflicts = checkPortConflicts(parsed.data.port, parsed.data.tailscalePort, allProjects, id, servicePorts)
+          if (conflicts.length > 0) {
+            res.status(400).json({ error: formatConflicts(conflicts) })
+            return
+          }
+
           updates.devServer = parsed.data
         }
       }
@@ -153,9 +170,23 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
         return
       }
 
+      // Guard against clobbering another project's ports or an active
+      // Tailscale mapping — configs can go stale after they were saved.
+      const allProjects = await storage.listProjects()
+      const servicePorts = servicePortsAsReserved(serviceManager.listRunning(), allProjects)
+      const conflicts = checkPortConflicts(project.devServer.port, project.devServer.tailscalePort, allProjects, id, servicePorts)
+      if (conflicts.length > 0) {
+        res.status(409).json({ error: `Cannot start: ${formatConflicts(conflicts)}. Update the ports in project settings.` })
+        return
+      }
+
       const info = await devServerManager.start(id, project.path, project.devServer)
       res.json(info)
     } catch (err) {
+      if (err instanceof PortConflictError) {
+        res.status(409).json({ error: err.message })
+        return
+      }
       log.error('api', `Failed to start dev server for project ${id}`, err)
       res.status(500).json({ error: 'Failed to start dev server' })
     }

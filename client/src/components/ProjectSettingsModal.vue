@@ -140,32 +140,76 @@ const portError = computed<string | null>(() => {
   const p = parsedPort.value
   if (isNaN(p)) return 'Must be a number'
   if (p < MIN_PORT || p > MAX_PORT) return `Must be ${MIN_PORT}–${MAX_PORT}`
+
+  // Reserved ports check (CodePipe Backend: 5551, CodePipe Frontend: 5552)
+  const reserved = store.portRegistry?.reserved.find((r) => r.port === p)
+  if (reserved) return `Reserved by ${reserved.owner}`
+
+  // Check existing projects
   const conflict = store.projects.find(
     (proj) => proj.id !== props.projectId && proj.devServer?.port === p,
   )
   if (conflict) return `Used by ${conflict.name}`
+
+  // Check active Tailscale serve mappings
+  const activeMapping = store.portRegistry?.tailscaleMappings.find(
+    (m) => m.localPort === p && m.owner !== 'Unknown' && m.owner !== project.value?.name,
+  )
+  if (activeMapping) return `Used by ${activeMapping.owner}`
+
   return null
 })
 
 const tailscalePortError = computed<string | null>(() => {
-  if (tailscalePort.value === '') return null
+  // Required: leaving it empty used to default to 443, which is CodePipe's
+  // own frontend mapping — starting the server would clobber it.
+  if (tailscalePort.value === '') {
+    return port.value === '' ? null : 'Required — 443 is reserved by CodePipe'
+  }
   const p = parsedTailscalePort.value
   if (p === null || isNaN(p)) return 'Must be a number'
-  if (p !== 443 && (p < 1024 || p > MAX_PORT)) return 'Must be 443 or 1024–65535'
+  if (p === 443) return 'Reserved by CodePipe Frontend'
+  if (p < MIN_PORT || p > MAX_PORT) return `Must be ${MIN_PORT}–${MAX_PORT}`
+
   const conflict = store.projects.find(
     (proj) => proj.id !== props.projectId && (proj.devServer?.tailscalePort ?? 443) === p,
   )
   if (conflict) return `Used by ${conflict.name}`
+
+  const activeMapping = store.portRegistry?.tailscaleMappings.find(
+    (m) => m.tailscalePort === p && m.localPort !== parsedPort.value && m.owner !== project.value?.name,
+  )
+  if (activeMapping) return `Used by ${activeMapping.owner === 'Unknown' ? 'an active Tailscale mapping' : activeMapping.owner}`
+
   return null
+})
+
+// First free Tailscale port starting at 8443, skipping other projects'
+// configs and every active Tailscale mapping.
+const suggestedTailscalePort = computed<number>(() => {
+  const taken = new Set<number>()
+  for (const proj of store.projects) {
+    if (proj.id === props.projectId) continue
+    if (proj.devServer?.tailscalePort) taken.add(proj.devServer.tailscalePort)
+  }
+  for (const m of store.portRegistry?.tailscaleMappings ?? []) {
+    taken.add(m.tailscalePort)
+  }
+  let candidate = 8443
+  while (taken.has(candidate)) candidate++
+  return candidate
 })
 
 const formValid = computed(() => {
   const p = parsedPort.value
+  const tp = parsedTailscalePort.value
   return (
     startCommand.value.length > 0 &&
     !isNaN(p) &&
     p >= MIN_PORT &&
     p <= MAX_PORT &&
+    tp !== null &&
+    !isNaN(tp) &&
     !portError.value &&
     !tailscalePortError.value
   )
@@ -174,12 +218,11 @@ const formValid = computed(() => {
 async function saveConfig() {
   if (!props.projectId || !formValid.value) return
   saving.value = true
-  const p = parseInt(port.value)
-  const tp = tailscalePort.value ? parseInt(tailscalePort.value) : undefined
+  store.clearError()
   await store.updateProjectDevServer(props.projectId, {
     startCommand: startCommand.value,
-    port: p,
-    tailscalePort: tp,
+    port: parseInt(port.value),
+    tailscalePort: parseInt(tailscalePort.value),
   })
   saving.value = false
 }
@@ -192,20 +235,25 @@ async function removeConfig() {
 async function startServer() {
   if (!props.projectId) return
   serverLoading.value = true
+  store.clearError()
   try {
     await store.startDevServer(props.projectId)
   } finally {
     serverLoading.value = false
+    // Refresh so the port registry reflects the new Tailscale mapping
+    await store.fetchProjects()
   }
 }
 
 async function stopServer() {
   if (!props.projectId) return
   serverLoading.value = true
+  store.clearError()
   try {
     await store.stopDevServer(props.projectId)
   } finally {
     serverLoading.value = false
+    await store.fetchProjects()
   }
 }
 
@@ -219,7 +267,7 @@ async function setupProject() {
   if (!props.projectId || !project.value) return
 
   const p = port.value || '5173'
-  const tp = tailscalePort.value || '443'
+  const tp = tailscalePort.value || String(suggestedTailscalePort.value)
   const pm = packageManager.value
 
   const prompt = `Set up this project for CodePipe remote dev access. Here's what needs to happen:
@@ -241,6 +289,7 @@ Keep the existing dev script intact — dev:remote is a separate script for tunn
 }
 
 function close() {
+  store.clearError()
   emit('close')
 }
 </script>
@@ -416,18 +465,31 @@ function close() {
                 <p v-if="portError" class="mt-1 text-xs text-red-500 dark:text-red-400">{{ portError }}</p>
               </div>
               <div>
-                <label class="mb-1 block text-xs text-gray-500 dark:text-gray-400">Tailscale Port <span class="text-gray-400 dark:text-gray-600">443 or 1024+</span></label>
+                <label class="mb-1 block text-xs text-gray-500 dark:text-gray-400">Tailscale Port <span class="text-gray-400 dark:text-gray-600">1024–65535</span></label>
                 <input
                   v-model="tailscalePort"
                   type="number"
-                  placeholder="443 (default)"
+                  :placeholder="String(suggestedTailscalePort)"
                   class="w-full rounded-lg border bg-white px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-1 dark:bg-gray-800 dark:text-gray-100"
                   :class="tailscalePortError
                     ? 'border-red-300 focus:border-red-500 focus:ring-red-500 dark:border-red-700'
                     : 'border-gray-200 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-700'"
                 />
                 <p v-if="tailscalePortError" class="mt-1 text-xs text-red-500 dark:text-red-400">{{ tailscalePortError }}</p>
+                <button
+                  v-if="tailscalePort === '' || tailscalePortError"
+                  class="mt-1 text-xs text-blue-600 hover:text-blue-700 dark:text-blue-400"
+                  @click="tailscalePort = String(suggestedTailscalePort)"
+                >Use {{ suggestedTailscalePort }} (free)</button>
               </div>
+            </div>
+
+            <!-- Server-side error (port conflicts on save/start) -->
+            <div v-if="store.error" class="flex items-start gap-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-900/20 dark:text-red-400">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="mt-0.5 h-4 w-4 shrink-0">
+                <path fill-rule="evenodd" d="M6.701 2.25c.577-1 2.02-1 2.598 0l5.196 9a1.5 1.5 0 0 1-1.299 2.25H2.804a1.5 1.5 0 0 1-1.3-2.25l5.197-9ZM8 4a.75.75 0 0 1 .75.75v3a.75.75 0 0 1-1.5 0v-3A.75.75 0 0 1 8 4Zm0 8a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clip-rule="evenodd" />
+              </svg>
+              <span>{{ store.error }}</span>
             </div>
 
             <!-- Action buttons -->
