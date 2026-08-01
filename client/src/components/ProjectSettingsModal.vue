@@ -282,6 +282,21 @@ async function setupProject() {
 
 3. The package manager is ${pm}.
 
+4. IMPORTANT — single-origin rule: this app is accessed remotely (e.g. from a phone) through ONE Tailscale-served https origin, so browser code must NEVER connect directly to other localhost ports (on the phone, 127.0.0.1 is the phone; https pages also can't call http endpoints). Server-side emulator traffic (Admin SDK) is fine as-is via *_EMULATOR_HOST env vars. But if this project uses Firebase client-SDK emulators in the BROWSER, wire them through the dev server so all emulator traffic is same-origin:
+
+   a. Read the emulator ports from firebase.json, then add Vite server.proxy entries targeting them (emulator URL paths are globally unique, so they won't clash with app routes):
+      - '/identitytoolkit.googleapis.com' → http://127.0.0.1:<auth port>
+      - '/securetoken.googleapis.com' → http://127.0.0.1:<auth port>
+      - '/emulator' → http://127.0.0.1:<auth port>  (auth handler/widget pages used by signInWithPopup/Redirect)
+      - '/google.firestore.v1.Firestore' → http://127.0.0.1:<firestore port>  (set ws: true)
+      - '/v0' → http://127.0.0.1:<storage port>  (only if the storage emulator is used in the browser)
+
+   b. In the client emulator-connection code, branch on remote mode (expose TAILSCALE_HOST to the client, e.g. via Vite define/VITE_ var, or use the mode):
+      - Remote: connectAuthEmulator(auth, window.location.origin, { disableWarnings: true })
+      - Remote Firestore: do NOT use connectFirestoreEmulator (it forces ssl:false, which breaks on an https page). Instead: initializeFirestore(app, { host: window.location.host, ssl: true, experimentalAutoDetectLongPolling: true })
+      - Local (no TAILSCALE_HOST): keep the normal 127.0.0.1:<port> emulator connections.
+      - Callable functions used from the browser: route through the same origin (proxy) or move the calls to the backend — never the raw functions emulator port.
+
 Keep the existing dev script intact — dev:remote is a separate script for tunnel access. The regular dev script should keep working for local development.`
 
   emit('close')
@@ -530,6 +545,10 @@ function close() {
                 </svg>
                 dev:remote script found — project is ready
               </div>
+              <button
+                class="mt-1.5 block w-full text-center text-xs text-blue-600 hover:text-blue-700 dark:text-blue-400"
+                @click="setupProject"
+              >Re-run remote setup (HMR + same-origin emulator proxy)</button>
             </div>
           </div>
         </div>

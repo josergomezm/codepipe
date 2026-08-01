@@ -21,6 +21,11 @@ const services = computed<ServiceWithState[]>(() =>
   props.projectId ? store.getServices(props.projectId) : [],
 )
 
+// Firebase emulators are a singleton per project — hide the add flow once present
+const hasFirebaseService = computed(() =>
+  services.value.some((s) => s.type === 'firebase-emulators'),
+)
+
 // Detection state
 const detecting = ref(false)
 const detected = ref<DetectFirebaseResponse | null>(null)
@@ -88,7 +93,7 @@ async function runDetect() {
 }
 
 async function addDetected() {
-  if (!props.projectId || !detected.value?.suggested) return
+  if (!props.projectId || !detected.value?.suggested || hasFirebaseService.value) return
   loadingId.value = 'adding'
   await store.addService(props.projectId, detected.value.suggested)
   detected.value = null
@@ -152,9 +157,11 @@ async function fixEmulatorPorts() {
 
 3. Pick one consistent offset from those defaults (e.g. +100 or +1000) so the block is easy to remember, and make sure NONE of the new ports are in this list of ports already taken on this machine: ${takenList || '(none known)'}. Also avoid the plain Firebase defaults, since other projects use them.
 
-4. Search this codebase for references to the old emulator ports and update them to the new ones — connectAuthEmulator / connectFirestoreEmulator / connectFunctionsEmulator / connectStorageEmulator / connectDatabaseEmulator calls, .env files, test configs, and scripts.
+4. Search this codebase for references to the old emulator ports and update them to the new ones — connectAuthEmulator / connectFirestoreEmulator / connectFunctionsEmulator / connectStorageEmulator / connectDatabaseEmulator calls, Vite server.proxy targets, .env files, test configs, and scripts.
 
-5. Change nothing else in firebase.json.`
+5. Single-origin rule check: this app is accessed remotely through one Tailscale-served https origin, so BROWSER code must never connect directly to emulator localhost ports. Emulator traffic belongs either in the backend (Admin SDK with *_EMULATOR_HOST env vars) or behind the dev server's same-origin proxy — Vite server.proxy entries for the emulators' unique paths ('/identitytoolkit.googleapis.com', '/securetoken.googleapis.com', '/emulator' → auth port; '/google.firestore.v1.Firestore' → firestore port with ws: true; '/v0' → storage port), with the client connecting via window.location.origin in remote mode (for Firestore use initializeFirestore with { host: window.location.host, ssl: true, experimentalAutoDetectLongPolling: true } instead of connectFirestoreEmulator). If any emulator connection you touch in step 4 runs in the browser without this, refactor it accordingly.
+
+6. Change nothing else in firebase.json.`
 
   close()
   await sessionsStore.createSessionWithPrompt('kiro', props.projectId, prompt)
@@ -329,8 +336,8 @@ function close() {
             No services configured for this project
           </div>
 
-          <!-- Firebase detection section -->
-          <div class="rounded-lg border border-dashed border-gray-200 dark:border-gray-700">
+          <!-- Firebase detection section (hidden once emulators are configured) -->
+          <div v-if="!hasFirebaseService" class="rounded-lg border border-dashed border-gray-200 dark:border-gray-700">
             <div class="px-4 py-3">
               <div class="flex items-center justify-between">
                 <div>

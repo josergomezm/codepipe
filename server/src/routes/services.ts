@@ -43,6 +43,14 @@ export function createServiceRoutes(storage: IStorageLayer, serviceManager: Serv
       const parsed = ProjectServiceConfigSchema.safeParse(req.body)
       if (!parsed.success) { res.status(400).json({ error: parsed.error.format() }); return }
 
+      // Firebase emulators are a singleton per project — one firebase.json,
+      // one emulator suite. Reject duplicates.
+      if (parsed.data.type === 'firebase-emulators'
+        && (project.services ?? []).some((s) => s.type === 'firebase-emulators')) {
+        res.status(409).json({ error: 'Firebase Emulators are already configured for this project' })
+        return
+      }
+
       const services = [...(project.services ?? []), parsed.data]
       await storage.updateProject(id, { services })
       res.status(201).json(parsed.data)
