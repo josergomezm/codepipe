@@ -259,7 +259,7 @@ async function stopServer() {
 
 function openDevUrl() {
   if (devUrl.value) {
-    window.location.href = devUrl.value
+    window.open(devUrl.value, '_blank')
   }
 }
 

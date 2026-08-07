@@ -147,6 +147,21 @@ export interface ICLIAdapter {
   readonly suggestedModels?: { id: string; name?: string }[]
 
   /**
+   * Enumerate models by asking the CLI itself (e.g. `kiro-cli chat
+   * --list-models --format json`). Called lazily by the SessionManager when a
+   * session has no dynamically advertised models yet; results populate the
+   * picker. Implementations should cache — this runs on every client attach.
+   */
+  listModels?(): Promise<{ id: string; name?: string }[]>
+
+  /**
+   * CLI flag that selects the model at process spawn (PTY adapters, e.g.
+   * `--model`). When set, the SessionManager appends `<flag> <model>` to the
+   * spawn args whenever the session has a persisted model selection.
+   */
+  readonly modelSpawnFlag?: string
+
+  /**
    * When true, the SessionManager detects the CLI's session ID by running the
    * adapter's session-list command after the first message (legacy Kiro
    * non-interactive behavior). Adapters that report their session ID inline

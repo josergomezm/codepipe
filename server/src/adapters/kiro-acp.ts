@@ -17,7 +17,7 @@ import { homedir } from 'os'
 import type { ProviderType } from '../schemas.js'
 import type { ICLIAdapter, AdapterEvent } from './types.js'
 import { SPEC_ACP_PROFILE } from '../acp/profile.js'
-import { resolveKiroBinary } from './kiro.js'
+import { resolveKiroBinary, listKiroModels } from './kiro.js'
 
 export class KiroAcpAdapter implements ICLIAdapter {
   readonly provider: ProviderType = 'kiro'
@@ -28,6 +28,14 @@ export class KiroAcpAdapter implements ICLIAdapter {
   readonly cliSessionDir: string = path.join(homedir(), '.kiro', 'sessions', 'cli')
   readonly transport = 'acp' as const
   readonly acpProfile = SPEC_ACP_PROFILE
+
+  /**
+   * Fallback model enumeration via the CLI (cached). Used when the ACP
+   * `session/new` result doesn't advertise a model list.
+   */
+  listModels(): Promise<{ id: string; name?: string }[]> {
+    return listKiroModels()
+  }
 
   // ── onData et al. are unused for the ACP transport ───────────────────
   // The SessionManager routes ACP sessions through AcpSessionDriver and never

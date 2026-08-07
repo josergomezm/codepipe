@@ -7,6 +7,7 @@ import FolderPicker from '@/components/FolderPicker.vue'
 import ProjectSettingsModal from '@/components/ProjectSettingsModal.vue'
 import ProjectServicesModal from '@/components/ProjectServicesModal.vue'
 import IconPlus from '@/components/icons/IconPlus.vue'
+import type { ProviderType } from '@/api/client'
 
 const projectStore = useProjectsStore()
 const sessionStore = useSessionsStore()
@@ -23,6 +24,8 @@ const servicesProjectId = ref<string | null>(null)
 const expandedProjects = ref<Set<string>>(new Set())
 const renamingSessionId = ref<string | null>(null)
 const renameInput = ref('')
+const quickChatProjectId = ref<string | null>(null)
+const quickChatProvider = ref<ProviderType>('kiro')
 
 // Auto-expand the project that contains the active session
 watch(
@@ -126,6 +129,18 @@ function closeMenu() {
   openSessionMenuId.value = null
 }
 
+function openQuickChat(projectId: string) {
+  quickChatProjectId.value = quickChatProjectId.value === projectId ? null : projectId
+}
+
+async function startQuickChat() {
+  if (!quickChatProjectId.value) return
+  const session = await sessionStore.createSession(quickChatProvider.value, quickChatProjectId.value)
+  await sessionStore.selectSession(session.id)
+  expandedProjects.value.add(quickChatProjectId.value)
+  quickChatProjectId.value = null
+}
+
 function openSettings(id: string) {
   openMenuId.value = null
   settingsProjectId.value = id
@@ -138,7 +153,7 @@ function openServices(id: string) {
 
 function openDevServer(url: string) {
   openMenuId.value = null
-  window.location.href = url // navigates out of PWA scope → opens in browser
+  window.open(url, '_blank')
 }
 
 async function startDevServer(id: string) {
@@ -213,6 +228,17 @@ async function stopDevServer(id: string) {
             <span class="relative inline-flex h-2 w-2 rounded-full bg-orange-500"></span>
           </span>
         </div>
+
+        <!-- New chat button (plus) -->
+        <button
+          class="shrink-0 rounded p-1 text-gray-400 transition hover:bg-gray-100 hover:text-blue-600 dark:hover:bg-gray-700 dark:hover:text-blue-400"
+          title="New chat in this project"
+          @click.stop="openQuickChat(project.id)"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-3.5 w-3.5">
+            <path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z" />
+          </svg>
+        </button>
 
         <!-- Three-dot menu button -->
         <button
@@ -305,6 +331,37 @@ async function stopDevServer(id: string) {
             Delete
           </button>
         </div>
+      </div>
+
+      <!-- Quick chat provider picker -->
+      <div
+        v-if="quickChatProjectId === project.id"
+        class="mx-2 mt-1 flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 p-2 dark:border-blue-800 dark:bg-blue-900/20"
+        @click.stop
+      >
+        <select
+          v-model="quickChatProvider"
+          class="min-w-0 flex-1 rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-blue-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
+        >
+          <option value="kiro">Kiro</option>
+          <option value="gemini">Gemini</option>
+          <option value="claude">Claude</option>
+          <option value="codex">Codex</option>
+        </select>
+        <button
+          class="shrink-0 rounded bg-blue-600 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-blue-700"
+          @click="startQuickChat"
+        >
+          Start
+        </button>
+        <button
+          class="shrink-0 rounded p-1 text-gray-400 transition hover:text-gray-600 dark:hover:text-gray-300"
+          @click="quickChatProjectId = null"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-3 w-3">
+            <path d="M5.28 4.22a.75.75 0 0 0-1.06 1.06L6.94 8l-2.72 2.72a.75.75 0 1 0 1.06 1.06L8 9.06l2.72 2.72a.75.75 0 1 0 1.06-1.06L9.06 8l2.72-2.72a.75.75 0 0 0-1.06-1.06L8 6.94 5.28 4.22Z" />
+          </svg>
+        </button>
       </div>
 
       <!-- Sessions sub-list (toggleable) -->

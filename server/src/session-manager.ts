@@ -191,7 +191,7 @@ export class SessionManager implements ISessionManager {
     const preSpawnSessionFiles = await this.snapshotCliSessionDir(adapter)
 
     const shell = adapter.command
-    const args = adapter.args
+    const args = this.withModelFlag([...adapter.args], adapter, session.model ?? null)
     log.info('session', `Spawning: ${shell} ${args.join(' ')} in ${project.path}`)
     const ptyProcess = pty.spawn(shell, args, {
       name: 'xterm-256color',
@@ -307,7 +307,7 @@ export class SessionManager implements ISessionManager {
     // --- Interactive (PTY) mode ---
     const resumeCmd = adapter.getResumeCommand(archivedSession.cliSessionId ?? null)
     const shell = resumeCmd ? resumeCmd.command : adapter.command
-    const args = resumeCmd ? resumeCmd.args : adapter.args
+    const args = this.withModelFlag([...(resumeCmd ? resumeCmd.args : adapter.args)], adapter, session.model ?? null)
     log.info('session', `Reviving session ${sessionId}: ${shell} ${args.join(' ')} in ${project.path}`)
     const ptyProcess = pty.spawn(shell, args, {
       name: 'xterm-256color',
@@ -522,7 +522,7 @@ export class SessionManager implements ISessionManager {
       // Interactive (PTY) mode
       const resumeCmd = ctx.adapter.getResumeCommand(ctx.session.cliSessionId ?? null)
       const shell = resumeCmd ? resumeCmd.command : ctx.adapter.command
-      const args = resumeCmd ? resumeCmd.args : ctx.adapter.args
+      const args = this.withModelFlag([...(resumeCmd ? resumeCmd.args : ctx.adapter.args)], ctx.adapter, ctx.session.model ?? null)
       log.info('session', `Respawning PTY: ${shell} ${args.join(' ')} in ${ctx.projectPath}`)
       const ptyProcess = pty.spawn(shell, args, {
         name: 'xterm-256color',
@@ -580,6 +580,9 @@ export class SessionManager implements ISessionManager {
         log.warn('session', `setModel failed for session ${sessionId}: ${message}`)
         this.emitSystemMessage(sessionId, ctx, `Couldn't switch model: ${message}`)
       })
+    } else if (ctx.adapter.transport === 'pty' && ctx.adapter.modelSpawnFlag) {
+      // PTY CLIs take the model at spawn — it applies on the next restart
+      this.emitSystemMessage(sessionId, ctx, `Model saved — restart the CLI to switch to ${model}.`)
     }
 
     this.broadcastModelState(sessionId)
@@ -588,6 +591,38 @@ export class SessionManager implements ISessionManager {
   private broadcastModelState(sessionId: string): void {
     const state = this.getModelState(sessionId)
     if (state) this.broadcast(sessionId, { type: 'model_state', data: state })
+  }
+
+  /** Append the adapter's model spawn flag when a model is selected (PTY CLIs). */
+  private withModelFlag(args: string[], adapter: ICLIAdapter, model: string | null): string[] {
+    if (model && adapter.modelSpawnFlag) {
+      args.push(adapter.modelSpawnFlag, model)
+    }
+    return args
+  }
+
+  /**
+   * Populate ctx.availableModels by asking the adapter's CLI, when nothing
+   * (ACP advertisement, previous fetch) has filled it yet. Fire-and-forget:
+   * broadcasts an updated model_state to connected clients when done.
+   */
+  private async ensureModelList(sessionId: string): Promise<void> {
+    const ctx = this.sessions.get(sessionId)
+    if (!ctx) return
+    if (ctx.availableModels && ctx.availableModels.length > 0) return
+    if (!ctx.adapter.listModels) return
+    try {
+      const models = await ctx.adapter.listModels()
+      if (models.length === 0) return
+      const live = this.sessions.get(sessionId)
+      if (!live) return
+      // ACP advertisement may have arrived while we were fetching — keep it.
+      if (live.availableModels && live.availableModels.length > 0) return
+      live.availableModels = models
+      this.broadcastModelState(sessionId)
+    } catch (err) {
+      log.warn('session', `listModels failed for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -1017,6 +1052,9 @@ export class SessionManager implements ISessionManager {
       throw new Error(`Session ${sessionId} not found`)
     }
     ctx.clients.add(socket)
+    // Lazily populate the model picker: if nothing advertised the models yet
+    // (legacy Kiro, PTY agy), ask the CLI itself and broadcast when it lands.
+    void this.ensureModelList(sessionId)
   }
 
   detachClient(sessionId: string, socket: WebSocket): void {

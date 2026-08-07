@@ -233,9 +233,23 @@ function onDrop(e: DragEvent) {
         </svg>
       </button>
 
+      <!-- Queue button — send message to run after current turn finishes -->
+      <button
+        v-if="isBusy"
+        :disabled="!canSend"
+        class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-500 text-white transition hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-amber-600 dark:hover:bg-amber-700"
+        @click="send"
+        title="Queue message (sends after current response)"
+        aria-label="Queue message"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-5 w-5">
+          <path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v11.75A2.75 2.75 0 0 0 16.75 18h-12A2.75 2.75 0 0 1 2 15.25V3.5Zm3.75 7a.75.75 0 0 0 0 1.5h4.5a.75.75 0 0 0 0-1.5h-4.5Zm0 3a.75.75 0 0 0 0 1.5h4.5a.75.75 0 0 0 0-1.5h-4.5ZM5 5.75A.75.75 0 0 1 5.75 5h4.5a.75.75 0 0 1 0 1.5h-4.5A.75.75 0 0 1 5 5.75ZM16.5 6.5a1.5 1.5 0 0 1 1.5 1.5v8.75A1.25 1.25 0 0 1 16.75 18a1.25 1.25 0 0 1-1.25-1.25V6.5h1Z" />
+        </svg>
+      </button>
+
       <!-- Send button -->
       <button
-        v-else
+        v-if="!isBusy"
         :disabled="!canSend"
         class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
         @click="send"

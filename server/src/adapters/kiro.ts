@@ -14,6 +14,8 @@
 
 import path from 'path'
 import { homedir, platform } from 'os'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 
 import type { ProviderType } from '../schemas.js'
 import type { ICLIAdapter, AdapterEvent } from './types.js'
@@ -40,6 +42,70 @@ export function resolveKiroBinary(): string {
   return platform() === 'win32' ? 'kiro-cli.exe' : 'kiro-cli'
 }
 
+// ---------------------------------------------------------------------------
+// Model enumeration (`kiro-cli chat --list-models --format json`)
+// ---------------------------------------------------------------------------
+
+const execFileAsync = promisify(execFile)
+
+/** Shape of the `--list-models --format json` output (fields we use). */
+interface KiroModelListJson {
+  models?: { model_id?: string; model_name?: string; rate_multiplier?: number }[]
+  default_model?: string
+}
+
+/**
+ * Parse the JSON emitted by `kiro-cli chat --list-models --format json` into
+ * picker options. Labels include the credit rate multiplier and mark the
+ * account default. Returns [] on any unexpected shape.
+ */
+export function parseKiroModelList(stdout: string): { id: string; name?: string }[] {
+  try {
+    const parsed = JSON.parse(stdout) as KiroModelListJson
+    if (!Array.isArray(parsed.models)) return []
+    const models: { id: string; name?: string }[] = []
+    for (const m of parsed.models) {
+      if (typeof m.model_id !== 'string' || m.model_id.length === 0) continue
+      const label = typeof m.model_name === 'string' && m.model_name.length > 0 ? m.model_name : m.model_id
+      const rate = typeof m.rate_multiplier === 'number' ? ` (${m.rate_multiplier}x)` : ''
+      const def = m.model_id === parsed.default_model ? ' — default' : ''
+      models.push({ id: m.model_id, name: `${label}${rate}${def}` })
+    }
+    return models
+  } catch {
+    return []
+  }
+}
+
+let cachedModels: { id: string; name?: string }[] | null = null
+let cachedModelsAt = 0
+const MODEL_CACHE_TTL_MS = 10 * 60 * 1000
+
+/**
+ * Enumerate Kiro's available models via the CLI, cached for 10 minutes.
+ * Shared by both Kiro transports (non-interactive and ACP). Returns [] when
+ * the CLI is unavailable or errors — the picker then just shows Custom.
+ */
+export async function listKiroModels(): Promise<{ id: string; name?: string }[]> {
+  const now = Date.now()
+  if (cachedModels && now - cachedModelsAt < MODEL_CACHE_TTL_MS) return cachedModels
+  try {
+    const { stdout } = await execFileAsync(
+      resolveKiroBinary(),
+      ['chat', '--list-models', '--format', 'json'],
+      { timeout: 15000, windowsHide: true },
+    )
+    const models = parseKiroModelList(stdout)
+    if (models.length > 0) {
+      cachedModels = models
+      cachedModelsAt = now
+    }
+    return models
+  } catch {
+    return []
+  }
+}
+
 export class KiroAdapter implements ICLIAdapter {
   readonly provider: ProviderType = 'kiro'
   readonly command = resolveKiroBinary()
@@ -55,6 +121,11 @@ export class KiroAdapter implements ICLIAdapter {
 
   /** Kiro non-interactive reports its session ID only via `--list-sessions`. */
   readonly usesSessionListDetection = true
+
+  /** Enumerate models via `kiro-cli chat --list-models` (cached). */
+  listModels(): Promise<{ id: string; name?: string }[]> {
+    return listKiroModels()
+  }
 
   private lastToolName = 'tool'
 
@@ -154,11 +225,16 @@ export class KiroAdapter implements ICLIAdapter {
     text: string,
     cliSessionId: string | null,
     attachments?: { path: string; mimeType: string }[],
+    model?: string | null,
   ): { command: string; args: string[] } {
     const args = [...this.args]
 
     if (cliSessionId) {
       args.push('--resume-id', cliSessionId)
+    }
+
+    if (model) {
+      args.push('--model', model)
     }
 
     // Build the input: attachment references + user text
