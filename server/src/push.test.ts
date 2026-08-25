@@ -161,6 +161,19 @@ describe('notifyTurnComplete', () => {
     expect(payload.sessionId).toBe('sess-1')
   })
 
+  it('appends the project name to the title when provided', async () => {
+    const calls: string[] = []
+    const svc = makeService(async (_s, payload) => {
+      calls.push(payload)
+    })
+    await svc.addSubscription(sub('https://push/1'))
+
+    svc.notifyTurnComplete(makeSession({ title: 'Refactor auth' }), 'Done!', 'CodePipe App')
+    await vi.waitFor(() => expect(calls).toHaveLength(1))
+
+    expect(JSON.parse(calls[0]!).title).toBe('Refactor auth · CodePipe App')
+  })
+
   it('truncates long bodies', async () => {
     const calls: string[] = []
     const svc = makeService(async (_s, payload) => {

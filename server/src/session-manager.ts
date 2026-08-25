@@ -437,11 +437,17 @@ export class SessionManager implements ISessionManager {
       log.info('push', `finishTurn: last assistant msg id=${last?.id ?? 'none'}, lastNotified=${ctx.lastNotifiedMessageId ?? 'none'}`)
       if (last && last.id !== ctx.lastNotifiedMessageId) {
         ctx.lastNotifiedMessageId = last.id
-        try {
-          this.notifier.notifyTurnComplete(ctx.session, last.content)
-        } catch (err) {
-          log.warn('session', `notifyTurnComplete failed: ${err instanceof Error ? err.message : String(err)}`)
-        }
+        const notifier = this.notifier
+        void this.storage
+          .getProject(ctx.session.projectId)
+          .catch(() => null)
+          .then((project) => {
+            try {
+              notifier.notifyTurnComplete(ctx.session, last.content, project?.name)
+            } catch (err) {
+              log.warn('session', `notifyTurnComplete failed: ${err instanceof Error ? err.message : String(err)}`)
+            }
+          })
       }
     }
 

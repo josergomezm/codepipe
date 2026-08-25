@@ -40,7 +40,7 @@ export type PushSender = (sub: PushSubscriptionJSON, payload: string) => Promise
 
 /** Implemented by PushService; SessionManager calls it on turn completion. */
 export interface TurnNotifier {
-  notifyTurnComplete(session: Session, lastAssistantText: string): void
+  notifyTurnComplete(session: Session, lastAssistantText: string, projectName?: string): void
 }
 
 function snippet(text: string): string {
@@ -140,11 +140,14 @@ export class PushService implements TurnNotifier {
 
   // ----- sending -----
 
-  notifyTurnComplete(session: Session, lastAssistantText: string): void {
+  notifyTurnComplete(session: Session, lastAssistantText: string, projectName?: string): void {
     if (!this.enabled) return
-    log.info('push', `Turn complete for "${session.title || session.id}", sending push…`)
+    const titleParts = [session.title || 'CodePipe']
+    if (projectName) titleParts.push(projectName)
+    const title = titleParts.join(' · ')
+    log.info('push', `Turn complete for "${title}", sending push…`)
     void this.sendToAll({
-      title: session.title || 'CodePipe',
+      title,
       body: snippet(lastAssistantText),
       sessionId: session.id,
       tag: session.id,
