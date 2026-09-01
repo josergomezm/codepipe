@@ -16,6 +16,36 @@ export const useSessionsStore = defineStore('sessions', () => {
   /** User-facing error message, cleared on next successful action. */
   const error = ref<string | null>(null)
 
+  /**
+   * Per-session last-read timestamps (persisted per browser). Drives unread
+   * indicators for sessions where agents message the user proactively.
+   */
+  const lastRead = ref<Record<string, number>>(loadLastRead())
+
+  function loadLastRead(): Record<string, number> {
+    try {
+      return JSON.parse(localStorage.getItem('codepipe:lastRead') ?? '{}')
+    } catch {
+      return {}
+    }
+  }
+
+  function markRead(sessionId: string) {
+    lastRead.value = { ...lastRead.value, [sessionId]: Date.now() }
+    try {
+      localStorage.setItem('codepipe:lastRead', JSON.stringify(lastRead.value))
+    } catch {
+      // Storage full/unavailable — indicators degrade gracefully
+    }
+  }
+
+  function isUnread(session: SessionMeta): boolean {
+    if (session.id === activeSessionId.value) return false
+    const readAt = lastRead.value[session.id]
+    // Never-opened sessions only count once they have activity
+    return readAt === undefined ? session.updatedAt > 0 : session.updatedAt > readAt
+  }
+
   async function fetchSessions() {
     try {
       sessions.value = await api.fetchSessions()
@@ -65,6 +95,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     try {
       activeSessionId.value = sessionId
       loading.value = true
+      markRead(sessionId)
       localStorage.setItem('codepipe:activeSession', sessionId)
       navigator.serviceWorker?.controller?.postMessage({ type: 'active-session', sessionId })
       const session = await api.fetchSession(sessionId)
@@ -126,6 +157,8 @@ export const useSessionsStore = defineStore('sessions', () => {
   }
 
   function upsertMessage(message: ChatMessage) {
+    // Messages arriving while the session is open are read by definition.
+    if (activeSessionId.value) markRead(activeSessionId.value)
     const idx = activeMessages.value.findIndex((m) => m.id === message.id)
     if (idx >= 0) {
       // Update in-place to avoid replacing the object reference
@@ -166,6 +199,9 @@ export const useSessionsStore = defineStore('sessions', () => {
     currentModel,
     loading,
     error,
+    lastRead,
+    markRead,
+    isUnread,
     fetchSessions,
     createSession,
     createSessionWithPrompt,

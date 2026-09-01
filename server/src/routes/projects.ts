@@ -4,7 +4,7 @@ import { readFile, readdir } from 'fs/promises'
 import path from 'path'
 
 import type { IStorageLayer } from '../storage.js'
-import { CreateProjectRequestSchema, ProjectDevServerSchema } from '../schemas.js'
+import { CreateProjectRequestSchema, ProjectDevServerSchema, ProjectStandupConfigSchema } from '../schemas.js'
 import { log } from '../logger.js'
 import type { DevServerManager } from '../dev-server-manager.js'
 import { getServeStatus, getTailscaleHostname } from '../tailscale.js'
@@ -122,6 +122,19 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
         }
       }
 
+      if (req.body.standup !== undefined) {
+        if (req.body.standup === null) {
+          updates.standup = undefined
+        } else {
+          const parsed = ProjectStandupConfigSchema.safeParse(req.body.standup)
+          if (!parsed.success) {
+            res.status(400).json({ error: parsed.error.format() })
+            return
+          }
+          updates.standup = parsed.data
+        }
+      }
+
       const updated = await storage.updateProject(id, updates)
       res.json(updated)
     } catch (err) {
@@ -145,6 +158,10 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
       devServerManager.stop(id)
 
       await storage.removeProject(id)
+      // Team-layer data is meaningless without its project — clean it up.
+      await storage.removeTodosByProject(id)
+      await storage.removeActionItemsByProject(id)
+      await storage.removeStandupState(id)
       res.json({ ok: true })
     } catch (err) {
       log.error('api', `Failed to remove project ${id}`, err)

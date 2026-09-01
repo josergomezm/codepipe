@@ -4,6 +4,7 @@ import type { Duplex } from 'stream'
 
 import type { ISessionManager } from './session-manager.js'
 import type { IStorageLayer } from './storage.js'
+import type { EventBus } from './events.js'
 import { WSClientMessageSchema } from './schemas.js'
 import type { Session, Attachment } from './schemas.js'
 import { log } from './logger.js'
@@ -18,6 +19,7 @@ export function setupWebSocket(
   server: HttpServer,
   sessionManager: ISessionManager,
   storage: IStorageLayer,
+  events?: EventBus,
 ): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true })
 
@@ -36,8 +38,23 @@ export function setupWebSocket(
 
   wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
     const url = new URL(request.url ?? '', 'http://localhost')
-    const sessionId = url.searchParams.get('sessionId')
 
+    // Global change-hint subscription (/ws?events=1): the client refetches
+    // whatever collection the hint names — events carry no data.
+    if (url.searchParams.get('events') === '1') {
+      if (!events) {
+        ws.send(JSON.stringify({ type: 'error', data: 'Events channel not available' }))
+        ws.close()
+        return
+      }
+      const unsubscribe = events.subscribe(ws)
+      ws.on('close', unsubscribe)
+      ws.on('error', unsubscribe)
+      log.debug('ws', `Events subscriber connected (${events.subscriberCount()} total)`)
+      return
+    }
+
+    const sessionId = url.searchParams.get('sessionId')
     if (!sessionId) {
       ws.send(JSON.stringify({ type: 'error', data: 'Missing sessionId query parameter' }))
       ws.close()

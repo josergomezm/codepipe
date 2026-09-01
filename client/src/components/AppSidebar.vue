@@ -1,11 +1,35 @@
 <script setup lang="ts">
+import { computed, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useUiStore } from '@/stores/ui'
+import { useTeamStore } from '@/stores/team'
 import NewSessionButton from '@/components/NewSessionButton.vue'
+import TeamList from '@/components/TeamList.vue'
 import ProjectList from '@/components/ProjectList.vue'
 import NotificationToggle from '@/components/NotificationToggle.vue'
 import DarkModeToggle from '@/components/DarkModeToggle.vue'
 
 const ui = useUiStore()
+const team = useTeamStore()
+const route = useRoute()
+const router = useRouter()
+
+const navItems = computed(() => [
+  { label: 'Action items', path: '/actions', badge: team.openActionCount },
+  { label: 'Ideas board', path: '/board', badge: 0 },
+  { label: 'Ledger', path: '/ledger', badge: 0 },
+])
+
+function navigate(path: string) {
+  router.push(path)
+  ui.closeSidebar()
+}
+
+onMounted(() => {
+  team.fetchPersonas()
+  team.fetchTodos()
+  team.fetchActions()
+})
 </script>
 
 <template>
@@ -30,6 +54,30 @@ const ui = useUiStore()
 
     <!-- Scrollable content -->
     <div class="flex flex-1 flex-col gap-4 overflow-y-auto px-2 pb-4">
+      <TeamList />
+
+      <!-- Workspace pages -->
+      <div class="flex flex-col gap-0.5">
+        <h3 class="px-2 text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+          Workspace
+        </h3>
+        <button
+          v-for="item in navItems"
+          :key="item.path"
+          class="flex items-center gap-2 rounded-lg px-2 py-1.5 text-left transition"
+          :class="route.path === item.path
+            ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400'
+            : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'"
+          @click="navigate(item.path)"
+        >
+          <span class="flex-1 truncate text-sm font-medium">{{ item.label }}</span>
+          <span
+            v-if="item.badge > 0"
+            class="shrink-0 rounded-full bg-amber-100 px-1.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+          >{{ item.badge }}</span>
+        </button>
+      </div>
+
       <ProjectList />
     </div>
 

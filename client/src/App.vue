@@ -1,16 +1,40 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useSessionsStore } from '@/stores/sessions'
 import { useProjectsStore } from '@/stores/projects'
+import { useTeamStore } from '@/stores/team'
 import { useUiStore } from '@/stores/ui'
+import { startEvents } from '@/composables/useEvents'
 import AppSidebar from '@/components/AppSidebar.vue'
 
 const sessionsStore = useSessionsStore()
 const projectsStore = useProjectsStore()
+const teamStore = useTeamStore()
 const ui = useUiStore()
+const router = useRouter()
 
-function openSessionFromId(sessionId: string | null | undefined) {
-  if (sessionId) sessionsStore.selectSession(sessionId)
+async function openSessionFromId(sessionId: string | null | undefined) {
+  if (!sessionId) return
+  // Scheduled standups create sessions in the background — refresh the list
+  // first so the sidebar and header know about the session being opened.
+  if (!sessionsStore.sessions.some((s) => s.id === sessionId)) {
+    await sessionsStore.fetchSessions()
+  }
+  sessionsStore.selectSession(sessionId)
+  // A notification tap may land while a workspace page is open.
+  if (router.currentRoute.value.name !== 'chat') router.push('/')
+}
+
+// Fallback freshness: live change hints (startEvents) cover the common case,
+// but a phone PWA can suspend the socket entirely — refetch on return so the
+// sidebar, unread dots, and todos recover even if the reconnect is slow.
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') {
+    sessionsStore.fetchSessions()
+    teamStore.fetchTodos()
+    teamStore.fetchActions()
+  }
 }
 
 onMounted(async () => {
@@ -39,6 +63,13 @@ onMounted(async () => {
       if (event.data?.type === 'open-session') openSessionFromId(event.data.sessionId)
     })
   }
+
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  startEvents()
+})
+
+onUnmounted(() => {
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 </script>
 

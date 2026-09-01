@@ -1,17 +1,22 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import { useSession } from '@/composables/useSession'
 import FolderPicker from '@/components/FolderPicker.vue'
 import ProjectSettingsModal from '@/components/ProjectSettingsModal.vue'
 import ProjectServicesModal from '@/components/ProjectServicesModal.vue'
+import ProjectIdeasModal from '@/components/ProjectIdeasModal.vue'
 import IconPlus from '@/components/icons/IconPlus.vue'
+import { useTeamStore } from '@/stores/team'
 import type { ProviderType } from '@/api/client'
 
 const projectStore = useProjectsStore()
 const sessionStore = useSessionsStore()
+const teamStore = useTeamStore()
 const { disconnect } = useSession()
+const router = useRouter()
 
 const showAddForm = ref(false)
 const newName = ref('')
@@ -21,6 +26,7 @@ const openMenuId = ref<string | null>(null)
 const openSessionMenuId = ref<string | null>(null)
 const settingsProjectId = ref<string | null>(null)
 const servicesProjectId = ref<string | null>(null)
+const ideasProjectId = ref<string | null>(null)
 const expandedProjects = ref<Set<string>>(new Set())
 const renamingSessionId = ref<string | null>(null)
 const renameInput = ref('')
@@ -40,10 +46,13 @@ watch(
   { immediate: true },
 )
 
-// Group sessions by projectId, sorted by updatedAt descending within each group
+// Group sessions by projectId, sorted by updatedAt descending within each
+// group. Team sessions are listed in the Team section instead.
 const sessionsByProject = computed(() => {
   const map = new Map<string, typeof sessionStore.sessions>()
-  const sorted = [...sessionStore.sessions].sort((a, b) => b.updatedAt - a.updatedAt)
+  const sorted = [...sessionStore.sessions]
+    .filter((s) => s.kind !== 'team')
+    .sort((a, b) => b.updatedAt - a.updatedAt)
   for (const session of sorted) {
     const list = map.get(session.projectId) ?? []
     list.push(session)
@@ -62,6 +71,7 @@ function toggleProject(projectId: string) {
 
 function selectSession(sessionId: string) {
   sessionStore.selectSession(sessionId)
+  router.push('/')
 }
 
 function toggleSessionMenu(sessionId: string) {
@@ -139,6 +149,7 @@ async function startQuickChat() {
   await sessionStore.selectSession(session.id)
   expandedProjects.value.add(quickChatProjectId.value)
   quickChatProjectId.value = null
+  router.push('/')
 }
 
 function openSettings(id: string) {
@@ -149,6 +160,11 @@ function openSettings(id: string) {
 function openServices(id: string) {
   openMenuId.value = null
   servicesProjectId.value = id
+}
+
+function openIdeas(id: string) {
+  openMenuId.value = null
+  ideasProjectId.value = id
 }
 
 function openDevServer(url: string) {
@@ -292,6 +308,21 @@ async function stopDevServer(id: string) {
             Stop Dev Server
           </button>
 
+          <!-- Ideas / todo list -->
+          <button
+            class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
+            @click="openIdeas(project.id)"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-3.5 w-3.5">
+              <path d="M8 1a4 4 0 0 0-2.5 7.123c.372.297.5.586.5.877v.25a.75.75 0 0 0 .75.75h2.5a.75.75 0 0 0 .75-.75V9c0-.29.128-.58.5-.877A4 4 0 0 0 8 1ZM6.25 11.5a.75.75 0 0 0 0 1.5h3.5a.75.75 0 0 0 0-1.5h-3.5ZM7 14.25a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75Z" />
+            </svg>
+            <span class="flex-1">Ideas</span>
+            <span
+              v-if="teamStore.openTodoCount(project.id) > 0"
+              class="rounded-full bg-blue-100 px-1.5 text-[10px] font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
+            >{{ teamStore.openTodoCount(project.id) }}</span>
+          </button>
+
           <!-- Settings -->
           <button
             class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
@@ -346,7 +377,8 @@ async function stopDevServer(id: string) {
           <option value="kiro">Kiro</option>
           <option value="gemini">Gemini</option>
           <option value="claude">Claude</option>
-          <option value="codex">Codex</option>
+          <!-- Codex has no adapter yet — re-enable once it's implemented -->
+          <!-- <option value="codex">Codex</option> -->
         </select>
         <button
           class="shrink-0 rounded bg-blue-600 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-blue-700"
@@ -504,5 +536,6 @@ async function stopDevServer(id: string) {
     <FolderPicker v-model="showFolderPicker" @select="onFolderSelected" />
     <ProjectSettingsModal :project-id="settingsProjectId" @close="settingsProjectId = null" />
     <ProjectServicesModal :project-id="servicesProjectId" @close="servicesProjectId = null" />
+    <ProjectIdeasModal :project-id="ideasProjectId" @close="ideasProjectId = null" />
   </div>
 </template>

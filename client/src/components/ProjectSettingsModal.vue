@@ -36,6 +36,27 @@ const detectedSubDir = ref<string | null>(null)
 
 const SCRIPT_NAME = 'dev:remote'
 
+// --- Daily standup config ---
+const standupEnabled = ref(false)
+const standupHour = ref(9)
+const standupSaving = ref(false)
+
+async function saveStandup() {
+  if (!props.projectId) return
+  standupSaving.value = true
+  await store.updateProjectStandup(
+    props.projectId,
+    standupEnabled.value ? { enabled: true, hour: standupHour.value } : null,
+  )
+  standupSaving.value = false
+}
+
+function formatHour(h: number): string {
+  const period = h < 12 ? 'AM' : 'PM'
+  const display = h % 12 === 0 ? 12 : h % 12
+  return `${display}:00 ${period}`
+}
+
 // Derived start command
 const startCommand = computed(() => {
   if (useCustomCommand.value) return customCommand.value.trim()
@@ -80,6 +101,8 @@ watch(
     useCustomCommand.value = false
     customCommand.value = ''
     hasDevRemoteScript.value = false
+    standupEnabled.value = project.value?.standup?.enabled ?? false
+    standupHour.value = project.value?.standup?.hour ?? 9
 
     if (project.value?.devServer) {
       port.value = String(project.value.devServer.port)
@@ -412,6 +435,42 @@ function close() {
                 </svg>
                 <span>Tailscale mapping will be created automatically on start.</span>
               </div>
+            </div>
+          </div>
+
+          <!-- Daily standup -->
+          <div class="rounded-lg border border-gray-200 px-4 py-3 dark:border-gray-700">
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="text-sm font-medium text-gray-900 dark:text-gray-100">Daily standup</div>
+                <p class="text-xs text-gray-400 dark:text-gray-500">
+                  Your team reviews this project's ideas once a day (skipped when nothing changed).
+                  If the machine was asleep at the scheduled time, it catches up on wake.
+                </p>
+              </div>
+              <button
+                class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition"
+                :class="standupEnabled ? 'bg-purple-600' : 'bg-gray-300 dark:bg-gray-600'"
+                role="switch"
+                :aria-checked="standupEnabled"
+                @click="standupEnabled = !standupEnabled; saveStandup()"
+              >
+                <span
+                  class="inline-block h-3.5 w-3.5 transform rounded-full bg-white transition"
+                  :class="standupEnabled ? 'translate-x-[18px]' : 'translate-x-1'"
+                />
+              </button>
+            </div>
+            <div v-if="standupEnabled" class="mt-2.5 flex items-center gap-2">
+              <label class="text-xs text-gray-500 dark:text-gray-400">Runs at</label>
+              <select
+                v-model.number="standupHour"
+                class="rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-blue-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
+                @change="saveStandup"
+              >
+                <option v-for="h in 24" :key="h - 1" :value="h - 1">{{ formatHour(h - 1) }}</option>
+              </select>
+              <span v-if="standupSaving" class="text-xs text-gray-400">Saving…</span>
             </div>
           </div>
 

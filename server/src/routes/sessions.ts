@@ -2,7 +2,7 @@ import { Router } from 'express'
 
 import type { ISessionManager } from '../session-manager.js'
 import type { IStorageLayer } from '../storage.js'
-import { CreateSessionRequestSchema, RenameSessionRequestSchema } from '../schemas.js'
+import { CreateSessionRequestSchema, RenameSessionRequestSchema, RunTurnRequestSchema } from '../schemas.js'
 import type { SessionMeta } from '../schemas.js'
 import { log } from '../logger.js'
 
@@ -87,6 +87,37 @@ export function createSessionRoutes(
     } catch (err) {
       log.error('api', `Failed to get session ${id}`, err)
       res.status(500).json({ error: 'Failed to get session' })
+    }
+  })
+
+  // POST /api/sessions/:id/run — headless turn: send input, await the final
+  // assistant message. This is the orchestration primitive: no WebSocket
+  // client needed, the response is the turn's result.
+  router.post('/:id/run', async (req, res) => {
+    const { id } = req.params
+    const parsed = RunTurnRequestSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.format() })
+      return
+    }
+
+    try {
+      const message = await sessionManager.runTurn(id, parsed.data.text, {
+        ...(parsed.data.timeoutMs ? { timeoutMs: parsed.data.timeoutMs } : {}),
+      })
+      res.json({ message })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Turn failed'
+      if (message.includes('not found')) {
+        res.status(404).json({ error: message })
+        return
+      }
+      if (message.includes('timed out')) {
+        res.status(504).json({ error: message })
+        return
+      }
+      log.error('api', `Headless run failed for session ${id}`, err)
+      res.status(500).json({ error: message })
     }
   })
 

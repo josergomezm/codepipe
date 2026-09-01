@@ -45,7 +45,8 @@ self.addEventListener('push', (event) => {
         body,
         tag: data.tag || sessionId || 'codepipe',
         renotify: true,
-        icon: '/icon.svg',
+        // Persona avatar when the message comes from a team member.
+        icon: data.icon || '/icon.svg',
         badge: '/icon.svg',
         data: { sessionId },
       })

@@ -10,6 +10,7 @@ import type {
   ProviderType,
   Session,
   SessionMeta,
+  SessionKind,
   ChatMessage,
   Attachment,
   ModelState,
@@ -60,24 +61,63 @@ export interface SessionContext {
   currentModel?: string
   /** True when revive couldn't restore CLI context (missing cliSessionId or loadSession failed). */
   contextLost?: boolean
+  /**
+   * Headless callers awaiting the turn that is currently in flight. Waiters
+   * are correlated with their own input: they travel on the QueuedInput and
+   * move here when that input is dispatched, so each runTurn() resolves with
+   * its own turn's result — never a later turn's.
+   */
+  activeTurnWaiters?: TurnWaiter[]
+  /**
+   * Id of the assistant message the CURRENT turn's adapter events produced.
+   * finishTurn resolves waiters/routing against this — never against
+   * findLast() over the whole history, which can land on another turn's
+   * output (or a routing artifact) when turns and routing interleave.
+   */
+  currentTurnAssistantId?: string
 }
 
 interface QueuedInput {
   text: string
   attachments?: Attachment[]
+  /** Headless waiters for this specific input's turn. */
+  waiters?: TurnWaiter[]
 }
+
+interface TurnWaiter {
+  resolve: (message: ChatMessage | null) => void
+  reject: (err: Error) => void
+  timer: ReturnType<typeof setTimeout>
+}
+
+export interface CreateSessionOptions {
+  kind?: SessionKind
+  title?: string
+  model?: string
+}
+
+export interface RunTurnOptions {
+  timeoutMs?: number
+  /** Cancel the in-flight CLI turn when the timeout fires (no zombie turns). */
+  cancelOnTimeout?: boolean
+}
+
+/** Default / max wait for a headless turn. */
+const RUN_TURN_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
 
 /**
  * Public interface for the SessionManager.
  */
 export interface ISessionManager {
-  createSession(provider: ProviderType, projectId: string): Promise<Session>
+  createSession(provider: ProviderType, projectId: string, options?: CreateSessionOptions): Promise<Session>
   getSession(sessionId: string): Session | undefined
   listSessions(): SessionMeta[]
   deleteSession(sessionId: string): Promise<void>
   attachClient(sessionId: string, socket: WebSocket): void
   detachClient(sessionId: string, socket: WebSocket): void
   handleInput(sessionId: string, text: string, attachments?: Attachment[]): void
+  /** Send input and await the turn's final assistant message (headless run). */
+  runTurn(sessionId: string, text: string, options?: RunTurnOptions): Promise<ChatMessage | null>
   cancelTurn(sessionId: string): void
   restartSession(sessionId: string): Promise<void>
   setModel(sessionId: string, model: string): void
@@ -101,6 +141,12 @@ export class SessionManager implements ISessionManager {
   private readonly storage: IStorageLayer
   /** Optional notifier invoked when an assistant turn completes (push). */
   private readonly notifier: TurnNotifier | null
+  /**
+   * Invoked when a turn completes on a 'team' session (queue drained). The
+   * standup service registers here to parse persona output and route it —
+   * team sessions skip the generic push in favor of persona-attributed ones.
+   */
+  onTeamTurn: ((session: Session, lastAssistant: ChatMessage | null) => void) | null = null
 
   constructor(storage: IStorageLayer, notifier?: TurnNotifier) {
     this.storage = storage
@@ -114,6 +160,7 @@ export class SessionManager implements ISessionManager {
   async createSession(
     provider: ProviderType,
     projectId: string,
+    options: CreateSessionOptions = {},
   ): Promise<Session> {
     // Validate project exists
     const project = await this.storage.getProject(projectId)
@@ -133,11 +180,13 @@ export class SessionManager implements ISessionManager {
       id: randomUUID(),
       provider,
       projectId,
-      title: `New ${provider} session`,
+      title: options.title ?? `New ${provider} session`,
       createdAt: now,
       updatedAt: now,
       status: 'live',
       messages: [],
+      ...(options.kind ? { kind: options.kind } : {}),
+      ...(options.model ? { model: options.model } : {}),
     }
 
     if (adapter.transport === 'acp') {
@@ -364,8 +413,37 @@ export class SessionManager implements ISessionManager {
       log.info('session', `handleInput: ${attachments.length} attachment(s): ${attachments.map(a => a.filename).join(', ')}`)
     }
 
-    // Create and broadcast the user message immediately (even if it will be
-    // queued behind an in-flight turn — the user sees their message land).
+    this.recordUserMessage(ctx, sessionId, text, attachments)
+
+    // Legacy interactive PTY path has no per-turn completion signal wired to
+    // the queue, so dispatch it directly (preserves prior behavior).
+    const queueable = ctx.adapter.transport === 'acp' || ctx.adapter.nonInteractive
+    if (!queueable) {
+      this.finalizeCurrentMessage(sessionId)
+      this.handleInteractiveInput(sessionId, ctx, text, attachments)
+      return
+    }
+
+    // Queue the input; the pump dispatches one turn at a time so a message
+    // sent while the CLI is busy waits instead of killing the in-flight turn.
+    this.enqueueInput(ctx, sessionId, { text, attachments })
+  }
+
+  private enqueueInput(ctx: SessionContext, sessionId: string, input: QueuedInput): void {
+    ;(ctx.inputQueue ??= []).push(input)
+    this.pumpQueue(sessionId)
+  }
+
+  /**
+   * Create, persist, and broadcast the user's message immediately — even
+   * when it will be queued behind an in-flight turn, the user sees it land.
+   */
+  private recordUserMessage(
+    ctx: SessionContext,
+    sessionId: string,
+    text: string,
+    attachments: Attachment[] | undefined,
+  ): void {
     const userMessage: ChatMessage = {
       id: randomUUID(),
       role: 'user',
@@ -383,20 +461,99 @@ export class SessionManager implements ISessionManager {
     })
 
     this.broadcast(sessionId, { type: 'message', data: userMessage })
+  }
 
-    // Legacy interactive PTY path has no per-turn completion signal wired to
-    // the queue, so dispatch it directly (preserves prior behavior).
+  // -----------------------------------------------------------------------
+  // runTurn — headless input: send text and await the turn's result
+  // -----------------------------------------------------------------------
+
+  async runTurn(
+    sessionId: string,
+    text: string,
+    options: RunTurnOptions = {},
+  ): Promise<ChatMessage | null> {
+    const ctx = this.sessions.get(sessionId)
+    if (!ctx) throw new Error(`Session ${sessionId} not found`)
+
     const queueable = ctx.adapter.transport === 'acp' || ctx.adapter.nonInteractive
     if (!queueable) {
-      this.finalizeCurrentMessage(sessionId)
-      this.handleInteractiveInput(sessionId, ctx, text, attachments)
-      return
+      throw new Error(
+        `runTurn is not supported for the ${ctx.adapter.provider} interactive transport (no turn-completion signal)`,
+      )
+    }
+    if (ctx.session.status !== 'live') {
+      throw new Error(`Session ${sessionId} is not live`)
+    }
+    if (!text || text.length === 0) {
+      throw new Error('Input text must be non-empty')
     }
 
-    // Queue the input; the pump dispatches one turn at a time so a message
-    // sent while the CLI is busy waits instead of killing the in-flight turn.
-    ;(ctx.inputQueue ??= []).push({ text, attachments })
-    this.pumpQueue(sessionId)
+    const timeoutMs = options.timeoutMs ?? RUN_TURN_DEFAULT_TIMEOUT_MS
+    return new Promise<ChatMessage | null>((resolve, reject) => {
+      const waiter: TurnWaiter = {
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          if (this.removeWaiter(sessionId, waiter)) {
+            reject(new Error(`Turn timed out after ${Math.round(timeoutMs / 1000)}s`))
+            if (options.cancelOnTimeout) {
+              log.warn('session', `runTurn timeout — cancelling in-flight turn for session ${sessionId}`)
+              try { this.cancelTurn(sessionId) } catch { /* session may be gone */ }
+            }
+          }
+        }, timeoutMs),
+      }
+
+      // The waiter travels WITH its input through the queue, so it settles
+      // with this turn's result even when other inputs are queued around it.
+      const input: QueuedInput = { text, waiters: [waiter] }
+      this.recordUserMessage(ctx, sessionId, text, undefined)
+      this.enqueueInput(ctx, sessionId, input)
+    })
+  }
+
+  /** Detach a waiter from wherever it currently lives (active or queued). */
+  private removeWaiter(sessionId: string, waiter: TurnWaiter): boolean {
+    const ctx = this.sessions.get(sessionId)
+    if (!ctx) return false
+    const active = ctx.activeTurnWaiters?.indexOf(waiter) ?? -1
+    if (active >= 0) {
+      ctx.activeTurnWaiters!.splice(active, 1)
+      return true
+    }
+    for (const input of ctx.inputQueue ?? []) {
+      const queued = input.waiters?.indexOf(waiter) ?? -1
+      if (queued >= 0) {
+        input.waiters!.splice(queued, 1)
+        return true
+      }
+    }
+    return false
+  }
+
+  /** Resolve the in-flight turn's waiters with its final message. */
+  private settleTurnWaiters(ctx: SessionContext, message: ChatMessage | null): void {
+    if (!ctx.activeTurnWaiters?.length) return
+    const waiters = ctx.activeTurnWaiters
+    ctx.activeTurnWaiters = []
+    for (const w of waiters) {
+      clearTimeout(w.timer)
+      w.resolve(message)
+    }
+  }
+
+  /** Reject every waiter — in flight AND queued (cancel, restart, delete, shutdown). */
+  private rejectTurnWaiters(ctx: SessionContext, reason: string): void {
+    const waiters = [
+      ...(ctx.activeTurnWaiters ?? []),
+      ...(ctx.inputQueue ?? []).flatMap((input) => input.waiters ?? []),
+    ]
+    ctx.activeTurnWaiters = []
+    for (const input of ctx.inputQueue ?? []) input.waiters = []
+    for (const w of waiters) {
+      clearTimeout(w.timer)
+      w.reject(new Error(reason))
+    }
   }
 
   /**
@@ -412,6 +569,10 @@ export class SessionManager implements ISessionManager {
     if (!next) return
 
     ctx.busy = true
+    // This input's waiters become the in-flight turn's waiters, and the
+    // turn starts with no output of its own yet.
+    ctx.activeTurnWaiters = next.waiters ?? []
+    ctx.currentTurnAssistantId = undefined
     this.finalizeCurrentMessage(sessionId)
 
     if (ctx.adapter.transport === 'acp') {
@@ -427,13 +588,42 @@ export class SessionManager implements ISessionManager {
     if (!ctx) return
     ctx.busy = false
 
-    // Notify (push) when a turn produced a fresh assistant message. Dedup by
-    // message id so we don't re-notify, and skip when the turn ended in a
-    // non-assistant message (e.g. an error) or was cancelled (cancel doesn't
-    // call finishTurn). Only notify when nothing else is queued — the user is
-    // genuinely waiting on this result.
-    if (this.notifier && (!ctx.inputQueue || ctx.inputQueue.length === 0)) {
-      const last = ctx.session.messages.findLast((m) => m.role === 'assistant')
+    const queueDrained = !ctx.inputQueue || ctx.inputQueue.length === 0
+    const isTeam = ctx.session.kind === 'team'
+    // THIS turn's final assistant message — a turn that produced none (an
+    // error, a cancel) yields null rather than another turn's output.
+    const last = ctx.currentTurnAssistantId
+      ? ctx.session.messages.find((m) => m.id === ctx.currentTurnAssistantId) ?? null
+      : null
+
+    // Settle THIS turn's headless waiters with its final message —
+    // correlation is per turn, never gated on the rest of the queue.
+    this.settleTurnWaiters(ctx, last)
+
+    // Team sessions route every completed turn through the persona layer
+    // (which owns notifications) — again per turn, so a reply that lands
+    // while another input is queued still gets parsed and attributed. The
+    // message-id dedup makes routing exactly-once per assistant message.
+    if (isTeam) {
+      // Never re-route a routing artifact: if a turn produced no new output,
+      // findLast can land on a persona message or tagged deliberation from a
+      // previous turn's routing pass.
+      const alreadyRouted = last?.metadata?.personaId || last?.metadata?.kind === 'deliberation'
+      if (this.onTeamTurn && last && !alreadyRouted && last.id !== ctx.lastNotifiedMessageId) {
+        ctx.lastNotifiedMessageId = last.id
+        try {
+          this.onTeamTurn(ctx.session, last)
+        } catch (err) {
+          log.warn('session', `onTeamTurn failed: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+    } else if (this.notifier && queueDrained) {
+      // Generic push stays gated on a drained queue by design: with more
+      // input queued the user isn't waiting yet, and one notification for
+      // the conversation's final state beats one per intermediate turn.
+      // Dedup by message id so we don't re-notify, and skip when the turn
+      // ended in a non-assistant message (e.g. an error) or was cancelled
+      // (cancel doesn't call finishTurn).
       log.info('push', `finishTurn: last assistant msg id=${last?.id ?? 'none'}, lastNotified=${ctx.lastNotifiedMessageId ?? 'none'}`)
       if (last && last.id !== ctx.lastNotifiedMessageId) {
         ctx.lastNotifiedMessageId = last.id
@@ -467,6 +657,7 @@ export class SessionManager implements ISessionManager {
 
     // Drop anything queued so cancel means "stop", not "stop then continue".
     ctx.inputQueue = []
+    this.rejectTurnWaiters(ctx, 'Turn was cancelled')
 
     if (ctx.adapter.transport === 'acp') {
       ctx.acpDriver?.cancel()
@@ -497,6 +688,7 @@ export class SessionManager implements ISessionManager {
     // 1. Cancel any in-flight work and drain the queue
     ctx.inputQueue = []
     ctx.busy = false
+    this.rejectTurnWaiters(ctx, 'CLI was restarted mid-turn')
 
     // 2. Kill the existing process
     if (ctx.adapter.transport === 'acp') {
@@ -709,6 +901,70 @@ export class SessionManager implements ISessionManager {
       this.emitSystemMessage(sessionId, ctx, `CLI error: ${message}`)
       this.broadcast(sessionId, { type: 'status', data: 'idle' })
     })
+  }
+
+  /**
+   * Append a complete assistant message to a live session (persist +
+   * broadcast). Used by the standup service to post persona-attributed
+   * messages into team sessions.
+   */
+  appendAssistantMessage(
+    sessionId: string,
+    content: string,
+    metadata?: ChatMessage['metadata'],
+  ): ChatMessage {
+    const ctx = this.sessions.get(sessionId)
+    if (!ctx) throw new Error(`Session ${sessionId} not found`)
+
+    const msg: ChatMessage = {
+      id: randomUUID(),
+      role: 'assistant',
+      content,
+      timestamp: Date.now(),
+      status: 'complete',
+      ...(metadata ? { metadata } : {}),
+    }
+    ctx.session.messages.push(msg)
+    ctx.session.updatedAt = msg.timestamp
+    this.storage.appendMessage(sessionId, msg).catch((err) => {
+      log.error('session', `Failed to persist persona message for session ${sessionId}`, err)
+    })
+    this.broadcast(sessionId, { type: 'message', data: msg })
+    return msg
+  }
+
+  /**
+   * Amend an existing message in a live session (persist + broadcast). Used
+   * by the standup service to strip the structured JSON tail from team output
+   * and tag the deliberation.
+   */
+  amendMessage(
+    sessionId: string,
+    messageId: string,
+    patch: { content?: string; metadata?: ChatMessage['metadata'] },
+  ): void {
+    const ctx = this.sessions.get(sessionId)
+    if (!ctx) return
+    const msg = ctx.session.messages.find((m) => m.id === messageId)
+    if (!msg) return
+
+    if (patch.content !== undefined) msg.content = patch.content
+    if (patch.metadata) msg.metadata = { ...msg.metadata, ...patch.metadata }
+
+    this.storage.appendMessage(sessionId, msg).catch((err) => {
+      log.error('session', `Failed to persist amended message for session ${sessionId}`, err)
+    })
+    this.broadcast(sessionId, { type: 'message', data: msg })
+  }
+
+  /**
+   * Append + broadcast a system message to a live session. Public so services
+   * (e.g. the standup) can surface background failures in the thread.
+   */
+  appendSystemMessage(sessionId: string, content: string): void {
+    const ctx = this.sessions.get(sessionId)
+    if (!ctx) return
+    this.emitSystemMessage(sessionId, ctx, content)
   }
 
   /** Append + broadcast a system message (used for ACP errors). */
@@ -943,6 +1199,9 @@ export class SessionManager implements ISessionManager {
               timestamp: Date.now(),
               status: 'streaming',
             }
+            if (event.role === 'assistant') {
+              ctx.currentTurnAssistantId = ctx.currentMessage.id
+            }
             ctx.session.messages.push(ctx.currentMessage)
             this.broadcast(sessionId, { type: 'message', data: ctx.currentMessage })
             this.broadcast(sessionId, { type: 'status', data: 'typing' })
@@ -1104,6 +1363,8 @@ export class SessionManager implements ISessionManager {
         clearTimeout(ctx.storageDebounceTimer)
       }
 
+      this.rejectTurnWaiters(ctx, 'Session was deleted')
+
       for (const client of ctx.clients) {
         try { client.close() } catch { /* already closed */ }
       }
@@ -1124,6 +1385,8 @@ export class SessionManager implements ISessionManager {
     for (const sessionId of sessionIds) {
       const ctx = this.sessions.get(sessionId)
       if (!ctx) continue
+
+      this.rejectTurnWaiters(ctx, 'Server is shutting down')
 
       if (ctx.storageDebounceTimer) {
         clearTimeout(ctx.storageDebounceTimer)

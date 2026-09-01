@@ -6,6 +6,13 @@ export const ProviderTypeSchema = z.enum(['kiro', 'gemini', 'claude', 'codex'])
 
 export const SessionStatusSchema = z.enum(['live', 'archived'])
 
+/**
+ * 'chat' = a normal user-driven session; 'team' = the per-project persona
+ * team thread; 'work' = an implementation session spawned from an approved
+ * proposal (behaves like a chat — the kind is a presentation/lineage signal).
+ */
+export const SessionKindSchema = z.enum(['chat', 'team', 'work'])
+
 export const MessageRoleSchema = z.enum(['user', 'assistant', 'system', 'tool'])
 
 export const MessageStatusSchema = z.enum(['streaming', 'complete'])
@@ -17,6 +24,10 @@ export const ChatMessageMetadataSchema = z.object({
   thinkingContent: z.string().optional(),
   credits: z.string().optional(),
   time: z.string().optional(),
+  /** Persona who authored this message (team sessions). */
+  personaId: z.string().uuid().optional(),
+  /** 'deliberation' marks the raw team-discussion output (collapsed in the UI). */
+  kind: z.enum(['deliberation']).optional(),
 })
 
 export const AttachmentSchema = z.object({
@@ -53,12 +64,20 @@ export const ProjectServiceConfigSchema = z.object({
   cwd: z.string().optional(),
 })
 
+/** Per-project daily standup configuration (the proactive team layer). */
+export const ProjectStandupConfigSchema = z.object({
+  enabled: z.boolean(),
+  /** Local hour of day (0-23) the standup runs. */
+  hour: z.number().int().min(0).max(23),
+})
+
 export const ProjectSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1).max(100),
   path: z.string().min(1),
   devServer: ProjectDevServerSchema.optional(),
   services: z.array(ProjectServiceConfigSchema).optional(),
+  standup: ProjectStandupConfigSchema.optional(),
 })
 
 // Base session object without the refinement — needed so .omit() works
@@ -76,6 +95,8 @@ const SessionObjectSchema = z.object({
   cliSessionId: z.string().optional(),
   /** Selected model for this session (provider-specific id). */
   model: z.string().optional(),
+  /** Session kind — absent means 'chat' (a normal user session). */
+  kind: SessionKindSchema.optional(),
 })
 
 // A model the provider can run, for the picker.
@@ -95,6 +116,114 @@ export const SessionSchema = SessionObjectSchema.refine(
 )
 
 export const SessionMetaSchema = SessionObjectSchema.omit({ messages: true })
+
+// --- Todos (per-project ideas list) ---
+
+export const TodoStatusSchema = z.enum(['inbox', 'under_review', 'proposed', 'approved', 'done'])
+
+/** A proposal attached to a todo by the team during a standup. */
+export const TodoProposalSchema = z.object({
+  summary: z.string().min(1),
+  approach: z.string().min(1),
+  effort: z.string().optional(),
+  /** Persona who proposed it. */
+  personaId: z.string().uuid().optional(),
+})
+
+export const TodoSchema = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid(),
+  text: z.string().min(1).max(2000),
+  notes: z.string().max(10000).optional(),
+  status: TodoStatusSchema,
+  proposal: TodoProposalSchema.optional(),
+  createdAt: z.number().int().positive(),
+  updatedAt: z.number().int().positive(),
+  /** When the idea reached 'done' (stamped by storage, cleared on reopen). */
+  completedAt: z.number().int().positive().optional(),
+  /** The implementation ('work') session spawned for this idea, if any. */
+  workSessionId: z.string().uuid().optional(),
+})
+
+// --- Action items (things only the user can do, surfaced by the team) ---
+
+export const ActionItemStatusSchema = z.enum(['open', 'done'])
+
+export const ActionItemSchema = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid(),
+  text: z.string().min(1).max(2000),
+  notes: z.string().max(10000).optional(),
+  status: ActionItemStatusSchema,
+  /** Persona who raised it (absent for manually added items). */
+  personaId: z.string().uuid().optional(),
+  createdAt: z.number().int().positive(),
+  updatedAt: z.number().int().positive(),
+})
+
+// --- Personas (the AI team) ---
+
+export const PersonaSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(60),
+  role: z.string().min(1).max(100),
+  /** Free-text personality/behavior prompt injected into standups. */
+  personality: z.string().max(4000),
+  /** Avatar filename under the data avatars dir (served at /api/avatars/<file>). */
+  avatar: z.string().optional(),
+  provider: ProviderTypeSchema,
+  model: z.string().optional(),
+  /** Exactly one persona should lead — their provider runs the team session. */
+  isLead: z.boolean(),
+})
+
+/** Internal per-project standup runtime state (not user config). */
+export const StandupStateSchema = z.object({
+  projectId: z.string().uuid(),
+  /** Timestamp of the last completed run. */
+  lastRunAt: z.number().int().positive().optional(),
+  /** Hash of the todo list at the last run — unchanged list skips the run. */
+  lastHash: z.string().optional(),
+  /** The persistent team session for this project. */
+  teamSessionId: z.string().uuid().optional(),
+  /**
+   * Consecutive team turns whose structured JSON tail failed to parse.
+   * Reset on the first successful parse; makes silent protocol degradation
+   * observable (surfaced in the thread once the streak passes a threshold).
+   */
+  protocolFailStreak: z.number().int().nonnegative().optional(),
+})
+
+// --- Standup structured output (the JSON tail the team session must emit) ---
+
+/** One outbound message from a persona to the user. */
+export const StandupMessageSchema = z.object({
+  /** Persona name or id — resolved leniently against the roster. */
+  persona: z.string().min(1),
+  kind: z.enum(['proposal', 'question', 'update']).optional(),
+  text: z.string().min(1),
+})
+
+export const StandupProposalSchema = z.object({
+  todoId: z.string().min(1),
+  summary: z.string().min(1),
+  approach: z.string().min(1),
+  effort: z.string().optional(),
+  persona: z.string().optional(),
+})
+
+/** A task only the user can do (secrets, accounts, purchases, decisions). */
+export const StandupUserActionSchema = z.object({
+  persona: z.string().optional(),
+  text: z.string().min(1),
+  notes: z.string().optional(),
+})
+
+export const StandupOutputSchema = z.object({
+  messages: z.array(StandupMessageSchema),
+  proposals: z.array(StandupProposalSchema).optional(),
+  user_actions: z.array(StandupUserActionSchema).optional(),
+})
 
 // --- WebSocket Protocol ---
 
@@ -143,6 +272,39 @@ export const CreateProjectRequestSchema = z.object({
   path: z.string().min(1),
 })
 
+export const RunTurnRequestSchema = z.object({
+  text: z.string().min(1),
+  /** Max time to wait for the turn, in ms (default 5 minutes, capped at 30). */
+  timeoutMs: z.number().int().positive().max(30 * 60 * 1000).optional(),
+})
+
+export const CreateTodoRequestSchema = z.object({
+  projectId: z.string().uuid(),
+  text: z.string().min(1).max(2000),
+  notes: z.string().max(10000).optional(),
+})
+
+export const UpdateTodoRequestSchema = z.object({
+  text: z.string().min(1).max(2000).optional(),
+  notes: z.string().max(10000).optional(),
+  status: TodoStatusSchema.optional(),
+})
+
+export const PersonaBodySchema = PersonaSchema.omit({ id: true, avatar: true })
+export const UpdatePersonaRequestSchema = PersonaBodySchema.partial()
+
+export const CreateActionItemRequestSchema = z.object({
+  projectId: z.string().uuid(),
+  text: z.string().min(1).max(2000),
+  notes: z.string().max(10000).optional(),
+})
+
+export const UpdateActionItemRequestSchema = z.object({
+  text: z.string().min(1).max(2000).optional(),
+  notes: z.string().max(10000).optional(),
+  status: ActionItemStatusSchema.optional(),
+})
+
 // --- Inferred Types ---
 
 export type ProviderType = z.infer<typeof ProviderTypeSchema>
@@ -163,3 +325,16 @@ export type ModelOption = z.infer<typeof ModelOptionSchema>
 export type ModelState = z.infer<typeof ModelStateSchema>
 export type CreateSessionRequest = z.infer<typeof CreateSessionRequestSchema>
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequestSchema>
+export type SessionKind = z.infer<typeof SessionKindSchema>
+export type ProjectStandupConfig = z.infer<typeof ProjectStandupConfigSchema>
+export type TodoStatus = z.infer<typeof TodoStatusSchema>
+export type TodoProposal = z.infer<typeof TodoProposalSchema>
+export type Todo = z.infer<typeof TodoSchema>
+export type ActionItemStatus = z.infer<typeof ActionItemStatusSchema>
+export type ActionItem = z.infer<typeof ActionItemSchema>
+export type StandupUserAction = z.infer<typeof StandupUserActionSchema>
+export type Persona = z.infer<typeof PersonaSchema>
+export type StandupState = z.infer<typeof StandupStateSchema>
+export type StandupMessage = z.infer<typeof StandupMessageSchema>
+export type StandupProposal = z.infer<typeof StandupProposalSchema>
+export type StandupOutput = z.infer<typeof StandupOutputSchema>

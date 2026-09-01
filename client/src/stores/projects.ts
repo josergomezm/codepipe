@@ -61,6 +61,19 @@ export const useProjectsStore = defineStore('projects', () => {
     }
   }
 
+  async function updateProjectStandup(id: string, standup: { enabled: boolean; hour: number } | null) {
+    try {
+      const updated = await api.updateProject(id, { standup })
+      const index = projects.value.findIndex((p) => p.id === id)
+      if (index !== -1) {
+        projects.value[index] = { ...projects.value[index], ...updated, standup: updated.standup }
+      }
+      error.value = null
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to update standup config'
+    }
+  }
+
   async function startDevServer(id: string): Promise<DevServerInfo | null> {
     try {
       const info = await api.startDevServer(id)
@@ -201,6 +214,7 @@ export const useProjectsStore = defineStore('projects', () => {
     addProject,
     removeProject,
     updateProjectDevServer,
+    updateProjectStandup,
     startDevServer,
     stopDevServer,
     getProjectDevUrl,

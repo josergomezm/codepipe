@@ -75,6 +75,8 @@ The server reads these environment variables:
 
 - Chat-style UI with conversation sidebar, message bubbles, and markdown rendering
 - Multiple providers — Kiro CLI, Claude Code, and Gemini CLI — behind one interface
+- **AI team with daily standups** — configurable personas review your per-project ideas list on a schedule and message you with proposals and questions, each with their own name and avatar (see [Your AI team](#your-ai-team-personas--standups))
+- **Headless runs** — `POST /api/sessions/:id/run` sends a message and returns the turn's final response, no WebSocket needed (the orchestration primitive behind standups)
 - Structured output parsing (ACP / stream-json) for reliable messages, tool calls, and turn boundaries, with a terminal-parsing fallback
 - Multiple concurrent sessions, each scoped to a project directory
 - **Stop button** to cancel an in-flight turn, and input **queueing** so messages sent mid-turn run in order instead of interrupting
@@ -83,6 +85,60 @@ The server reads these environment variables:
 - Remote access over Tailscale (HTTPS, private tailnet, no public exposure)
 - File attachments, typing indicator, persistent history, and live/archived session states
 - Per-provider binary auto-detection via `GET /api/health`
+
+## Your AI team (personas & standups)
+
+CodePipe includes a proactive layer on top of ordinary sessions: a small AI
+"organization" that reviews your ideas and reports back like colleagues.
+
+**How it fits together**
+
+- **Personas** (sidebar → Team → gear icon): named team members with a role, a
+  personality prompt, a provider/model, and an optional profile picture. One
+  persona is the **lead** — their CLI runs the team's thinking, and their
+  avatar fronts the team thread. Push notifications arrive under the persona's
+  name and picture, like a message from a person.
+- **Ideas** (project menu → Ideas): a per-project todo/idea list with quick
+  capture. Statuses flow `inbox → in review → proposed → approved → done`.
+- **Action items** (sidebar → Workspace → Action items, at `/actions`): a
+  full-page cross-project dashboard of things only *you* can do — add API
+  secrets, create accounts, make a call the team can't. Standups raise these
+  automatically (deduplicated against open items) and you can add your own.
+  Completing a team-raised item pings the team thread: a persona acknowledges
+  and picks up whatever it was blocking.
+- **Ideas board** (`/board`): a kanban over the idea lifecycle (Inbox → In
+  review → Proposed → Approved → Done) with a project filter, quick capture,
+  and per-card move controls. Moving a card is just
+  `PATCH /api/todos/:id {status}` — scriptable like everything else.
+- **Approve & build**: approving a proposal spawns a live **work session** —
+  an ordinary chat running on the *proposing persona's* provider/model, titled
+  after them, visible in the sidebar like any conversation. Open it to watch
+  the implementation stream (or interject — it's a chat). When the turn
+  finishes, the idea moves to Done on the board and the implementer announces
+  it in the team thread with a push notification; if it fails, the idea stays
+  on the board with the session link cleared so you can retry.
+- **Ledger** (`/ledger`): every idea that reached Done, grouped by month with
+  completion dates, project tags, who proposed it, and a link to the build
+  session that shipped it — your shipping record.
+- **Standups**: enable per project in project settings (toggle + hour). Once a
+  day the team reads the open ideas, deliberates (one headless CLI turn — the
+  raw discussion is kept, collapsed behind a "Team deliberation" toggle), then
+  each relevant persona messages you: the lead summarizes, others ask their own
+  questions. Proposals land on the matching ideas with a summary, approach, and
+  effort estimate. Replying in the team thread continues the same conversation.
+
+**Cost control**: a standup is skipped when the ideas list hasn't changed since
+the last run (and scheduled runs happen at most once per day per project).
+"Run standup" in the Ideas panel forces one immediately; with an empty list it
+asks the team to review the project itself and suggest improvements. Manual
+runs return as soon as the turn is dispatched — results arrive as persona
+notifications. Team threads rotate monthly (and when the lead's provider
+changes) so the resumed CLI context stays bounded; old threads remain as
+history.
+
+**Storage**: personas, todos, and standup state are JSON files under
+`server/data/`, validated with zod like everything else. Avatars are stored in
+`server/data/avatars/` and served at `/api/avatars/<file>`.
 
 ## Remote Access with Tailscale
 

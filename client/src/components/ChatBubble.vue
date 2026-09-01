@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import MarkdownIt from 'markdown-it'
+import { useTeamStore } from '@/stores/team'
+import PersonaAvatar from '@/components/PersonaAvatar.vue'
 import type { ChatMessage } from '@/api/client'
 
 const props = defineProps<{
   message: ChatMessage
 }>()
+
+const teamStore = useTeamStore()
 
 const md = new MarkdownIt({
   html: false,
@@ -35,6 +39,16 @@ const isUser = computed(() => props.message.role === 'user')
 const isAssistant = computed(() => props.message.role === 'assistant')
 const isTool = computed(() => props.message.role === 'tool')
 const isSystem = computed(() => props.message.role === 'system')
+
+// Team sessions: persona attribution + collapsed deliberation transcript
+const persona = computed(() => {
+  const id = props.message.metadata?.personaId
+  return id ? teamStore.personasById.get(id) ?? null : null
+})
+const isDeliberation = computed(() => props.message.metadata?.kind === 'deliberation')
+// A reply that was pure JSON leaves an empty deliberation — render nothing.
+const deliberationEmpty = computed(() => isDeliberation.value && props.message.content.trim().length === 0)
+const deliberationOpen = ref(false)
 
 const copied = ref(false)
 async function copyContent() {
@@ -81,9 +95,39 @@ async function copyContent() {
     </div>
   </div>
 
-  <!-- Assistant message: left-aligned, gray -->
-  <div v-else-if="isAssistant" class="group relative flex items-start px-4 py-1">
+  <!-- Empty deliberation (reply was pure JSON): nothing to show -->
+  <template v-else-if="isAssistant && deliberationEmpty" />
+
+  <!-- Team deliberation: collapsed behind a transcript toggle -->
+  <div v-else-if="isAssistant && isDeliberation" class="px-4 py-1">
+    <button
+      class="flex items-center gap-1.5 rounded-lg border border-dashed border-gray-300 px-3 py-1.5 text-xs text-gray-500 transition hover:border-gray-400 hover:text-gray-700 dark:border-gray-700 dark:text-gray-400 dark:hover:border-gray-600 dark:hover:text-gray-300"
+      @click="deliberationOpen = !deliberationOpen"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"
+        class="h-3 w-3 transition-transform" :class="{ 'rotate-90': deliberationOpen }"
+      >
+        <path fill-rule="evenodd" d="M8.22 5.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L11.94 10 8.22 6.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd" />
+      </svg>
+      Team deliberation
+    </button>
+    <div
+      v-if="deliberationOpen"
+      class="mt-1.5 max-w-[90%] overflow-hidden rounded-2xl border border-gray-200 bg-gray-50 px-4 py-2.5 dark:border-gray-700 dark:bg-gray-900/50"
+    >
+      <div class="prose prose-sm max-w-none break-words dark:prose-invert" v-html="renderedContent"></div>
+    </div>
+  </div>
+
+  <!-- Assistant message: left-aligned, gray (persona-attributed in team sessions) -->
+  <div v-else-if="isAssistant" class="group relative flex items-start gap-2 px-4 py-1">
+    <PersonaAvatar v-if="persona" :persona="persona" size="sm" class="mt-1" />
     <div class="max-w-[75%] overflow-hidden rounded-2xl bg-gray-100 px-4 py-2.5 dark:bg-gray-800">
+      <div v-if="persona" class="mb-1 flex items-baseline gap-1.5">
+        <span class="text-xs font-semibold text-gray-800 dark:text-gray-200">{{ persona.name }}</span>
+        <span class="text-[10px] text-gray-400 dark:text-gray-500">{{ persona.role }}</span>
+      </div>
       <!-- Streaming: show raw text to avoid markdown re-parsing flicker -->
       <p v-if="isStreaming" class="whitespace-pre-wrap break-words text-sm text-gray-900 dark:text-gray-100">{{ message.content }}</p>
       <!-- Complete: render full markdown -->

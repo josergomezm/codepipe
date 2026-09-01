@@ -11,6 +11,7 @@ try {
 }
 
 import { StorageLayer } from './storage.js'
+import { EventBus } from './events.js'
 import { SessionManager } from './session-manager.js'
 import { DevServerManager } from './dev-server-manager.js'
 import { ServiceManager } from './service-manager.js'
@@ -24,6 +25,11 @@ import { createProjectRoutes } from './routes/projects.js'
 import { createServiceRoutes } from './routes/services.js'
 import { createBrowseRoutes } from './routes/browse.js'
 import { createUploadRoutes } from './routes/upload.js'
+import { createTodoRoutes } from './routes/todos.js'
+import { createActionRoutes } from './routes/actions.js'
+import { createPersonaRoutes } from './routes/personas.js'
+import { createStandupRoutes } from './routes/standup.js'
+import { StandupService } from './standup.js'
 import { setupWebSocket } from './websocket.js'
 import { getProviderHealth } from './provider-health.js'
 import { PushService } from './push.js'
@@ -34,7 +40,10 @@ import { log } from './logger.js'
 // Initialize storage and session manager
 // ---------------------------------------------------------------------------
 
-const storage = new StorageLayer('./data')
+// Change hints flow storage → bus → WebSocket subscribers; clients refetch.
+const eventBus = new EventBus()
+
+const storage = new StorageLayer('./data', (collection) => eventBus.publish(collection))
 await storage.ensureDataDir()
 
 // Web Push (disabled unless VAPID keys are set — see `npm run gen-vapid`).
@@ -44,6 +53,10 @@ log.info('server', `Push notifications: ${pushService.isEnabled() ? 'enabled' : 
 const sessionManager = new SessionManager(storage, pushService)
 const devServerManager = new DevServerManager()
 const serviceManager = new ServiceManager()
+
+// The proactive team layer: daily standups over the per-project todo list,
+// routed through personas. Registers the team-turn hook on the session manager.
+const standupService = new StandupService(storage, sessionManager, pushService)
 
 // ---------------------------------------------------------------------------
 // Register CLI adapters
@@ -84,13 +97,18 @@ app.use('/api/projects/:id/services', createServiceRoutes(storage, serviceManage
 app.use('/api/browse', createBrowseRoutes())
 app.use('/api/upload', createUploadRoutes('./data/uploads'))
 app.use('/api/push', createPushRoutes(pushService))
+app.use('/api/todos', createTodoRoutes(storage, standupService))
+app.use('/api/actions', createActionRoutes(storage, standupService))
+app.use('/api/personas', createPersonaRoutes(storage, './data/avatars'))
+app.use('/api/avatars', express.static('./data/avatars', { maxAge: '1d' }))
+app.use('/api/standup', createStandupRoutes(standupService, storage))
 
 // ---------------------------------------------------------------------------
 // HTTP + WebSocket server
 // ---------------------------------------------------------------------------
 
 const server = createServer(app)
-setupWebSocket(server, sessionManager, storage)
+setupWebSocket(server, sessionManager, storage, eventBus)
 
 // Only listen when running directly (not imported by tests)
 const isMainModule = !process.env['VITEST']
@@ -103,11 +121,14 @@ if (isMainModule) {
     log.info('server', `CodePipe server listening on http://${host}:${port}`)
   })
 
+  standupService.start()
+
   // Graceful shutdown
   async function gracefulShutdown(signal: string): Promise<void> {
     log.info('server', `Received ${signal}. Shutting down gracefully...`)
 
     try {
+      standupService.stop()
       await devServerManager.shutdownAll()
       await serviceManager.shutdownAll()
       await sessionManager.shutdown()

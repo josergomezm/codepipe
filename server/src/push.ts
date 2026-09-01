@@ -33,6 +33,8 @@ export interface PushPayload {
   sessionId: string
   /** Notification tag — reusing the session ID collapses repeats per session. */
   tag: string
+  /** Notification icon URL (e.g. a persona avatar). Falls back to the app icon. */
+  icon?: string
 }
 
 /** Sends one notification. Returns/throws like web-push (errors carry statusCode). */
@@ -43,7 +45,7 @@ export interface TurnNotifier {
   notifyTurnComplete(session: Session, lastAssistantText: string, projectName?: string): void
 }
 
-function snippet(text: string): string {
+export function snippet(text: string): string {
   const s = text.replace(/\s+/g, ' ').trim()
   if (s.length === 0) return 'New response'
   return s.length > 140 ? s.slice(0, 137) + '…' : s
