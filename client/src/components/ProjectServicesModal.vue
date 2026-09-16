@@ -323,7 +323,7 @@ function close() {
 
               <!-- Recent logs (last 5 lines) -->
               <div
-                v-if="svc.state.logs.length > 0 && svc.state.status !== 'stopped'"
+                v-if="svc.state.logs.length > 0"
                 class="border-t border-gray-100 dark:border-gray-800"
               >
                 <pre class="max-h-24 overflow-y-auto rounded-b-lg bg-gray-950 px-4 py-2 font-mono text-[10px] leading-relaxed text-gray-300">{{ svc.state.logs.slice(-10).join('\n') }}</pre>

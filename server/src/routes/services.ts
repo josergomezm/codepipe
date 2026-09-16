@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import type { Request } from 'express'
 import type { IStorageLayer } from '../storage.js'
-import type { ServiceManager } from '../service-manager.js'
+import { normalizeStartCommand, type ServiceManager } from '../service-manager.js'
 import { ProjectServiceConfigSchema } from '../schemas.js'
 import { log } from '../logger.js'
 import { detectFirebaseEmulators, buildFirebaseServiceConfig, firebasePortParser } from '../services/firebase-detector.js'
@@ -11,6 +11,15 @@ import { isLocalPortListening, identifyLocalPortOwner, servicePortsAsReserved } 
 // explicitly in each handler.
 type P = { id: string }
 type SP = { id: string; serviceId: string }
+
+/** Poll `done` for up to `timeoutMs`, resolving as soon as it turns true. */
+async function settle(done: () => boolean, timeoutMs = 1500, stepMs = 100): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, stepMs))
+    if (done()) return
+  }
+}
 
 export function createServiceRoutes(storage: IStorageLayer, serviceManager: ServiceManager): Router {
   const router = Router({ mergeParams: true })
@@ -128,15 +137,28 @@ export function createServiceRoutes(storage: IStorageLayer, serviceManager: Serv
       const config = (project.services ?? []).find((s) => s.id === serviceId)
       if (!config) { res.status(404).json({ error: 'Service not found' }); return }
 
+      // Self-heal configs saved with a redundant --prefix/--cwd flag, so the
+      // stored command matches the one we actually run.
+      const repaired = normalizeStartCommand(config)
+      if (repaired !== config.startCommand) {
+        log.info('service', `Repairing start command for ${serviceId}: "${config.startCommand}" -> "${repaired}"`)
+        config.startCommand = repaired
+        await storage.updateProject(id, { services: project.services })
+      }
+
       // Pre-start guard: Firebase's default ports are identical for every
       // project, so check the ports this instance will bind before spawning.
       if (config.type === 'firebase-emulators') {
         const detection = await detectFirebaseEmulators(project.path)
         const allProjects = await storage.listProjects()
 
-        // Ports held by this same service are fine — start() restarts it
+        // Ports held by this same service are fine — start() restarts it.
+        // Only while it is actually up: a stopped run's ports belong to
+        // whoever took them since.
         const own = serviceManager.getState(id, serviceId)
-        const ownPorts = new Set(Object.values(own.ports).map((p) => p.port))
+        const ownPorts = new Set(
+          own.status === 'running' ? Object.values(own.ports).map((p) => p.port) : [],
+        )
         const otherRunning = serviceManager
           .listRunning()
           .filter((s) => !(s.projectId === id && s.serviceId === serviceId))
@@ -158,7 +180,13 @@ export function createServiceRoutes(storage: IStorageLayer, serviceManager: Serv
 
       const parser = config.type === 'firebase-emulators' ? firebasePortParser : undefined
       const state = serviceManager.start(id, project.path, config, parser)
-      res.json(state)
+
+      // A bad command (missing script, missing binary) dies a beat after spawn.
+      // Give it that beat so the response carries the real failure instead of
+      // an optimistic "running" the UI would have to discover was wrong.
+      await settle(() => serviceManager.getState(id, serviceId).status !== 'running')
+
+      res.json(serviceManager.getState(id, serviceId))
     } catch (err) {
       log.error('api', `Failed to start service ${(req as Request<SP>).params.serviceId}`, err)
       res.status(500).json({ error: 'Failed to start service' })

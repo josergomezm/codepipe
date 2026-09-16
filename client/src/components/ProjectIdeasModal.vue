@@ -66,6 +66,7 @@ watch(
     standupState.value = null
     if (id) {
       teamStore.fetchTodos()
+      teamStore.fetchActions()
       loadStandupState(id)
     }
   },
@@ -100,6 +101,10 @@ function proposer(todo: Todo) {
   return todo.proposal?.personaId ? teamStore.personasById.get(todo.proposal.personaId) ?? null : null
 }
 
+function taker(personaId: string) {
+  return teamStore.personasById.get(personaId) ?? null
+}
+
 async function runNow() {
   if (!props.projectId) return
   runMessage.value = null
@@ -126,8 +131,50 @@ async function openSession(sessionId: string) {
   emit('close')
 }
 
+const refiningId = ref<string | null>(null)
+const refineFeedback = ref('')
+const refineSending = ref(false)
+
+function startRefine(todoId: string) {
+  refiningId.value = refiningId.value === todoId ? null : todoId
+  refineFeedback.value = ''
+}
+
+async function sendRefine(todoId: string) {
+  const feedback = refineFeedback.value.trim()
+  if (!feedback) return
+  refineSending.value = true
+  const result = await teamStore.refineTodo(todoId, feedback)
+  refineSending.value = false
+  if (!result) return
+  if (result.ran && result.sessionId) {
+    refiningId.value = null
+    // Watch the team revise it live; the updated proposal lands via events.
+    await openSession(result.sessionId)
+  } else {
+    runMessage.value = result.reason ?? 'Could not send the feedback'
+  }
+}
+
+/** Team-raised actions linked to this idea (its prerequisites). */
+function prereqs(todo: Todo) {
+  return teamStore.actions.filter((a) => a.todoId === todo.id)
+}
+function openPrereqCount(todo: Todo): number {
+  return prereqs(todo).filter((a) => a.status === 'open').length
+}
+
+// Soft gate: building with open prerequisites needs a second click.
+const confirmBuildId = ref<string | null>(null)
+
 async function build(todoId: string) {
   runMessage.value = null
+  const todo = todos.value.find((t) => t.id === todoId)
+  if (todo && openPrereqCount(todo) > 0 && confirmBuildId.value !== todoId) {
+    confirmBuildId.value = todoId
+    return
+  }
+  confirmBuildId.value = null
   const result = await teamStore.implementTodo(todoId)
   if (!result) return
   if (result.sessionId) {
@@ -258,6 +305,27 @@ function close() {
 
             <!-- Proposal + actions (expanded) -->
             <div v-if="expandedId === todo.id" class="border-t border-gray-200 px-3 py-2 dark:border-gray-700">
+              <!-- Independent reviewer takes -->
+              <div v-if="todo.takes?.length" class="mb-2 flex flex-col gap-1.5">
+                <div
+                  v-for="take in todo.takes"
+                  :key="take.personaId"
+                  class="flex items-start gap-2 rounded-lg bg-gray-50 p-2 dark:bg-gray-800/50"
+                >
+                  <PersonaAvatar :persona="taker(take.personaId)" size="sm" class="mt-0.5" />
+                  <div class="min-w-0 flex-1">
+                    <p class="text-xs text-gray-700 dark:text-gray-300">
+                      <span class="font-medium">{{ taker(take.personaId)?.name ?? 'Reviewer' }}</span>
+                      — {{ take.take }}
+                    </p>
+                    <ul v-if="take.concerns?.length" class="mt-0.5 list-inside list-disc text-[11px] text-amber-700 dark:text-amber-400">
+                      <li v-for="(concern, i) in take.concerns" :key="i">{{ concern }}</li>
+                    </ul>
+                    <p v-if="take.effort" class="mt-0.5 text-[10px] text-gray-400 dark:text-gray-500">Effort: {{ take.effort }}</p>
+                  </div>
+                </div>
+              </div>
+
               <div v-if="todo.proposal" class="mb-2 rounded-lg bg-gray-50 p-2.5 dark:bg-gray-800/50">
                 <div class="flex items-center gap-1.5">
                   <PersonaAvatar :persona="proposer(todo)" size="sm" />
@@ -267,14 +335,54 @@ function close() {
                 </div>
                 <p class="mt-1.5 whitespace-pre-wrap text-xs text-gray-600 dark:text-gray-400">{{ todo.proposal.approach }}</p>
                 <p v-if="todo.proposal.effort" class="mt-1 text-xs text-gray-400 dark:text-gray-500">Effort: {{ todo.proposal.effort }}</p>
+                <details v-if="todo.proposal.brief" class="mt-1.5">
+                  <summary class="cursor-pointer text-xs text-blue-600 dark:text-blue-400">Implementation brief (what the builder runs on)</summary>
+                  <pre class="mt-1 whitespace-pre-wrap rounded bg-white p-2 font-mono text-[11px] text-gray-600 dark:bg-gray-900 dark:text-gray-400">{{ todo.proposal.brief }}</pre>
+                </details>
               </div>
+              <!-- Prerequisites: things to do before building this idea -->
+              <div v-if="prereqs(todo).length" class="mb-2 flex flex-col gap-1">
+                <span class="text-[10px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-500">
+                  Before building{{ openPrereqCount(todo) ? ` · ${openPrereqCount(todo)} open` : ' · all done' }}
+                </span>
+                <div
+                  v-for="item in prereqs(todo)"
+                  :key="item.id"
+                  class="flex items-start gap-2 rounded-lg border border-amber-200/60 px-2.5 py-1.5 dark:border-amber-900/40"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="item.status === 'done'"
+                    class="mt-0.5 rounded"
+                    @change="teamStore.setActionStatus(item.id, item.status === 'done' ? 'open' : 'done')"
+                  />
+                  <div class="min-w-0 flex-1">
+                    <p
+                      class="text-xs"
+                      :class="item.status === 'done'
+                        ? 'text-gray-400 line-through dark:text-gray-500'
+                        : 'text-gray-700 dark:text-gray-300'"
+                    >{{ item.text }}</p>
+                    <ol v-if="item.steps?.length && item.status !== 'done'" class="mt-1 flex flex-col gap-0.5">
+                      <li v-for="(step, i) in item.steps" :key="i" class="flex items-start gap-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+                        <span class="mt-px flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-gray-100 text-[8px] font-semibold text-gray-500 dark:bg-gray-800 dark:text-gray-400">{{ i + 1 }}</span>
+                        <span class="whitespace-pre-wrap">{{ step }}</span>
+                      </li>
+                    </ol>
+                  </div>
+                </div>
+              </div>
+
               <div class="flex flex-wrap gap-1.5">
                 <button
                   v-if="todo.proposal && !todo.workSessionId && (todo.status === 'proposed' || todo.status === 'approved')"
-                  class="rounded bg-green-600 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-green-700"
+                  class="rounded px-2.5 py-1 text-xs font-medium text-white transition"
+                  :class="confirmBuildId === todo.id ? 'bg-amber-600 hover:bg-amber-700' : 'bg-green-600 hover:bg-green-700'"
                   :title="`${proposer(todo)?.name ?? 'The team'} implements it in a live work session`"
                   @click="build(todo.id)"
-                >{{ todo.status === 'proposed' ? 'Approve & build' : 'Build' }}</button>
+                >{{ confirmBuildId === todo.id
+                  ? `Build anyway? (${openPrereqCount(todo)} open)`
+                  : (todo.status === 'proposed' ? 'Approve & build' : 'Build') }}</button>
                 <button
                   v-if="todo.workSessionId"
                   class="rounded bg-blue-600 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-blue-700"
@@ -286,6 +394,12 @@ function close() {
                   title="Approve without starting the build"
                   @click="teamStore.setTodoStatus(todo.id, 'approved')"
                 >Approve only</button>
+                <button
+                  v-if="todo.proposal && !todo.workSessionId && todo.status !== 'done'"
+                  class="rounded bg-purple-100 px-2.5 py-1 text-xs font-medium text-purple-700 transition hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-300 dark:hover:bg-purple-900/50"
+                  title="Send feedback — the team revises the proposal and brief"
+                  @click="startRefine(todo.id)"
+                >Request changes</button>
                 <button
                   v-if="todo.status !== 'done'"
                   class="rounded bg-gray-200 px-2.5 py-1 text-xs font-medium text-gray-700 transition hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
@@ -300,6 +414,27 @@ function close() {
                   class="rounded px-2.5 py-1 text-xs font-medium text-red-600 transition hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
                   @click="teamStore.deleteTodo(todo.id)"
                 >Delete</button>
+              </div>
+
+              <!-- Refine: feedback that round-trips through the team -->
+              <div v-if="refiningId === todo.id" class="mt-2 flex flex-col gap-1.5">
+                <textarea
+                  v-model="refineFeedback"
+                  rows="2"
+                  placeholder="What should change? (e.g. cap at 10s, don't touch auth, reference docs/pos.md)"
+                  class="rounded-lg border border-purple-200 bg-white px-3 py-2 text-xs text-gray-900 placeholder:text-gray-400 focus:border-purple-500 focus:outline-none dark:border-purple-800 dark:bg-gray-800 dark:text-gray-100"
+                />
+                <div class="flex gap-1.5">
+                  <button
+                    :disabled="refineSending || !refineFeedback.trim()"
+                    class="rounded bg-purple-600 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-purple-700 disabled:opacity-50"
+                    @click="sendRefine(todo.id)"
+                  >{{ refineSending ? 'Sending…' : 'Send to team' }}</button>
+                  <button
+                    class="rounded px-2.5 py-1 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                    @click="refiningId = null"
+                  >Cancel</button>
+                </div>
               </div>
             </div>
           </div>

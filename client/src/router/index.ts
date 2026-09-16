@@ -19,6 +19,11 @@ const router = createRouter({
       name: 'ledger',
       component: () => import('../views/LedgerView.vue'),
     },
+    {
+      path: '/team/:personaId',
+      name: 'persona',
+      component: () => import('../views/PersonaView.vue'),
+    },
     // Chat stays the catch-all so existing deep links (/?session=<id>) and
     // unknown paths land in the conversation view.
     {

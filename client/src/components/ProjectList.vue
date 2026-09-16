@@ -47,11 +47,12 @@ watch(
 )
 
 // Group sessions by projectId, sorted by updatedAt descending within each
-// group. Team sessions are listed in the Team section instead.
+// group. Standup ('team') sessions live here with the project's other chats;
+// reviewer sessions are internal throwaway compute and never shown.
 const sessionsByProject = computed(() => {
   const map = new Map<string, typeof sessionStore.sessions>()
   const sorted = [...sessionStore.sessions]
-    .filter((s) => s.kind !== 'team')
+    .filter((s) => s.kind !== 'review')
     .sort((a, b) => b.updatedAt - a.updatedAt)
   for (const session of sorted) {
     const list = map.get(session.projectId) ?? []
@@ -441,9 +442,22 @@ async function stopDevServer(id: string) {
             />
           </template>
 
-          <span class="shrink-0 rounded bg-gray-200 px-1 py-0.5 text-[9px] font-medium text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+          <span
+            v-if="session.kind === 'team'"
+            class="shrink-0 rounded bg-purple-100 px-1 py-0.5 text-[9px] font-medium text-purple-700 dark:bg-purple-900/40 dark:text-purple-300"
+          >Standup</span>
+          <span
+            v-else-if="session.kind === 'work'"
+            class="shrink-0 rounded bg-green-100 px-1 py-0.5 text-[9px] font-medium text-green-700 dark:bg-green-900/40 dark:text-green-300"
+          >Build</span>
+          <span v-else class="shrink-0 rounded bg-gray-200 px-1 py-0.5 text-[9px] font-medium text-gray-500 dark:bg-gray-700 dark:text-gray-400">
             {{ providerLabel(session.provider) }}
           </span>
+          <span
+            v-if="sessionStore.isUnread(session)"
+            class="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500"
+            title="New messages"
+          />
 
           <!-- 3-dot session menu button -->
           <button

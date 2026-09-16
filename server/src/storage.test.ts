@@ -325,12 +325,15 @@ describe('Atomic write behavior', () => {
     expect(after!.title).toBe('Original Title')
   })
 
-  it('returns empty array for corrupted projects.json', async () => {
+  it('fails loudly on a corrupted projects.json instead of serving an empty list', async () => {
+    // Contract change (wipe-on-corrupt hardening): a corrupt collection file
+    // throws on read AND blocks mutations — silently treating it as empty
+    // let read-modify-writes persist the emptiness and destroy the data.
     const projectsFile = path.join(tmpDir, 'projects.json')
     await writeFile(projectsFile, '<<<CORRUPTED>>>', 'utf-8')
 
-    const projects = await storage.listProjects()
-    expect(projects).toEqual([])
+    await expect(storage.listProjects()).rejects.toThrow(/not valid JSON/)
+    await expect(storage.addProject({ name: 'x', path: tmpDir })).rejects.toThrow(/not valid JSON/)
   })
 })
 

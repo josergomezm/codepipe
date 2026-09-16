@@ -120,21 +120,27 @@ CodePipe includes a proactive layer on top of ordinary sessions: a small AI
 - **Ledger** (`/ledger`): every idea that reached Done, grouped by month with
   completion dates, project tags, who proposed it, and a link to the build
   session that shipped it — your shipping record.
-- **Standups**: enable per project in project settings (toggle + hour). Once a
-  day the team reads the open ideas, deliberates (one headless CLI turn — the
-  raw discussion is kept, collapsed behind a "Team deliberation" toggle), then
-  each relevant persona messages you: the lead summarizes, others ask their own
-  questions. Proposals land on the matching ideas with a summary, approach, and
-  effort estimate. Replying in the team thread continues the same conversation.
+- **Standups**: enable per project in project settings (toggle + hour). Each
+  run is an ephemeral **review pipeline**, not a resumed conversation: every
+  non-lead persona takes an independent look at each new idea in its own
+  fresh, read-only session (their `take` — one point, chosen well — lands on
+  the idea's card and the throwaway session is deleted), then the lead
+  synthesizes takes + agenda + memo in a dated session ("project standup ·
+  Sep 2") that you can watch and reply to that day. Proposals land on ideas
+  with a summary, approach, effort, and execution brief.
+- **Continuity is state, not chat history**: the board, takes, and briefs
+  persist; the team ends each standup with a **memo** (their handoff note,
+  injected into the next run); and events between standups — action items you
+  resolve, builds that ship — queue on an **agenda** the next standup
+  acknowledges in one turn instead of a CLI turn each.
 
-**Cost control**: a standup is skipped when the ideas list hasn't changed since
-the last run (and scheduled runs happen at most once per day per project).
-"Run standup" in the Ideas panel forces one immediately; with an empty list it
-asks the team to review the project itself and suggest improvements. Manual
-runs return as soon as the turn is dispatched — results arrive as persona
-notifications. Team threads rotate monthly (and when the lead's provider
-changes) so the resumed CLI context stays bounded; old threads remain as
-history.
+**Cost control**: a standup is skipped when the ideas list hasn't changed and
+the agenda is empty (and scheduled runs happen at most once per day per
+project, with catch-up after sleep). "Run standup" in the Ideas panel forces
+one immediately; with an empty list it asks the team to review the project
+itself. Manual runs return as soon as the pipeline is dispatched — results
+arrive as persona notifications. Sessions are bounded by construction, so
+there is nothing to rotate.
 
 **Storage**: personas, todos, and standup state are JSON files under
 `server/data/`, validated with zod like everything else. Avatars are stored in

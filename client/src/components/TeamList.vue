@@ -1,34 +1,20 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useSessionsStore } from '@/stores/sessions'
-import { useProjectsStore } from '@/stores/projects'
 import { useTeamStore } from '@/stores/team'
+import { useUiStore } from '@/stores/ui'
 import PersonaAvatar from '@/components/PersonaAvatar.vue'
 import TeamSettingsModal from '@/components/TeamSettingsModal.vue'
 
-const sessionStore = useSessionsStore()
-const projectStore = useProjectsStore()
 const teamStore = useTeamStore()
-
-const showSettings = ref(false)
+const ui = useUiStore()
 const router = useRouter()
 
-// One thread per project: sessions the standup service created (kind 'team'),
-// newest activity first.
-const teamSessions = computed(() =>
-  sessionStore.sessions
-    .filter((s) => s.kind === 'team')
-    .sort((a, b) => b.updatedAt - a.updatedAt),
-)
+const showSettings = ref(false)
 
-function projectName(projectId: string): string {
-  return projectStore.projects.find((p) => p.id === projectId)?.name ?? 'Unknown project'
-}
-
-function selectSession(id: string) {
-  sessionStore.selectSession(id)
-  router.push('/')
+function openPersona(personaId: string) {
+  router.push(`/team/${personaId}`)
+  ui.closeSidebar()
 }
 </script>
 
@@ -56,44 +42,21 @@ function selectSession(id: string) {
       </button>
     </div>
 
-    <div
-      v-else-if="teamSessions.length === 0"
-      class="px-2 py-1 text-xs text-gray-400 dark:text-gray-500"
-    >
-      No standups yet. Enable one in a project's settings, or add ideas and run it manually.
-    </div>
-
+    <!-- The roster: tap a member to see their contributions -->
     <button
-      v-for="session in teamSessions"
-      :key="session.id"
-      class="flex items-center gap-2 rounded-lg px-2 py-1.5 text-left transition"
-      :class="sessionStore.activeSessionId === session.id
-        ? 'bg-blue-50 dark:bg-blue-900/20'
-        : 'hover:bg-gray-100 dark:hover:bg-gray-800'"
-      @click="selectSession(session.id)"
+      v-for="persona in teamStore.personas"
+      :key="persona.id"
+      class="flex items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-gray-100 dark:hover:bg-gray-800"
+      @click="openPersona(persona.id)"
     >
-      <PersonaAvatar :persona="teamStore.lead" />
+      <PersonaAvatar :persona="persona" />
       <div class="min-w-0 flex-1">
-        <div
-          class="truncate text-sm"
-          :class="[
-            sessionStore.activeSessionId === session.id
-              ? 'text-blue-700 dark:text-blue-400'
-              : 'text-gray-700 dark:text-gray-300',
-            sessionStore.isUnread(session) ? 'font-semibold' : 'font-medium',
-          ]"
-        >
-          {{ session.title }}
+        <div class="truncate text-sm font-medium text-gray-700 dark:text-gray-300">
+          {{ persona.name }}
+          <span v-if="persona.isLead" class="ml-1 rounded-full bg-purple-100 px-1.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/40 dark:text-purple-300">lead</span>
         </div>
-        <div class="truncate text-xs text-gray-400 dark:text-gray-500">
-          {{ projectName(session.projectId) }}
-        </div>
+        <div class="truncate text-xs text-gray-400 dark:text-gray-500">{{ persona.role }}</div>
       </div>
-      <span
-        v-if="sessionStore.isUnread(session)"
-        class="h-2 w-2 shrink-0 rounded-full bg-blue-500"
-        title="New messages"
-      />
     </button>
 
     <TeamSettingsModal v-if="showSettings" @close="showSettings = false" />

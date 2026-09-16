@@ -31,9 +31,37 @@ export type PortParser = (line: string, state: ServiceState) => void
 
 const MAX_LOG_LINES = 200
 
+/**
+ * Firebase (and most CLIs) colorize output, and the escape codes sit between
+ * the box-drawing characters and the values — enough to defeat the port-table
+ * regexes and to smuggle terminal junk into the UI's log tail.
+ */
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]/g
+
+export function stripAnsi(line: string): string {
+  return line.replace(ANSI_RE, '')
+}
+
 function pushLog(logs: string[], line: string): void {
   logs.push(line)
   if (logs.length > MAX_LOG_LINES) logs.shift()
+}
+
+/**
+ * Service configs saved by an earlier detector carry both a `cwd` and a
+ * redundant `--prefix <cwd>` / `--cwd <cwd>` flag. npm then resolves
+ * `<cwd>/<cwd>/package.json` and dies with ENOENT before anything starts, so
+ * strip the flag when it only repeats the directory we already chdir into.
+ */
+export function normalizeStartCommand(config: ProjectServiceConfig): string {
+  if (!config.cwd) return config.startCommand
+  const dir = config.cwd.replace(/[\\/]+$/, '')
+  if (!dir) return config.startCommand
+  const escaped = dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return config.startCommand
+    .replace(new RegExp(`\\s+--(?:prefix|cwd)[\\s=]+["']?${escaped}["']?(?=\\s|$)`), '')
+    .trim()
 }
 
 // ---------------------------------------------------------------------------
@@ -59,6 +87,11 @@ export interface RunningService {
 
 export class ServiceManager {
   private readonly processes = new Map<string, ServiceProcess>()
+  /**
+   * State of the last run of each service, kept after the process is gone so a
+   * crash keeps its exit code and log tail instead of reading as a plain stop.
+   */
+  private readonly lastStates = new Map<string, ServiceState>()
 
   private key(projectId: string, serviceId: string): string {
     return `${projectId}::${serviceId}`
@@ -81,15 +114,17 @@ export class ServiceManager {
       ? path.resolve(projectPath, config.cwd)
       : projectPath
 
-    log.info('service', `Starting service "${config.label}" for project ${projectId}: ${config.startCommand} in ${cwd}`)
+    const startCommand = normalizeStartCommand(config)
+    log.info('service', `Starting service "${config.label}" for project ${projectId}: ${startCommand} in ${cwd}`)
 
     const state: ServiceState = {
       status: 'running',
       ports: {},
       logs: [],
     }
+    this.lastStates.set(key, state)
 
-    const child = spawn(config.startCommand, [], {
+    const child = spawn(startCommand, [], {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: true,
@@ -118,7 +153,7 @@ export class ServiceManager {
     const handleOutput = (data: Buffer) => {
       const lines = data.toString().split('\n')
       for (const raw of lines) {
-        const line = raw.replace(/\r$/, '')
+        const line = stripAnsi(raw).replace(/\r$/, '').trimEnd()
         if (!line) continue
         pushLog(state.logs, line)
         if (portParser) portParser(line, state)
@@ -185,7 +220,9 @@ export class ServiceManager {
     const key = this.key(projectId, serviceId)
     const entry = this.processes.get(key)
     if (entry && !entry.exited) return entry.state
-    return { status: 'stopped', ports: {}, logs: entry?.state.logs ?? [] }
+    const last = this.lastStates.get(key)
+    if (last) return last
+    return { status: 'stopped', ports: {}, logs: [] }
   }
 
   private killProcess(entry: ServiceProcess): void {

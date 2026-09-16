@@ -9,6 +9,9 @@ import os from 'os'
 
 let mockSpawnStdoutCb: ((data: Buffer) => void) | null = null
 let mockSpawnCloseCb: ((code: number) => void) | null = null
+/** Total spawns so far — completeTurn() consumes one spawn per call. */
+let mockSpawnCount = 0
+let consumedSpawns = 0
 
 vi.mock('child_process', async (importOriginal) => {
   const actual = await importOriginal() as Record<string, unknown>
@@ -17,6 +20,7 @@ vi.mock('child_process', async (importOriginal) => {
     spawn: vi.fn(() => {
       mockSpawnStdoutCb = null
       mockSpawnCloseCb = null
+      mockSpawnCount++
       return {
         stdout: {
           on(event: string, cb: (data: Buffer) => void) {
@@ -40,7 +44,7 @@ vi.mock('node-pty', () => ({ spawn: vi.fn() }))
 import { StorageLayer } from './storage.js'
 import { SessionManager } from './session-manager.js'
 import { StandupService, hashTodos, isSameLocalDay, isStandupDue } from './standup.js'
-import { parseStandupTail, matchPersona, matchTodo, buildStandupPrompt } from './standup-protocol.js'
+import { parseStandupTail, parseReviewerOutput, matchPersona, matchTodo, buildStandupPrompt, buildImplementPrompt } from './standup-protocol.js'
 import { registerAdapter, clearAdapters } from './adapters/registry.js'
 import type { ICLIAdapter } from './adapters/types.js'
 import type { Persona, Project, Todo } from './schemas.js'
@@ -91,11 +95,18 @@ function makePersona(overrides: Partial<Persona> = {}): Persona {
   }
 }
 
-/** Feed the pending mocked CLI turn with output lines, then close it. */
+/**
+ * Feed the NEXT unconsumed CLI turn with output lines, then close it. Waits
+ * for a spawn newer than the last consumed one, so background pipelines that
+ * spawn asynchronously (reviewers, synthesis) can't race a stale callback.
+ */
 async function completeTurn(lines: string[]): Promise<void> {
   await vi.waitFor(() => {
-    if (!mockSpawnCloseCb) throw new Error('CLI not spawned yet')
+    if (mockSpawnCount <= consumedSpawns || !mockSpawnCloseCb) {
+      throw new Error('next CLI turn not spawned yet')
+    }
   })
+  consumedSpawns = mockSpawnCount
   mockSpawnStdoutCb?.(Buffer.from(lines.join('\n') + '\n'))
   mockSpawnCloseCb?.(0)
 }
@@ -140,6 +151,21 @@ describe('parseStandupTail', () => {
   it('returns null when there is no valid tail', () => {
     expect(parseStandupTail('Just prose, no JSON.')).toBeNull()
     expect(parseStandupTail('```json\n{"messages": "wrong shape"}\n```')).toBeNull()
+  })
+})
+
+describe('parseReviewerOutput', () => {
+  it('parses a fenced JSON take', () => {
+    const out = parseReviewerOutput('Thinking…\n```json\n{"take": "Small change.", "concerns": ["Safari"], "effort": "2h"}\n```')
+    expect(out.take).toBe('Small change.')
+    expect(out.concerns).toEqual(['Safari'])
+    expect(out.effort).toBe('2h')
+  })
+
+  it('degrades raw prose to the take instead of losing it', () => {
+    const out = parseReviewerOutput('I looked at the code and this is fine.')
+    expect(out.take).toBe('I looked at the code and this is fine.')
+    expect(out.concerns).toBeUndefined()
   })
 })
 
@@ -210,6 +236,49 @@ describe('buildStandupPrompt', () => {
     expect(prompt).toContain('Maya (team lead)')
     expect(prompt).toContain('[11111111-1111-4111-8111-111111111111]')
     expect(prompt).toContain('```json')
+    // The contract asks for execution briefs and typed user actions.
+    expect(prompt).toContain('brief')
+    expect(prompt).toContain('decision | task')
+  })
+})
+
+describe('buildImplementPrompt', () => {
+  const project = { id: 'p', name: 'codepipe', path: '/x' } as Project
+
+  it('uses the tuned brief when the proposal has one, superseding the approach', () => {
+    const todo = makeTodo({
+      status: 'approved',
+      proposal: {
+        summary: 'Do it',
+        approach: 'Human-readable plan',
+        brief: 'Read docs/pos.md first. Goal: X. Do not touch auth. Done when tests pass.',
+      },
+    })
+    const prompt = buildImplementPrompt(project, makePersona(), todo)
+    expect(prompt).toContain('Read docs/pos.md first')
+    expect(prompt).not.toContain('Planned approach: Human-readable plan')
+  })
+
+  it('falls back to the approach when no brief exists', () => {
+    const todo = makeTodo({
+      status: 'approved',
+      proposal: { summary: 'Do it', approach: 'Human-readable plan' },
+    })
+    const prompt = buildImplementPrompt(project, makePersona(), todo)
+    expect(prompt).toContain('Planned approach: Human-readable plan')
+  })
+
+  it('is team-free: no persona lore reaches the executing CLI', () => {
+    const persona = makePersona() // Maya, with a personality string
+    const todo = makeTodo({
+      status: 'approved',
+      proposal: { summary: 'Do it', approach: 'Plan', brief: 'The brief.' },
+    })
+    const prompt = buildImplementPrompt(project, persona, todo)
+    expect(prompt).not.toContain('Maya')
+    expect(prompt).not.toContain(persona.personality)
+    expect(prompt.toLowerCase()).not.toContain('team')
+    expect(prompt.toLowerCase()).not.toContain('proposal')
   })
 })
 
@@ -313,6 +382,55 @@ describe('StorageLayer todos/personas/standup state', () => {
     expect(changes).toEqual(['projects', 'todos', 'todos', 'actions', 'personas', 'standup'])
   })
 
+  it('self-heals index entries whose session file is gone', async () => {
+    const project = await storage.addProject({ name: 'p1', path: tmpDir })
+    const now = Date.now()
+    const sessionId = '55555555-5555-4555-8555-555555555555'
+    await storage.saveSession({
+      id: sessionId, provider: 'kiro', projectId: project.id, title: 'ghost-to-be',
+      createdAt: now, updatedAt: now, status: 'live', messages: [],
+    })
+    expect(await storage.listSessions()).toHaveLength(1)
+
+    // Simulate external cleanup: the file vanishes behind the index's back.
+    await rm(path.join(tmpDir, 'sessions', `${sessionId}.json`), { force: true })
+
+    expect(await storage.getSession(sessionId)).toBeNull()
+    expect(await storage.listSessions()).toHaveLength(0)
+  })
+
+  it('refuses to read or modify a corrupt collection file (no wipe-on-corrupt)', async () => {
+    const project = await storage.addProject({ name: 'p1', path: tmpDir })
+    await storage.addTodo({ projectId: project.id, text: 'Precious idea' })
+
+    // Corrupt the file behind the storage layer's back.
+    const { writeFileSync, readFileSync } = await import('fs')
+    const todosFile = path.join(tmpDir, 'todos.json')
+    writeFileSync(todosFile, '{"not": "an array"', 'utf-8')
+
+    await expect(storage.listTodos(project.id)).rejects.toThrow(/not valid JSON/)
+    await expect(
+      storage.addTodo({ projectId: project.id, text: 'New idea' }),
+    ).rejects.toThrow(/not valid JSON/)
+    // The corrupt file was NOT overwritten with an empty/new list.
+    expect(readFileSync(todosFile, 'utf-8')).toBe('{"not": "an array"')
+  })
+
+  it('unlinks action items when their gating todo is deleted (items survive)', async () => {
+    const project = await storage.addProject({ name: 'p1', path: tmpDir })
+    const todo = await storage.addTodo({ projectId: project.id, text: 'Shorts pipeline' })
+    const item = await storage.addActionItem({
+      projectId: project.id, text: 'Enable the YouTube API', todoId: todo.id,
+    })
+
+    await storage.removeTodo(todo.id)
+    await storage.unlinkActionItemsFromTodo(todo.id)
+
+    const [survivor] = await storage.listActionItems(project.id)
+    expect(survivor.id).toBe(item.id)
+    expect(survivor.todoId).toBeUndefined()
+  })
+
   it('standup state upserts per project', async () => {
     const projectId = '44444444-4444-4444-8444-444444444444'
     expect(await storage.getStandupState(projectId)).toBeNull()
@@ -340,6 +458,8 @@ describe('runTurn and StandupService', () => {
     // Stale callbacks from a previous test's unfinished spawn must not leak.
     mockSpawnStdoutCb = null
     mockSpawnCloseCb = null
+    mockSpawnCount = 0
+    consumedSpawns = 0
 
     tmpDir = await mkdtemp(path.join(os.tmpdir(), 'codepipe-standup-'))
     storage = new StorageLayer(tmpDir)
@@ -461,40 +581,56 @@ describe('runTurn and StandupService', () => {
     expect(() => sessionManager.handleInput(session.id, 'again')).not.toThrow()
   })
 
-  it('runs a standup: routes persona messages, applies proposals, pushes, gates re-runs', async () => {
+  it('runs the pipeline: reviewer take → synthesis → routing, memo, and gates', async () => {
+    registerAdapter('gemini', () => ({ ...fakeAdapter, provider: 'gemini' }))
     const lead = await storage.addPersona({
       name: 'Maya', role: 'Team lead', personality: 'Pragmatic.', provider: 'kiro', isLead: true,
     })
+    // The reviewer runs on her OWN provider — independence includes the model.
     const dev = await storage.addPersona({
-      name: 'Aria', role: 'Backend dev', personality: 'Curious.', provider: 'kiro', isLead: false,
+      name: 'Aria', role: 'Backend dev', personality: 'Curious.', provider: 'gemini', isLead: false,
     })
     await storage.updatePersona(lead.id, { avatar: 'maya.png' })
 
     const todo = await storage.addTodo({ projectId: project.id, text: 'Add retry backoff' })
 
+    // Dispatch returns immediately with the dated synthesis session.
+    const result = await standup.runStandup(project.id, { force: false })
+    expect(result.ran).toBe(true)
+    const session = sessionManager.getSession(result.sessionId!)
+    expect(session?.kind).toBe('team')
+    expect(session?.title).toContain('standup ·')
+
+    // State is persisted at dispatch — a failed run can't re-dispatch today.
+    const stateAtDispatch = await storage.getStandupState(project.id)
+    expect(stateAtDispatch?.teamSessionId).toBe(result.sessionId)
+    expect(stateAtDispatch?.lastRunAt).toBeTruthy()
+
+    // Turn 1: Aria's throwaway reviewer session (on gemini).
+    await completeTurn(['```json', JSON.stringify({ take: 'Backoff belongs in useSession.ts — small change.', concerns: ['Mind mobile Safari reconnects'], effort: '2h' }), '```'])
+    await vi.waitFor(async () => {
+      const [t] = await storage.listTodos(project.id)
+      if (!t.takes?.length) throw new Error('take not stored yet')
+    })
+    const [reviewedTodo] = await storage.listTodos(project.id)
+    expect(reviewedTodo.takes![0].personaId).toBe(dev.id)
+    expect(reviewedTodo.takes![0].concerns).toHaveLength(1)
+
+    // Turn 2: the lead's synthesis in the dated session.
     const tail = {
       messages: [
         { persona: 'Maya', kind: 'proposal', text: 'We reviewed your idea — plan attached.' },
         { persona: 'aria', kind: 'question', text: 'Should this apply to mobile too?' },
       ],
       proposals: [
-        { todoId: todo.id, summary: 'Backoff', approach: 'Exponential, cap 30s', effort: '2h', persona: 'Aria' },
+        { todoId: todo.id, summary: 'Backoff', approach: 'Exponential, cap 30s', effort: '2h', brief: 'Edit useSession.ts: add exponential backoff capped at 30s. Done when reconnects stop hammering.', persona: 'Aria' },
       ],
       user_actions: [
-        { persona: 'Aria', text: 'Add STRIPE_SECRET_KEY to the server env', notes: 'Needed for checkout' },
+        { persona: 'Aria', text: 'Add STRIPE_SECRET_KEY to the server env', notes: 'Needed for checkout', kind: 'task', steps: ['Open the Stripe dashboard → API keys', 'Copy the secret key', 'Add STRIPE_SECRET_KEY=<value> to server/.env'], todoId: todo.id },
       ],
+      memo: 'Backoff proposed; waiting on Stripe key from the user.',
     }
-
-    // Dispatch returns immediately; the turn completes in the background.
-    const result = await standup.runStandup(project.id, { force: false })
-    expect(result.ran).toBe(true)
     await completeTurn(['We discussed it.', '```json', JSON.stringify(tail), '```'])
-
-    // State (incl. the team session id) is persisted at dispatch, so a
-    // failed turn can never orphan the session or re-dispatch the same day.
-    const stateAtDispatch = await storage.getStandupState(project.id)
-    expect(stateAtDispatch?.teamSessionId).toBe(result.sessionId)
-    expect(stateAtDispatch?.lastRunAt).toBeTruthy()
 
     // Routing is async after the turn lands — wait for its effects.
     await vi.waitFor(async () => {
@@ -502,62 +638,68 @@ describe('runTurn and StandupService', () => {
       if (todos[0].status !== 'proposed') throw new Error('not routed yet')
     })
 
+    // The synthesis prompt carried the reviewer's take, tagged for collapse.
+    const promptMessage = session!.messages.find((m) => m.role === 'user')
+    expect(promptMessage?.content).toContain('Backoff belongs in useSession.ts')
+    expect(promptMessage?.metadata?.kind).toBe('prompt')
+
     const [routedTodo] = await storage.listTodos(project.id)
-    expect(routedTodo.proposal?.approach).toBe('Exponential, cap 30s')
+    expect(routedTodo.proposal?.brief).toContain('exponential backoff capped at 30s')
     expect(routedTodo.proposal?.personaId).toBe(dev.id)
 
-    const session = sessionManager.getSession(result.sessionId!)
-    expect(session?.kind).toBe('team')
     const personaMessages = session!.messages.filter((m) => m.metadata?.personaId)
     expect(personaMessages).toHaveLength(2)
     expect(personaMessages[0].metadata?.personaId).toBe(lead.id)
     expect(personaMessages[1].metadata?.personaId).toBe(dev.id)
 
-    // The deliberation is tagged and the JSON tail stripped.
-    const deliberation = session!.messages.find((m) => m.metadata?.kind === 'deliberation')
-    expect(deliberation).toBeDefined()
-    expect(deliberation!.content).not.toContain('```json')
+    // The memo persisted as the next standup's memory.
+    await vi.waitFor(async () => {
+      const state = await storage.getStandupState(project.id)
+      if (!state?.memo?.includes('Backoff proposed')) throw new Error('memo not saved yet')
+    })
 
-    // Pushes: one per persona message, lead's carries her avatar icon.
+    // Pushes: one per persona message, none for the reviewer session.
     expect(sent).toHaveLength(2)
     expect(sent[0].title).toBe('Maya · demo')
     expect(sent[0].icon).toBe('/api/avatars/maya.png')
-    expect(sent[1].title).toBe('Aria · demo')
-    expect(sent[1].icon).toBeUndefined()
 
-    // The user action was recorded and attributed.
+    // The reviewer session was throwaway compute — deleted after harvest.
+    expect(sessionManager.listSessions().filter((s) => s.kind === 'review')).toHaveLength(0)
+    expect((await storage.listSessions()).filter((s) => s.kind === 'review')).toHaveLength(0)
+
+    // The user action was recorded, attributed, typed with its guide, and
+    // linked to the idea it gates.
     const actions = await storage.listActionItems(project.id)
     expect(actions).toHaveLength(1)
-    expect(actions[0].status).toBe('open')
-    expect(actions[0].personaId).toBe(dev.id)
-    expect(actions[0].notes).toBe('Needed for checkout')
+    expect(actions[0].kind).toBe('task')
+    expect(actions[0].steps?.[2]).toContain('server/.env')
+    expect(actions[0].todoId).toBe(todo.id)
 
-    // A second run emitting the same user action does not duplicate it.
+    // Forced re-run: no actionable todos left → no reviewer turns, straight
+    // to synthesis; the repeated user action does not duplicate.
     const again = await standup.runStandup(project.id, { force: true })
     expect(again.ran).toBe(true)
+    expect(again.sessionId).not.toBe(result.sessionId) // ephemeral: new dated session
     await completeTurn(['Again.', '```json', JSON.stringify(tail), '```'])
     await vi.waitFor(() => {
-      const s = sessionManager.getSession(result.sessionId!)
-      if ((s?.messages.filter((m) => m.metadata?.personaId).length ?? 0) < 4) {
-        throw new Error('second turn not routed yet')
-      }
+      const s = sessionManager.getSession(again.sessionId!)
+      if (!s?.messages.some((m) => m.metadata?.personaId)) throw new Error('second run not routed yet')
     })
     expect(await storage.listActionItems(project.id)).toHaveLength(1)
 
-    // Unchanged todo list → the next non-forced run is skipped.
-    // (The status flip to 'proposed' removed it from the actionable set.)
-    const second = await standup.runStandup(project.id, { force: false })
-    expect(second.ran).toBe(false)
+    // Nothing new (no todos, no agenda) → next non-forced run is skipped.
+    const third = await standup.runStandup(project.id, { force: false })
+    expect(third.ran).toBe(false)
   })
 
-  it('skips a re-run when leftover todos are unchanged, and rotates the team session when the lead provider changes', async () => {
-    registerAdapter('gemini', () => ({ ...fakeAdapter, provider: 'gemini' }))
-    const lead = await storage.addPersona({
+  it('skips a re-run when leftover todos are unchanged (status flips don\'t defeat the gate)', async () => {
+    await storage.addPersona({
       name: 'Maya', role: 'Lead', personality: '', provider: 'kiro', isLead: true,
     })
     await storage.addTodo({ projectId: project.id, text: 'Ambiguous idea' })
 
-    // First run: the team discusses but proposes nothing — todo stays actionable.
+    // Solo-lead team: no reviewers, synthesis only. The team proposes
+    // nothing — the todo stays actionable.
     const first = await standup.runStandup(project.id, { force: false })
     expect(first.ran).toBe(true)
     await completeTurn(['Hmm.', '```json', JSON.stringify({ messages: [{ persona: 'Maya', text: 'Need more context.' }] }), '```'])
@@ -566,18 +708,9 @@ describe('runTurn and StandupService', () => {
       if (!session?.messages.some((m) => m.metadata?.personaId)) throw new Error('not routed yet')
     })
 
-    // Same content next time → skipped (status flips don't defeat the gate).
     const second = await standup.runStandup(project.id, { force: false })
     expect(second.ran).toBe(false)
     expect(second.reason).toContain('unchanged')
-
-    // New lead provider → forced run creates a fresh team session on that CLI.
-    await storage.updatePersona(lead.id, { provider: 'gemini' })
-    const third = await standup.runStandup(project.id, { force: true })
-    expect(third.ran).toBe(true)
-    expect(third.sessionId).not.toBe(first.sessionId)
-    expect(sessionManager.getSession(third.sessionId!)?.provider).toBe('gemini')
-    await completeTurn(['ok'])
   })
 
   it('implements an approved proposal on the proposer\'s provider and closes the loop', async () => {
@@ -594,10 +727,6 @@ describe('runTurn and StandupService', () => {
       status: 'proposed',
       proposal: { summary: 'Backoff', approach: 'Exponential, cap 30s', personaId: dev.id },
     })
-
-    // A team thread must exist for the completion announcement.
-    const teamSession = await sessionManager.createSession('kiro', project.id, { kind: 'team' })
-    await storage.setStandupState({ projectId: project.id, teamSessionId: teamSession.id })
 
     // No proposal / already-linked gates.
     const bare = await storage.addTodo({ projectId: project.id, text: 'No proposal yet' })
@@ -620,71 +749,95 @@ describe('runTurn and StandupService', () => {
     expect(dup.ran).toBe(false)
     expect(dup.sessionId).toBe(result.sessionId)
 
-    // The implementation turn completes → idea ships.
+    // The implementation turn completes → idea ships, and the completion
+    // joins the next standup's agenda instead of costing an announcement turn.
     await completeTurn(['Implemented the backoff in useSession.ts. Tests pass.'])
-    mockSpawnStdoutCb = null
-    mockSpawnCloseCb = null
     await vi.waitFor(async () => {
       const t = (await storage.listTodos(project.id)).find((x) => x.id === todo.id)!
       if (t.status !== 'done' || !t.completedAt) throw new Error('not shipped yet')
     })
-
-    // The announcement turn runs in the TEAM thread and routes as Aria.
-    await completeTurn(['', '```json', JSON.stringify({ messages: [{ persona: 'Aria', text: 'Shipped the backoff — take a look.' }] }), '```'])
-    await vi.waitFor(() => {
-      const s = sessionManager.getSession(teamSession.id)!
-      if (!s.messages.some((m) => m.metadata?.personaId === dev.id && m.content.includes('Shipped'))) {
-        throw new Error('announcement not routed yet')
-      }
+    await vi.waitFor(async () => {
+      const state = await storage.getStandupState(project.id)
+      if (!state?.agenda?.some((a) => a.includes('Aria shipped'))) throw new Error('agenda not queued yet')
     })
-    expect(sent.some((p) => p.title.startsWith('Aria'))).toBe(true)
+    const state = await storage.getStandupState(project.id)
+    expect(state!.agenda![0]).toContain('useSession.ts')
+    // No extra CLI turn was spent on the announcement.
+    expect(mockSpawnCount).toBe(consumedSpawns)
   })
 
-  it('pings the team thread when a team-raised action item is resolved', async () => {
+  it('refines a proposal from user feedback via the team thread', async () => {
     const lead = await storage.addPersona({
       name: 'Maya', role: 'Lead', personality: '', provider: 'kiro', isLead: true,
     })
-    await storage.addTodo({ projectId: project.id, text: 'Add checkout' })
-
-    // Establish a team thread via a standup.
-    const run = await standup.runStandup(project.id, { force: false })
-    await completeTurn(['Plan.', '```json', JSON.stringify({ messages: [{ persona: 'Maya', text: 'On it.' }] }), '```'])
-    await vi.waitFor(() => {
-      const s = sessionManager.getSession(run.sessionId!)
-      if (!s?.messages.some((m) => m.metadata?.personaId)) throw new Error('not routed yet')
+    const todo = await storage.addTodo({ projectId: project.id, text: 'Add retry backoff' })
+    await storage.updateTodo(todo.id, {
+      status: 'proposed',
+      proposal: { summary: 'Backoff', approach: 'Plan v1', brief: 'Brief v1', personaId: lead.id },
     })
-    const messagesBefore = sessionManager.getSession(run.sessionId!)!.messages.length
+    const teamSession = await sessionManager.createSession('kiro', project.id, { kind: 'team' })
+    await storage.setStandupState({ projectId: project.id, teamSessionId: teamSession.id })
 
-    // Resolve a team-raised action item → background ping → persona reply.
+    // No-proposal gate.
+    const bare = await storage.addTodo({ projectId: project.id, text: 'Bare idea' })
+    expect((await standup.refineProposal(bare.id, 'feedback')).reason).toContain('no proposal')
+
+    const result = await standup.refineProposal(todo.id, 'Cap at 10s instead, and cover mobile Safari')
+    expect(result.ran).toBe(true)
+    expect(result.sessionId).toBe(teamSession.id)
+
+    // The revised proposal flows back through the normal router.
+    const revised = {
+      messages: [{ persona: 'Maya', text: 'Updated — capped at 10s, Safari covered.' }],
+      proposals: [{ todoId: todo.id, summary: 'Backoff v2', approach: 'Plan v2', brief: 'Brief v2: cap 10s, test mobile Safari' }],
+    }
+    await completeTurn(['Discussing the feedback.', '```json', JSON.stringify(revised), '```'])
+    await vi.waitFor(async () => {
+      const t = (await storage.listTodos(project.id)).find((x) => x.id === todo.id)!
+      if (t.proposal?.brief !== 'Brief v2: cap 10s, test mobile Safari') throw new Error('not revised yet')
+    })
+    const t = (await storage.listTodos(project.id)).find((x) => x.id === todo.id)!
+    expect(t.status).toBe('proposed')
+    expect(t.proposal?.summary).toBe('Backoff v2')
+    expect(
+      sessionManager.getSession(teamSession.id)!.messages.some(
+        (m) => m.metadata?.personaId === lead.id && m.content.includes('capped at 10s'),
+      ),
+    ).toBe(true)
+  })
+
+  it('queues resolved actions on the agenda, and the next standup consumes them', async () => {
+    const lead = await storage.addPersona({
+      name: 'Maya', role: 'Lead', personality: '', provider: 'kiro', isLead: true,
+    })
+
+    // Resolving a team-raised item costs ZERO turns — it queues.
     const item = await storage.addActionItem({
       projectId: project.id, text: 'Create the Stripe account', personaId: lead.id,
     })
     const done = await storage.updateActionItem(item.id, { status: 'done' })
-    // The ping spawns asynchronously — drop the previous turn's stale
-    // callbacks so completeTurn waits for the NEW spawn.
-    mockSpawnStdoutCb = null
-    mockSpawnCloseCb = null
-    const ping = standup.notifyActionResolved(done)
-    await completeTurn(['', '```json', JSON.stringify({ messages: [{ persona: 'Maya', text: 'Stripe is unblocked — starting checkout.' }] }), '```'])
-    await ping
+    await standup.notifyActionResolved(done)
+    expect(mockSpawnCount).toBe(0)
 
+    let state = await storage.getStandupState(project.id)
+    expect(state?.agenda).toHaveLength(1)
+    expect(state?.agenda?.[0]).toContain('Create the Stripe account')
+
+    // An agenda alone makes the next standup due, even with no open todos.
+    const run = await standup.runStandup(project.id, { force: false })
+    expect(run.ran).toBe(true)
+
+    // The agenda is consumed at dispatch and lands in the synthesis prompt.
+    state = await storage.getStandupState(project.id)
+    expect(state?.agenda).toHaveLength(0)
+    await completeTurn(['Noted.', '```json', JSON.stringify({ messages: [{ persona: 'Maya', text: 'Stripe is unblocked — nice.' }], memo: 'Stripe account exists now.' }), '```'])
     await vi.waitFor(() => {
-      const s = sessionManager.getSession(run.sessionId!)!
-      const lastMsg = s.messages[s.messages.length - 1]
-      if (s.messages.length <= messagesBefore || !lastMsg.metadata?.personaId) {
-        throw new Error('reply not routed yet')
-      }
+      const s = sessionManager.getSession(run.sessionId!)
+      if (!s?.messages.some((m) => m.metadata?.personaId === lead.id)) throw new Error('not routed yet')
     })
-    const messages = sessionManager.getSession(run.sessionId!)!.messages
-    const reply = messages[messages.length - 1]
-    expect(reply.metadata?.personaId).toBe(lead.id)
-    expect(reply.content).toContain('unblocked')
-
-    // No team thread → no-op, no throw.
-    const other = await storage.addProject({ name: 'other', path: tmpDir })
-    await expect(
-      standup.notifyActionResolved({ ...done, projectId: other.id }),
-    ).resolves.toBeUndefined()
+    const prompt = sessionManager.getSession(run.sessionId!)!.messages.find((m) => m.role === 'user')
+    expect(prompt?.content).toContain('Since the last standup')
+    expect(prompt?.content).toContain('Create the Stripe account')
   })
 
   it('skips when there are no personas or no todos', async () => {

@@ -64,6 +64,15 @@ export class PersonaRouter {
 
       await this.recordProtocolSuccess(session)
 
+      // Persist the team's handoff note — the next standup's only memory.
+      if (parsed.output.memo?.trim()) {
+        const state = (await this.storage.getStandupState(session.projectId)) ?? {
+          projectId: session.projectId,
+        }
+        state.memo = parsed.output.memo.trim().slice(0, 4000)
+        await this.storage.setStandupState(state)
+      }
+
       // Tag the deliberation (raw discussion minus the JSON tail) so the UI
       // can collapse it behind a "transcript" toggle. An empty remainder (the
       // reply was pure JSON) is kept empty — the client hides those bubbles.
@@ -87,26 +96,39 @@ export class PersonaRouter {
             summary: proposal.summary,
             approach: proposal.approach,
             ...(proposal.effort ? { effort: proposal.effort } : {}),
+            ...(proposal.brief ? { brief: proposal.brief } : {}),
             ...(byPersona ? { personaId: byPersona.id } : {}),
           },
         })
       }
 
       // Record action items — things only the user can do. Dedup against
-      // open items so recurring standups don't pile up duplicates.
+      // open items so recurring standups don't pile up duplicates. The key
+      // includes the gated idea: the same text may legitimately gate two
+      // different ideas.
       if (parsed.output.user_actions?.length) {
         const openItems = await this.storage.listActionItems(session.projectId)
-        const openTexts = new Set(
-          openItems.filter((a) => a.status === 'open').map((a) => normalizeActionText(a.text)),
+        const dedupKey = (text: string, todoId: string | undefined) =>
+          `${todoId ?? ''}:${normalizeActionText(text)}`
+        const openKeys = new Set(
+          openItems.filter((a) => a.status === 'open').map((a) => dedupKey(a.text, a.todoId)),
         )
         for (const action of parsed.output.user_actions) {
-          if (openTexts.has(normalizeActionText(action.text))) continue
-          openTexts.add(normalizeActionText(action.text))
           const byPersona = action.persona ? matchPersona(personas, action.persona) : null
+          const gatedTodo = action.todoId ? matchTodo(todos, action.todoId) : null
+          const key = dedupKey(action.text, gatedTodo?.id)
+          if (openKeys.has(key)) continue
+          openKeys.add(key)
           await this.storage.addActionItem({
             projectId: session.projectId,
             text: action.text,
+            ...(gatedTodo ? { todoId: gatedTodo.id } : {}),
             ...(action.notes ? { notes: action.notes } : {}),
+            ...(action.kind ? { kind: action.kind } : {}),
+            // Trim to the schema's caps rather than dropping the whole item.
+            ...(action.steps?.length
+              ? { steps: action.steps.slice(0, 12).map((s) => s.slice(0, 1000)) }
+              : {}),
             ...(byPersona ? { personaId: byPersona.id } : {}),
           })
         }

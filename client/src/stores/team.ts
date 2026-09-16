@@ -123,6 +123,17 @@ export const useTeamStore = defineStore('team', () => {
     }
   }
 
+  async function refineTodo(id: string, feedback: string): Promise<api.StandupRunResult | null> {
+    try {
+      const result = await api.refineTodo(id, feedback)
+      error.value = null
+      return result
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to send feedback'
+      return null
+    }
+  }
+
   async function implementTodo(id: string): Promise<api.StandupRunResult | null> {
     try {
       const result = await api.implementTodo(id)
@@ -236,6 +247,7 @@ export const useTeamStore = defineStore('team', () => {
     addTodo,
     setTodoStatus,
     implementTodo,
+    refineTodo,
     deleteTodo,
     runStandup,
     clearError,

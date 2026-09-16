@@ -48,12 +48,22 @@ export interface IStorageLayer {
   updateTodo(todoId: string, data: Partial<Omit<Todo, 'id' | 'projectId' | 'createdAt'>>): Promise<Todo>
   removeTodo(todoId: string): Promise<void>
   removeTodosByProject(projectId: string): Promise<void>
+  unlinkTodosFromWorkSession(sessionId: string): Promise<void>
   // Action items
   listActionItems(projectId?: string): Promise<ActionItem[]>
-  addActionItem(data: { projectId: string; text: string; notes?: string; personaId?: string }): Promise<ActionItem>
+  addActionItem(data: {
+    projectId: string
+    text: string
+    notes?: string
+    kind?: ActionItem['kind']
+    steps?: string[]
+    todoId?: string
+    personaId?: string
+  }): Promise<ActionItem>
   updateActionItem(actionId: string, data: Partial<Omit<ActionItem, 'id' | 'projectId' | 'createdAt'>>): Promise<ActionItem>
   removeActionItem(actionId: string): Promise<void>
   removeActionItemsByProject(projectId: string): Promise<void>
+  unlinkActionItemsFromTodo(todoId: string): Promise<void>
   // Personas
   listPersonas(): Promise<Persona[]>
   addPersona(persona: Omit<Persona, 'id'>): Promise<Persona>
@@ -210,26 +220,31 @@ export class StorageLayer implements IStorageLayer {
   // Generic JSON-array file helper
   // -----------------------------------------------------------------------
 
+  /**
+   * Load a collection file. A MISSING file is an empty collection; a file
+   * that exists but fails to parse or validate THROWS — for reads that means
+   * a loud 500 instead of a ghost-empty UI, and for read-modify-write
+   * mutations it means aborting instead of persisting the emptiness and
+   * destroying the collection. Writes must never destroy.
+   */
   private async loadArrayFile<T>(file: string, schema: z.ZodType<T[]>): Promise<T[]> {
     if (!existsSync(file)) {
       return []
     }
+    const raw = await readFile(file, 'utf-8')
+    let parsed: unknown
     try {
-      const raw = await readFile(file, 'utf-8')
-      const parsed = JSON.parse(raw)
-      const result = schema.safeParse(parsed)
-      if (!result.success) {
-        console.error(
-          `Storage: ${path.basename(file)} failed validation, returning empty list:`,
-          result.error.format(),
-        )
-        return []
-      }
-      return result.data
-    } catch (err) {
-      console.error(`Storage: failed to read ${path.basename(file)}:`, err)
-      return []
+      parsed = JSON.parse(raw)
+    } catch {
+      throw new Error(`${path.basename(file)} is not valid JSON — fix or remove the file`)
     }
+    const result = schema.safeParse(parsed)
+    if (!result.success) {
+      throw new Error(
+        `${path.basename(file)} failed validation — refusing to touch it (fix or remove the file): ${JSON.stringify(result.error.format()).slice(0, 300)}`,
+      )
+    }
+    return result.data
   }
 
   // -----------------------------------------------------------------------
@@ -359,6 +374,22 @@ export class StorageLayer implements IStorageLayer {
     this.notify('todos')
   }
 
+  /** Drop the work-session link from any todo pointing at a deleted session. */
+  async unlinkTodosFromWorkSession(sessionId: string): Promise<void> {
+    let changed = false
+    await this.runExclusive(this.todosFile, async () => {
+      const todos = await this.loadArrayFile(this.todosFile, TodoArraySchema)
+      for (const todo of todos) {
+        if (todo.workSessionId === sessionId) {
+          delete todo.workSessionId
+          changed = true
+        }
+      }
+      if (changed) await this.atomicWrite(this.todosFile, todos)
+    })
+    if (changed) this.notify('todos')
+  }
+
   // -----------------------------------------------------------------------
   // Action items
   // -----------------------------------------------------------------------
@@ -372,6 +403,9 @@ export class StorageLayer implements IStorageLayer {
     projectId: string
     text: string
     notes?: string
+    kind?: ActionItem['kind']
+    steps?: string[]
+    todoId?: string
     personaId?: string
   }): Promise<ActionItem> {
     const created = await this.runExclusive(this.actionItemsFile, async () => {
@@ -382,6 +416,9 @@ export class StorageLayer implements IStorageLayer {
         projectId: data.projectId,
         text: data.text,
         ...(data.notes ? { notes: data.notes } : {}),
+        ...(data.kind ? { kind: data.kind } : {}),
+        ...(data.steps?.length ? { steps: data.steps } : {}),
+        ...(data.todoId ? { todoId: data.todoId } : {}),
         ...(data.personaId ? { personaId: data.personaId } : {}),
         status: 'open',
         createdAt: now,
@@ -427,6 +464,26 @@ export class StorageLayer implements IStorageLayer {
       await this.atomicWrite(this.actionItemsFile, items.filter((a) => a.projectId !== projectId))
     })
     this.notify('actions')
+  }
+
+  /**
+   * Drop the idea linkage from any action items pointing at a deleted todo.
+   * The items themselves survive — "enable the API" may still matter even
+   * when the idea that raised it is gone.
+   */
+  async unlinkActionItemsFromTodo(todoId: string): Promise<void> {
+    let changed = false
+    await this.runExclusive(this.actionItemsFile, async () => {
+      const items = await this.loadArrayFile(this.actionItemsFile, ActionItemArraySchema)
+      for (const item of items) {
+        if (item.todoId === todoId) {
+          delete item.todoId
+          changed = true
+        }
+      }
+      if (changed) await this.atomicWrite(this.actionItemsFile, items)
+    })
+    if (changed) this.notify('actions')
   }
 
   // -----------------------------------------------------------------------
@@ -611,7 +668,18 @@ export class StorageLayer implements IStorageLayer {
   }
 
   async getSession(sessionId: string): Promise<Session | null> {
-    return this.loadSession(sessionId)
+    const session = await this.loadSession(sessionId)
+    // Self-heal: an index entry whose file is gone (external cleanup, manual
+    // deletion) would otherwise ghost in listings forever — drop it on the
+    // first miss instead.
+    if (!session && !existsSync(this.sessionPath(sessionId))) {
+      const index = await this.loadIndex()
+      if (sessionId in index) {
+        await this.removeIndexEntry(sessionId)
+        this.notify('sessions')
+      }
+    }
+    return session
   }
 
   async listSessions(): Promise<SessionMeta[]> {

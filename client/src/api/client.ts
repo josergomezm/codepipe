@@ -26,8 +26,8 @@ export interface ChatMessage {
     time?: string
     /** Persona who authored this message (team sessions). */
     personaId?: string
-    /** 'deliberation' marks raw team-discussion output (collapsed in the UI). */
-    kind?: 'deliberation'
+    /** 'deliberation' = raw team output; 'prompt' = machine-built dispatch prompt. Both collapse in the UI. */
+    kind?: 'deliberation' | 'prompt'
   }
   attachments?: Attachment[]
 }
@@ -91,7 +91,7 @@ export interface Project {
   standup?: ProjectStandupConfig
 }
 
-export type SessionKind = 'chat' | 'team' | 'work'
+export type SessionKind = 'chat' | 'team' | 'work' | 'review'
 
 export interface Session {
   id: string
@@ -126,6 +126,8 @@ export interface TodoProposal {
   summary: string
   approach: string
   effort?: string
+  /** The execution-ready prompt the work session runs on. */
+  brief?: string
   personaId?: string
 }
 
@@ -142,15 +144,33 @@ export interface Todo {
   completedAt?: number
   /** The implementation ('work') session spawned for this idea, if any. */
   workSessionId?: string
+  /** Independent reviewer takes from the most recent standup review. */
+  takes?: TodoTake[]
+}
+
+export interface TodoTake {
+  personaId: string
+  /** The reviewer's single most important point. */
+  take: string
+  concerns?: string[]
+  effort?: string
+  createdAt: number
 }
 
 export type ActionItemStatus = 'open' | 'done'
+export type ActionItemKind = 'decision' | 'task'
 
 export interface ActionItem {
   id: string
   projectId: string
   text: string
   notes?: string
+  /** 'decision' = reply to the team; 'task' = follow the steps. */
+  kind?: ActionItemKind
+  /** Step-by-step guide to complete it (task-kind items). */
+  steps?: string[]
+  /** The idea this item gates (a prerequisite of that idea). */
+  todoId?: string
   status: ActionItemStatus
   /** Persona who raised it (absent for manually added items). */
   personaId?: string
@@ -314,6 +334,7 @@ export function detectDevServer(projectId: string): Promise<DetectedDevServer> {
 export interface FirebaseDetectionResult {
   found: boolean
   firebaseDir: string | null
+  scriptDir: string | null
   scriptName: string | null
   startCommand: string | null
   defaultPorts: Record<string, number>
@@ -393,6 +414,20 @@ export function updateTodo(id: string, data: { text?: string; notes?: string; st
 
 export async function deleteTodo(id: string): Promise<void> {
   await request<unknown>(`/api/todos/${id}`, { method: 'DELETE' })
+}
+
+export async function refineTodo(id: string, feedback: string): Promise<StandupRunResult> {
+  const res = await fetch(`/api/todos/${id}/refine`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ feedback }),
+  })
+  if (res.status === 409) return res.json() as Promise<StandupRunResult>
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }))
+    throw new Error(body.error ?? res.statusText)
+  }
+  return res.json() as Promise<StandupRunResult>
 }
 
 export async function implementTodo(id: string): Promise<StandupRunResult> {

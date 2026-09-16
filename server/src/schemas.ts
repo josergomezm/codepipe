@@ -7,11 +7,13 @@ export const ProviderTypeSchema = z.enum(['kiro', 'gemini', 'claude', 'codex'])
 export const SessionStatusSchema = z.enum(['live', 'archived'])
 
 /**
- * 'chat' = a normal user-driven session; 'team' = the per-project persona
- * team thread; 'work' = an implementation session spawned from an approved
- * proposal (behaves like a chat — the kind is a presentation/lineage signal).
+ * 'chat' = a normal user-driven session; 'team' = an ephemeral dated standup
+ * session (the lead's synthesis thread for one run); 'work' = an
+ * implementation session spawned from an approved proposal; 'review' = a
+ * throwaway reviewer session — hidden from the UI and deleted once its take
+ * is harvested (the take on the todo is the artifact, not the session).
  */
-export const SessionKindSchema = z.enum(['chat', 'team', 'work'])
+export const SessionKindSchema = z.enum(['chat', 'team', 'work', 'review'])
 
 export const MessageRoleSchema = z.enum(['user', 'assistant', 'system', 'tool'])
 
@@ -26,8 +28,12 @@ export const ChatMessageMetadataSchema = z.object({
   time: z.string().optional(),
   /** Persona who authored this message (team sessions). */
   personaId: z.string().uuid().optional(),
-  /** 'deliberation' marks the raw team-discussion output (collapsed in the UI). */
-  kind: z.enum(['deliberation']).optional(),
+  /**
+   * 'deliberation' marks raw team-discussion output; 'prompt' marks a
+   * machine-built dispatch prompt (standup/refine/implement). Both are
+   * collapsed behind a disclosure in the UI.
+   */
+  kind: z.enum(['deliberation', 'prompt']).optional(),
 })
 
 export const AttachmentSchema = z.object({
@@ -126,8 +132,27 @@ export const TodoProposalSchema = z.object({
   summary: z.string().min(1),
   approach: z.string().min(1),
   effort: z.string().optional(),
+  /**
+   * The execution-ready implementation brief: the exact prompt to hand the
+   * coding CLI — goal, files/docs to read, constraints, definition of done.
+   * The whole point of the planning layer is tuning this.
+   */
+  brief: z.string().optional(),
   /** Persona who proposed it. */
   personaId: z.string().uuid().optional(),
+})
+
+/**
+ * One reviewer's independent take on an idea, produced in its own context
+ * (unbiased by the other reviewers) and synthesized by the lead afterward.
+ */
+export const TodoTakeSchema = z.object({
+  personaId: z.string().uuid(),
+  /** The reviewer's single most important point. */
+  take: z.string().min(1).max(2000),
+  concerns: z.array(z.string().min(1).max(500)).max(8).optional(),
+  effort: z.string().max(200).optional(),
+  createdAt: z.number().int().positive(),
 })
 
 export const TodoSchema = z.object({
@@ -143,17 +168,31 @@ export const TodoSchema = z.object({
   completedAt: z.number().int().positive().optional(),
   /** The implementation ('work') session spawned for this idea, if any. */
   workSessionId: z.string().uuid().optional(),
+  /** Independent reviewer takes from the most recent standup review. */
+  takes: z.array(TodoTakeSchema).max(8).optional(),
 })
 
 // --- Action items (things only the user can do, surfaced by the team) ---
 
 export const ActionItemStatusSchema = z.enum(['open', 'done'])
 
+/**
+ * 'decision' = the user must decide something (resolved by replying to the
+ * team); 'task' = external setup only the user can do (resolved by following
+ * the steps). Absent on older/manual items — treated as a plain task.
+ */
+export const ActionItemKindSchema = z.enum(['decision', 'task'])
+
 export const ActionItemSchema = z.object({
   id: z.string().uuid(),
   projectId: z.string().uuid(),
   text: z.string().min(1).max(2000),
   notes: z.string().max(10000).optional(),
+  kind: ActionItemKindSchema.optional(),
+  /** Step-by-step guide to complete it (task-kind items). */
+  steps: z.array(z.string().min(1).max(1000)).max(12).optional(),
+  /** The idea this item gates or informs (a prerequisite of that idea). */
+  todoId: z.string().uuid().optional(),
   status: ActionItemStatusSchema,
   /** Persona who raised it (absent for manually added items). */
   personaId: z.string().uuid().optional(),
@@ -184,8 +223,20 @@ export const StandupStateSchema = z.object({
   lastRunAt: z.number().int().positive().optional(),
   /** Hash of the todo list at the last run — unchanged list skips the run. */
   lastHash: z.string().optional(),
-  /** The persistent team session for this project. */
+  /** The most recent dated standup session (today's, until the next run). */
   teamSessionId: z.string().uuid().optional(),
+  /**
+   * The team's own handoff note, written at the end of each standup and
+   * injected into the next — explicit, bounded, inspectable memory that
+   * replaces dragging a persistent thread's history around.
+   */
+  memo: z.string().max(4000).optional(),
+  /**
+   * Events since the last standup (resolved action items, shipped builds).
+   * Consumed and cleared by the next run — one turn amortizes all the
+   * acknowledgments that used to cost a CLI turn each.
+   */
+  agenda: z.array(z.string().min(1).max(1000)).max(30).optional(),
   /**
    * Consecutive team turns whose structured JSON tail failed to parse.
    * Reset on the first successful parse; makes silent protocol degradation
@@ -209,6 +260,7 @@ export const StandupProposalSchema = z.object({
   summary: z.string().min(1),
   approach: z.string().min(1),
   effort: z.string().optional(),
+  brief: z.string().optional(),
   persona: z.string().optional(),
 })
 
@@ -217,12 +269,25 @@ export const StandupUserActionSchema = z.object({
   persona: z.string().optional(),
   text: z.string().min(1),
   notes: z.string().optional(),
+  kind: ActionItemKindSchema.optional(),
+  steps: z.array(z.string().min(1)).optional(),
+  /** The [id] of the idea this action gates, when it is a prerequisite. */
+  todoId: z.string().optional(),
 })
 
 export const StandupOutputSchema = z.object({
   messages: z.array(StandupMessageSchema),
   proposals: z.array(StandupProposalSchema).optional(),
   user_actions: z.array(StandupUserActionSchema).optional(),
+  /** The team's handoff note to their next standup (see StandupState.memo). */
+  memo: z.string().optional(),
+})
+
+/** What a single reviewer session returns (lenient — raw text falls back to `take`). */
+export const ReviewerOutputSchema = z.object({
+  take: z.string().min(1),
+  concerns: z.array(z.string().min(1)).optional(),
+  effort: z.string().optional(),
 })
 
 // --- WebSocket Protocol ---
@@ -290,6 +355,10 @@ export const UpdateTodoRequestSchema = z.object({
   status: TodoStatusSchema.optional(),
 })
 
+export const RefineProposalRequestSchema = z.object({
+  feedback: z.string().min(1).max(8000),
+})
+
 export const PersonaBodySchema = PersonaSchema.omit({ id: true, avatar: true })
 export const UpdatePersonaRequestSchema = PersonaBodySchema.partial()
 
@@ -329,8 +398,11 @@ export type SessionKind = z.infer<typeof SessionKindSchema>
 export type ProjectStandupConfig = z.infer<typeof ProjectStandupConfigSchema>
 export type TodoStatus = z.infer<typeof TodoStatusSchema>
 export type TodoProposal = z.infer<typeof TodoProposalSchema>
+export type TodoTake = z.infer<typeof TodoTakeSchema>
 export type Todo = z.infer<typeof TodoSchema>
+export type ReviewerOutput = z.infer<typeof ReviewerOutputSchema>
 export type ActionItemStatus = z.infer<typeof ActionItemStatusSchema>
+export type ActionItemKind = z.infer<typeof ActionItemKindSchema>
 export type ActionItem = z.infer<typeof ActionItemSchema>
 export type StandupUserAction = z.infer<typeof StandupUserActionSchema>
 export type Persona = z.infer<typeof PersonaSchema>

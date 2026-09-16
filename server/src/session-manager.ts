@@ -100,6 +100,11 @@ export interface RunTurnOptions {
   timeoutMs?: number
   /** Cancel the in-flight CLI turn when the timeout fires (no zombie turns). */
   cancelOnTimeout?: boolean
+  /**
+   * Tag the dispatched input as a machine-built prompt (metadata.kind
+   * 'prompt') so the UI collapses it instead of rendering a wall of text.
+   */
+  internalPrompt?: boolean
 }
 
 /** Default / max wait for a headless turn. */
@@ -443,6 +448,7 @@ export class SessionManager implements ISessionManager {
     sessionId: string,
     text: string,
     attachments: Attachment[] | undefined,
+    metadata?: ChatMessage['metadata'],
   ): void {
     const userMessage: ChatMessage = {
       id: randomUUID(),
@@ -451,6 +457,7 @@ export class SessionManager implements ISessionManager {
       timestamp: Date.now(),
       status: 'complete',
       ...(attachments?.length ? { attachments } : {}),
+      ...(metadata ? { metadata } : {}),
     }
 
     ctx.session.messages.push(userMessage)
@@ -507,7 +514,13 @@ export class SessionManager implements ISessionManager {
       // The waiter travels WITH its input through the queue, so it settles
       // with this turn's result even when other inputs are queued around it.
       const input: QueuedInput = { text, waiters: [waiter] }
-      this.recordUserMessage(ctx, sessionId, text, undefined)
+      this.recordUserMessage(
+        ctx,
+        sessionId,
+        text,
+        undefined,
+        options.internalPrompt ? { kind: 'prompt' } : undefined,
+      )
       this.enqueueInput(ctx, sessionId, input)
     })
   }
@@ -617,7 +630,8 @@ export class SessionManager implements ISessionManager {
           log.warn('session', `onTeamTurn failed: ${err instanceof Error ? err.message : String(err)}`)
         }
       }
-    } else if (this.notifier && queueDrained) {
+    } else if (this.notifier && queueDrained && ctx.session.kind !== 'review') {
+      // Reviewer sessions are internal throwaway compute — never push.
       // Generic push stays gated on a drained queue by design: with more
       // input queued the user isn't waiting yet, and one notification for
       // the conversation's final state beats one per intermediate turn.

@@ -1,16 +1,22 @@
 /**
  * The proactive team layer ("standup") — the orchestrator.
  *
- * Composed from three single-purpose parts:
- *   - standup-protocol.ts — the prompt/JSON contract with the CLI (pure)
- *   - team-session.ts     — which session a team turn runs on (lifecycle)
- *   - persona-router.ts   — what happens to a completed team turn (effects)
+ * Rework note: standups are EPHEMERAL. There is no persistent team thread —
+ * each run is a review pipeline over fresh, bounded contexts, and all
+ * continuity lives in explicit state (the board, takes, the memo, the
+ * agenda) rather than in a resumed conversation's history:
  *
- * This service owns only scheduling and dispatch: WHEN a standup runs (daily
- * gate + unchanged-todos gate), kicking off the background turn, and pinging
- * the team when the user resolves an action item. Turn results never come
- * back here — the session manager's onTeamTurn hook feeds every completed
- * team turn (standup or user reply alike) to the PersonaRouter.
+ *   scheduler / manual run
+ *     → fan-out: one throwaway read-only session per reviewer per new idea,
+ *       each producing an independent `take` (stored on the todo, session
+ *       deleted — the take is the artifact)
+ *     → fan-in: one dated 'team' session where the lead synthesizes takes +
+ *       agenda + memo into messages, proposals/briefs, user actions, and the
+ *       next memo (this is the session the user watches and replies to)
+ *
+ * Events between standups (resolved action items, shipped builds) queue on
+ * the agenda and are acknowledged by the next run — one turn amortizes them
+ * all instead of a CLI turn each.
  */
 
 import { createHash } from 'crypto'
@@ -18,20 +24,25 @@ import { createHash } from 'crypto'
 import type { IStorageLayer } from './storage.js'
 import type { SessionManager } from './session-manager.js'
 import type { PushService } from './push.js'
-import { TeamSessionManager } from './team-session.js'
 import { PersonaRouter } from './persona-router.js'
-import { buildStandupPrompt, buildImplementPrompt, buildWorkCompletePrompt } from './standup-protocol.js'
-import type { ActionItem, ChatMessage, Persona, Project, Todo } from './schemas.js'
+import {
+  buildStandupPrompt,
+  buildReviewerPrompt,
+  buildImplementPrompt,
+  buildRefinePrompt,
+  parseReviewerOutput,
+} from './standup-protocol.js'
+import type { ActionItem, Persona, Project, Todo, TodoTake } from './schemas.js'
 import { log } from './logger.js'
 
 /** How often the scheduler checks whether a standup is due. */
 const SCHEDULER_TICK_MS = 60_000
 
-/** How long a standup turn may run before it is cancelled. */
+/** How long the synthesis turn may run before it is cancelled. */
 const STANDUP_TIMEOUT_MS = 15 * 60 * 1000
 
-/** How long an action-resolved ping may run before it is cancelled. */
-const PING_TIMEOUT_MS = 5 * 60 * 1000
+/** How long a single reviewer turn may run before it is cancelled. */
+const REVIEW_TIMEOUT_MS = 10 * 60 * 1000
 
 /** How long an implementation turn may run before it is cancelled. */
 const WORK_TIMEOUT_MS = 60 * 60 * 1000
@@ -83,10 +94,14 @@ export function hashTodos(todos: Todo[]): string {
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex')
 }
 
+/** "Sep 2"-style label for dated standup session titles. */
+function dayLabel(d: Date): string {
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
 export class StandupService {
   private readonly storage: IStorageLayer
   private readonly sessionManager: SessionManager
-  private readonly teamSessions: TeamSessionManager
   private readonly router: PersonaRouter
   private timer: ReturnType<typeof setInterval> | null = null
   /** Projects with a standup currently in flight (re-entry guard). */
@@ -95,11 +110,10 @@ export class StandupService {
   constructor(storage: IStorageLayer, sessionManager: SessionManager, push?: PushService) {
     this.storage = storage
     this.sessionManager = sessionManager
-    this.teamSessions = new TeamSessionManager(storage, sessionManager)
     this.router = new PersonaRouter(storage, sessionManager, push)
 
-    // Register immediately (not in start()) so user replies in team sessions
-    // are persona-routed even when the scheduler isn't running.
+    // Register immediately (not in start()) so user replies in standup
+    // sessions are persona-routed even when the scheduler isn't running.
     this.sessionManager.onTeamTurn = (session, last) => {
       if (last) void this.router.routeTeamTurn(session, last)
     }
@@ -157,10 +171,10 @@ export class StandupService {
 
   /**
    * Start a standup for one project. Gates and session setup run inline (so
-   * the caller gets an immediate started/skipped answer); the CLI turn itself
-   * runs in the background — its results arrive via the onTeamTurn hook and
-   * persona push notifications. `force` (the manual "run now" button)
-   * bypasses the unchanged-todos gate but never double-runs concurrently.
+   * the caller gets an immediate started/skipped answer); the review
+   * pipeline and synthesis turn run in the background — results arrive via
+   * the onTeamTurn hook and persona push notifications. `force` (the manual
+   * "run now" button) bypasses the nothing-new gate but never double-runs.
    */
   async runStandup(projectId: string, opts: { force: boolean }): Promise<StandupRunResult> {
     if (this.running.has(projectId)) {
@@ -180,10 +194,12 @@ export class StandupService {
       ACTIONABLE_STATUSES.has(t.status),
     )
 
-    // Wastefulness gate: skip when there's nothing new to talk about.
+    // Nothing-new gate: skip when the ideas are unchanged AND there is no
+    // agenda to acknowledge.
     const hash = hashTodos(todos)
     const state = (await this.storage.getStandupState(projectId)) ?? { projectId }
-    if (!opts.force) {
+    const agenda = state.agenda ?? []
+    if (!opts.force && agenda.length === 0) {
       if (todos.length === 0) {
         return { ran: false, reason: 'No open todos — nothing to review' }
       }
@@ -194,15 +210,21 @@ export class StandupService {
 
     this.running.add(projectId)
     try {
-      const session = await this.teamSessions.ensure(project, state.teamSessionId, lead)
+      // The dated synthesis session exists from the start so the user can
+      // jump in and watch the run land.
+      const session = await this.sessionManager.createSession(lead.provider, project.id, {
+        kind: 'team',
+        title: `${project.name} standup · ${dayLabel(new Date())}`,
+        ...(lead.model ? { model: lead.model } : {}),
+      })
 
-      // Persist state BEFORE the turn: the session id survives a failed run
-      // (no orphan/duplicate team sessions), and lastRunAt/lastHash stop the
-      // scheduler from re-dispatching the same standup after a failure — a
-      // manual "Run standup" is the retry path.
+      // Persist state BEFORE the pipeline: lastRunAt/lastHash stop the
+      // scheduler from re-dispatching after a failure (manual run is the
+      // retry path), and the agenda is consumed at dispatch.
       state.teamSessionId = session.id
       state.lastRunAt = Date.now()
       state.lastHash = hash
+      state.agenda = []
       await this.storage.setStandupState(state)
 
       // Mark the todos as picked up before the turn so the UI reflects it.
@@ -212,13 +234,8 @@ export class StandupService {
         }
       }
 
-      const prompt = buildStandupPrompt(project, personas, todos)
-      log.info('standup', `Standup dispatched for "${project.name}" (${todos.length} todo(s), session ${session.id})`)
-
-      // Fire-and-forget: routing/notification happens in the onTeamTurn hook
-      // when the turn lands. `running` clears when the turn settles so the
-      // re-entry guard covers the whole background run.
-      void this.executeStandupTurn(projectId, session.id, prompt)
+      log.info('standup', `Standup dispatched for "${project.name}" (${todos.length} todo(s), ${agenda.length} agenda item(s), session ${session.id})`)
+      void this.executeStandupPipeline(project, personas, lead, todos, state.memo, agenda, session.id)
 
       return { ran: true, sessionId: session.id }
     } catch (err) {
@@ -227,23 +244,192 @@ export class StandupService {
     }
   }
 
-  /** The background half of a standup run: drive the turn, surface failures. */
-  private async executeStandupTurn(projectId: string, sessionId: string, prompt: string): Promise<void> {
+  /**
+   * The background half of a standup: sequential reviewer fan-out (fresh
+   * context per reviewer per idea, takes stored on the todos), then the
+   * lead's synthesis turn in the dated session.
+   */
+  private async executeStandupPipeline(
+    project: Project,
+    personas: Persona[],
+    lead: Persona,
+    todos: Todo[],
+    memo: string | undefined,
+    agenda: string[],
+    sessionId: string,
+  ): Promise<void> {
     try {
+      const reviewers = personas.filter((p) => p.id !== lead.id)
+
+      if (reviewers.length > 0 && todos.length > 0) {
+        this.sessionManager.appendSystemMessage(
+          sessionId,
+          `Reviewing ${todos.length} idea(s): ${reviewers.map((r) => r.name).join(', ')} are taking independent looks…`,
+        )
+        for (const todo of todos) {
+          const takes: TodoTake[] = []
+          for (const reviewer of reviewers) {
+            const take = await this.reviewTodo(project, reviewer, todo)
+            if (take) takes.push(take)
+          }
+          if (takes.length > 0) {
+            await this.storage.updateTodo(todo.id, { takes }).catch((err) => {
+              log.warn('standup', `Failed to store takes for todo ${todo.id}: ${err instanceof Error ? err.message : String(err)}`)
+            })
+          }
+        }
+      }
+
+      // Re-read so the synthesis prompt carries the freshly stored takes.
+      const reviewed = (await this.storage.listTodos(project.id)).filter((t) =>
+        todos.some((original) => original.id === t.id),
+      )
+      const prompt = buildStandupPrompt(project, personas, reviewed, memo, agenda)
       await this.sessionManager.runTurn(sessionId, prompt, {
         timeoutMs: STANDUP_TIMEOUT_MS,
         cancelOnTimeout: true,
+        internalPrompt: true,
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      log.error('standup', `Standup turn failed for project ${projectId}: ${message}`)
+      log.error('standup', `Standup pipeline failed for project ${project.id}: ${message}`)
       this.sessionManager.appendSystemMessage(
         sessionId,
         `Standup failed: ${message}. Run it again from the project's Ideas panel.`,
       )
     } finally {
-      this.running.delete(projectId)
+      this.running.delete(project.id)
     }
+  }
+
+  /**
+   * One reviewer, one idea, one throwaway read-only session. The take is
+   * harvested and the session deleted — ephemeral compute, durable artifact.
+   */
+  private async reviewTodo(
+    project: Project,
+    reviewer: Persona,
+    todo: Todo,
+  ): Promise<TodoTake | null> {
+    let sessionId: string | null = null
+    try {
+      const session = await this.sessionManager.createSession(reviewer.provider, project.id, {
+        kind: 'review',
+        title: `${reviewer.name} review`,
+        ...(reviewer.model ? { model: reviewer.model } : {}),
+      })
+      sessionId = session.id
+
+      const result = await this.sessionManager.runTurn(
+        session.id,
+        buildReviewerPrompt(project, reviewer, todo),
+        { timeoutMs: REVIEW_TIMEOUT_MS, cancelOnTimeout: true, internalPrompt: true },
+      )
+      if (!result) return null
+
+      const output = parseReviewerOutput(result.content)
+      return {
+        personaId: reviewer.id,
+        take: output.take.slice(0, 2000),
+        ...(output.concerns?.length
+          ? { concerns: output.concerns.slice(0, 8).map((c) => c.slice(0, 500)) }
+          : {}),
+        ...(output.effort ? { effort: output.effort.slice(0, 200) } : {}),
+        createdAt: Date.now(),
+      }
+    } catch (err) {
+      log.warn('standup', `Reviewer ${reviewer.name} failed on todo ${todo.id}: ${err instanceof Error ? err.message : String(err)}`)
+      return null
+    } finally {
+      if (sessionId) {
+        await this.sessionManager.deleteSession(sessionId).catch(() => {})
+      }
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Agenda (events acknowledged by the next standup — no per-event turns)
+  // -----------------------------------------------------------------------
+
+  /** Queue an event for the next standup to acknowledge. */
+  async queueAgenda(projectId: string, entry: string): Promise<void> {
+    const state = (await this.storage.getStandupState(projectId)) ?? { projectId }
+    const agenda = state.agenda ?? []
+    agenda.push(entry.slice(0, 1000))
+    state.agenda = agenda.slice(-30)
+    await this.storage.setStandupState(state)
+  }
+
+  /**
+   * The user resolved a team-raised action item. Queued for the next
+   * standup's agenda — the team acknowledges it there, standup-style,
+   * instead of spending a CLI turn per checkbox.
+   */
+  async notifyActionResolved(item: ActionItem): Promise<void> {
+    await this.queueAgenda(
+      item.projectId,
+      `The user completed the action item: "${item.text}"`,
+    )
+  }
+
+  // -----------------------------------------------------------------------
+  // Refine a proposal from user feedback
+  // -----------------------------------------------------------------------
+
+  /**
+   * Send the user's feedback on a proposal into a standup session — today's
+   * if it is still live, else a fresh dated one. The team revises and
+   * re-emits the proposal with the same todoId, which the persona router
+   * upserts onto the todo.
+   */
+  async refineProposal(todoId: string, feedback: string): Promise<StandupRunResult> {
+    const todo = (await this.storage.listTodos()).find((t) => t.id === todoId)
+    if (!todo) throw new Error('Todo not found')
+    if (!todo.proposal) {
+      return { ran: false, reason: 'This idea has no proposal to refine yet' }
+    }
+    if (todo.status === 'done') {
+      return { ran: false, reason: 'This idea is already done' }
+    }
+
+    const project = await this.storage.getProject(todo.projectId)
+    if (!project) throw new Error('Project not found')
+    const personas = await this.storage.listPersonas()
+    if (personas.length === 0) {
+      return { ran: false, reason: 'No personas configured — add your team in Team settings first' }
+    }
+    const lead = personas.find((p) => p.isLead) ?? personas[0]
+
+    const state = (await this.storage.getStandupState(todo.projectId)) ?? { projectId: todo.projectId }
+    let session = state.teamSessionId ? this.sessionManager.getSession(state.teamSessionId) : undefined
+    if (!session || session.status !== 'live') {
+      session = await this.sessionManager.createSession(lead.provider, project.id, {
+        kind: 'team',
+        title: `${project.name} standup · ${dayLabel(new Date())}`,
+        ...(lead.model ? { model: lead.model } : {}),
+      })
+      state.teamSessionId = session.id
+      await this.storage.setStandupState(state)
+    }
+
+    const sessionId = session.id
+    const prompt = buildRefinePrompt(todo, personas, feedback)
+    log.info('standup', `Proposal refinement dispatched for "${todo.text}" (session ${sessionId})`)
+    void this.sessionManager
+      .runTurn(sessionId, prompt, {
+        timeoutMs: STANDUP_TIMEOUT_MS,
+        cancelOnTimeout: true,
+        internalPrompt: true,
+      })
+      .catch((err) => {
+        log.warn('standup', `Refine turn failed: ${err instanceof Error ? err.message : String(err)}`)
+        this.sessionManager.appendSystemMessage(
+          sessionId,
+          `Proposal refinement failed: ${err instanceof Error ? err.message : String(err)}. Send your feedback again from the Ideas panel.`,
+        )
+      })
+
+    return { ran: true, sessionId }
   }
 
   // -----------------------------------------------------------------------
@@ -253,11 +439,10 @@ export class StandupService {
   /**
    * Spawn an implementation ('work') session for a proposed/approved idea and
    * dispatch the work as a background turn. The session runs on the PROPOSING
-   * persona's provider/model (this is where per-persona providers become
-   * real) and appears in the sidebar like any chat — the user can open it and
-   * watch, or interject. On success the idea moves to Done and the team
-   * announces it in their thread; on failure the work-session link is cleared
-   * so the idea can be re-dispatched.
+   * persona's provider/model and appears in the sidebar like any chat — the
+   * user can open it and watch, or interject. On success the idea moves to
+   * Done and the completion joins the next standup's agenda; on failure the
+   * work-session link is cleared so the idea can be re-dispatched.
    */
   async implementProposal(todoId: string): Promise<StandupRunResult> {
     const todo = (await this.storage.listTodos()).find((t) => t.id === todoId)
@@ -314,12 +499,23 @@ export class StandupService {
     implementer: Persona,
     prompt: string,
   ): Promise<void> {
-    let result: ChatMessage | null = null
     try {
-      result = await this.sessionManager.runTurn(sessionId, prompt, {
+      const result = await this.sessionManager.runTurn(sessionId, prompt, {
         timeoutMs: WORK_TIMEOUT_MS,
         cancelOnTimeout: true,
+        internalPrompt: true,
       })
+
+      // Success: the idea ships (completedAt is stamped by storage), and the
+      // completion joins the next standup's agenda. The user is notified by
+      // the work session's own turn-complete push; the user can always
+      // reopen from the board if the result doesn't hold up.
+      const todo = await this.storage.updateTodo(todoId, { status: 'done' })
+      const summary = result ? result.content.replace(/\s+/g, ' ').slice(0, 300) : '(no summary)'
+      await this.queueAgenda(
+        todo.projectId,
+        `${implementer.name} shipped "${todo.text}" in a work session. Closing summary: ${summary}`,
+      )
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       log.error('standup', `Implementation turn failed for todo ${todoId}: ${message}`)
@@ -331,94 +527,6 @@ export class StandupService {
       await this.storage
         .updateTodo(todoId, { workSessionId: undefined })
         .catch((e) => log.warn('standup', `Failed to unlink work session: ${e instanceof Error ? e.message : String(e)}`))
-      return
-    }
-
-    // Success: the idea ships (completedAt is stamped by storage) and the
-    // team announces it in their thread. The user can always reopen from the
-    // board if the result doesn't hold up.
-    const todo = await this.storage
-      .updateTodo(todoId, { status: 'done' })
-      .catch((e) => {
-        log.warn('standup', `Failed to mark todo ${todoId} done: ${e instanceof Error ? e.message : String(e)}`)
-        return null
-      })
-    if (todo) void this.announceWorkComplete(todo, implementer, result)
-  }
-
-  /** Ping the team thread so the implementer announces the shipped work. */
-  private async announceWorkComplete(
-    todo: Todo,
-    implementer: Persona,
-    result: ChatMessage | null,
-  ): Promise<void> {
-    try {
-      const state = await this.storage.getStandupState(todo.projectId)
-      if (!state?.teamSessionId) return
-      const project = await this.storage.getProject(todo.projectId)
-      const personas = await this.storage.listPersonas()
-      if (!project || personas.length === 0) return
-      const lead = personas.find((p) => p.isLead) ?? personas[0]
-
-      const session = await this.teamSessions.ensure(project, state.teamSessionId, lead)
-      if (session.id !== state.teamSessionId) {
-        state.teamSessionId = session.id
-        await this.storage.setStandupState(state)
-      }
-
-      await this.sessionManager.runTurn(session.id, buildWorkCompletePrompt(implementer, todo, result), {
-        timeoutMs: PING_TIMEOUT_MS,
-        cancelOnTimeout: true,
-      })
-    } catch (err) {
-      log.warn('standup', `Work-complete announcement failed: ${err instanceof Error ? err.message : String(err)}`)
-    }
-  }
-
-  // -----------------------------------------------------------------------
-  // Action-resolved pings
-  // -----------------------------------------------------------------------
-
-  /**
-   * The user resolved an action item the team raised — tell the team thread
-   * so they can acknowledge and pick up whatever it was blocking. Runs as a
-   * background turn; the reply arrives like any persona message. No-op when
-   * the project has no team thread yet.
-   */
-  async notifyActionResolved(item: ActionItem): Promise<void> {
-    const state = await this.storage.getStandupState(item.projectId)
-    if (!state?.teamSessionId) return
-
-    const project = await this.storage.getProject(item.projectId)
-    const personas = await this.storage.listPersonas()
-    if (!project || personas.length === 0) return
-    const lead = personas.find((p) => p.isLead) ?? personas[0]
-
-    const session = await this.teamSessions.ensure(project, state.teamSessionId, lead)
-    if (session.id !== state.teamSessionId) {
-      state.teamSessionId = session.id
-      await this.storage.setStandupState(state)
-    }
-
-    const raisedBy = item.personaId
-      ? personas.find((p) => p.id === item.personaId)?.name ?? 'the team'
-      : 'the team'
-    const prompt = [
-      `The user just completed an action item ${raisedBy} raised: "${item.text}".`,
-      item.notes ? `Context: ${item.notes}` : '',
-      'Briefly acknowledge and say what this unblocks or what happens next — one short message from the most relevant team member. End with the same ```json block as always.',
-    ]
-      .filter(Boolean)
-      .join('\n')
-
-    log.info('standup', `Action item resolved for "${project.name}" — pinging team session ${session.id}`)
-    try {
-      await this.sessionManager.runTurn(session.id, prompt, {
-        timeoutMs: PING_TIMEOUT_MS,
-        cancelOnTimeout: true,
-      })
-    } catch (err) {
-      log.warn('standup', `Action-resolved ping failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 }

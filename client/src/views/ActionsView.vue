@@ -1,32 +1,47 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useTeamStore } from '@/stores/team'
 import { useProjectsStore } from '@/stores/projects'
+import { useSessionsStore } from '@/stores/sessions'
 import { useUiStore } from '@/stores/ui'
 import PersonaAvatar from '@/components/PersonaAvatar.vue'
+import * as api from '@/api/client'
 import type { ActionItem } from '@/api/client'
 
 const teamStore = useTeamStore()
 const projectStore = useProjectsStore()
+const sessionStore = useSessionsStore()
 const ui = useUiStore()
+const router = useRouter()
+const replyError = ref<string | null>(null)
 
 const newText = ref('')
 const newNotes = ref('')
 const showNotes = ref(false)
 const newProjectId = ref('')
 const showDone = ref(false)
+/** '' = all projects */
+const filterProjectId = ref('')
 
 onMounted(() => {
   teamStore.fetchActions()
   teamStore.fetchPersonas()
+  teamStore.fetchTodos()
   if (projectStore.projects.length > 0 && !newProjectId.value) {
     newProjectId.value = projectStore.projects[0].id
   }
 })
 
+const visibleActions = computed(() =>
+  filterProjectId.value
+    ? teamStore.actions.filter((a) => a.projectId === filterProjectId.value)
+    : teamStore.actions,
+)
+
 const grouped = computed(() => {
   const groups = new Map<string, ActionItem[]>()
-  for (const item of teamStore.actions) {
+  for (const item of visibleActions.value) {
     if (item.status === 'done' && !showDone.value) continue
     const list = groups.get(item.projectId) ?? []
     list.push(item)
@@ -35,7 +50,16 @@ const grouped = computed(() => {
   return groups
 })
 
-const doneCount = computed(() => teamStore.actions.filter((a) => a.status === 'done').length)
+const doneCount = computed(() => visibleActions.value.filter((a) => a.status === 'done').length)
+
+/** The idea an item gates, when linked and still on the board. */
+function linkedIdea(item: ActionItem) {
+  return item.todoId ? teamStore.todos.find((t) => t.id === item.todoId) ?? null : null
+}
+
+function openBoard(projectId: string) {
+  router.push({ path: '/board', query: { project: projectId } })
+}
 
 function projectName(projectId: string): string {
   return projectStore.projects.find((p) => p.id === projectId)?.name ?? 'Removed project'
@@ -56,6 +80,33 @@ async function add() {
 function formatDate(ts: number): string {
   return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
+
+/**
+ * Jump into the project's team thread with a reply drafted about this item —
+ * the fastest path from "decision needed" to "team knows". The draft lands in
+ * the chat input's per-session draft (never clobbering one you already have).
+ */
+async function replyToTeam(item: ActionItem) {
+  replyError.value = null
+  try {
+    const state = await api.fetchStandupState(item.projectId)
+    if (!state.teamSessionId) {
+      replyError.value = 'No team thread for this project yet — run a standup first.'
+      return
+    }
+    // ChatInput restores drafts on session SWITCH — if the thread is already
+    // active the input is right there, so don't write behind its back.
+    const draftKey = `codepipe:draft:${state.teamSessionId}`
+    if (sessionStore.activeSessionId !== state.teamSessionId && !localStorage.getItem(draftKey)) {
+      localStorage.setItem(draftKey, `About "${item.text}"\n\nMy decision: `)
+    }
+    await sessionStore.fetchSessions()
+    await sessionStore.selectSession(state.teamSessionId)
+    router.push('/')
+  } catch {
+    replyError.value = 'Could not open the team thread.'
+  }
+}
 </script>
 
 <template>
@@ -73,9 +124,17 @@ function formatDate(ts: number): string {
       <div class="min-w-0">
         <span class="block text-sm font-medium text-gray-700 dark:text-gray-300">Action items</span>
         <span class="block text-xs text-gray-400 dark:text-gray-500">
-          Things only you can do — completing a team-raised item notifies your team
+          Things only you can do — completions reach your team at the next standup
         </span>
       </div>
+      <div class="flex-1" />
+      <select
+        v-model="filterProjectId"
+        class="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-blue-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
+      >
+        <option value="">All projects</option>
+        <option v-for="p in projectStore.projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+      </select>
     </div>
 
     <!-- Content -->
@@ -117,8 +176,8 @@ function formatDate(ts: number): string {
           />
         </div>
 
-        <div v-if="teamStore.error" class="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-900/20 dark:text-red-400">
-          {{ teamStore.error }}
+        <div v-if="teamStore.error || replyError" class="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-900/20 dark:text-red-400">
+          {{ teamStore.error || replyError }}
         </div>
 
         <div v-if="grouped.size === 0" class="py-10 text-center text-sm text-gray-400 dark:text-gray-500">
@@ -142,13 +201,59 @@ function formatDate(ts: number): string {
               @change="teamStore.setActionStatus(item.id, item.status === 'done' ? 'open' : 'done')"
             />
             <div class="min-w-0 flex-1">
-              <p
-                class="text-sm"
-                :class="item.status === 'done'
-                  ? 'text-gray-400 line-through dark:text-gray-500'
-                  : 'text-gray-800 dark:text-gray-200'"
-              >{{ item.text }}</p>
+              <div class="flex items-start gap-2">
+                <p
+                  class="min-w-0 flex-1 text-sm"
+                  :class="item.status === 'done'
+                    ? 'text-gray-400 line-through dark:text-gray-500'
+                    : 'text-gray-800 dark:text-gray-200'"
+                >{{ item.text }}</p>
+                <span
+                  v-if="item.kind"
+                  class="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium"
+                  :class="item.kind === 'decision'
+                    ? 'bg-purple-50 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300'
+                    : 'bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300'"
+                >{{ item.kind === 'decision' ? 'decision' : 'setup' }}</span>
+              </div>
               <p v-if="item.notes" class="mt-1 whitespace-pre-wrap text-xs text-gray-400 dark:text-gray-500">{{ item.notes }}</p>
+
+              <!-- The idea this item gates, with its board location -->
+              <button
+                v-if="linkedIdea(item)"
+                class="mt-1 flex max-w-full items-center gap-1.5 rounded bg-purple-50 px-2 py-1 text-left hover:bg-purple-100 dark:bg-purple-900/20 dark:hover:bg-purple-900/40"
+                :title="'Open the board'"
+                @click="openBoard(item.projectId)"
+              >
+                <span class="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-purple-500 dark:text-purple-400">for idea</span>
+                <span class="min-w-0 truncate text-xs text-purple-800 dark:text-purple-300">{{ linkedIdea(item)!.text }}</span>
+                <span class="shrink-0 rounded-full bg-white/70 px-1.5 text-[10px] font-medium text-purple-700 dark:bg-purple-950/60 dark:text-purple-300">
+                  {{ linkedIdea(item)!.status === 'under_review' ? 'in review' : linkedIdea(item)!.status }}
+                </span>
+              </button>
+
+              <!-- Step-by-step guide (task items) -->
+              <ol
+                v-if="item.steps?.length && item.status !== 'done'"
+                class="mt-2 flex flex-col gap-1"
+              >
+                <li
+                  v-for="(step, i) in item.steps"
+                  :key="i"
+                  class="flex items-start gap-2 text-xs text-gray-600 dark:text-gray-400"
+                >
+                  <span class="mt-px flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-100 text-[9px] font-semibold text-gray-500 dark:bg-gray-800 dark:text-gray-400">{{ i + 1 }}</span>
+                  <span class="whitespace-pre-wrap">{{ step }}</span>
+                </li>
+              </ol>
+
+              <!-- Immediate action: decisions resolve by telling the team -->
+              <button
+                v-if="item.kind === 'decision' && item.status !== 'done'"
+                class="mt-2 rounded bg-purple-600 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-purple-700"
+                @click="replyToTeam(item)"
+              >Reply to team</button>
+
               <div class="mt-1.5 flex items-center gap-2 text-[10px] text-gray-400 dark:text-gray-500">
                 <template v-if="raiser(item)">
                   <PersonaAvatar :persona="raiser(item)" size="sm" />

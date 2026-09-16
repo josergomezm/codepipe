@@ -15,14 +15,15 @@
 
 import {
   StandupOutputSchema,
-  type ChatMessage,
+  ReviewerOutputSchema,
   type Persona,
   type Project,
+  type ReviewerOutput,
   type StandupOutput,
   type Todo,
 } from './schemas.js'
 
-export const PROTOCOL_VERSION = 1
+export const PROTOCOL_VERSION = 3
 
 export interface ParsedStandupTail {
   output: StandupOutput
@@ -99,63 +100,155 @@ export function normalizeActionText(text: string): string {
 }
 
 /**
- * Build the prompt for an implementation ('work') session. Work sessions are
- * ordinary chats — no JSON protocol — because their output is code and a
- * human-readable summary, not routed persona messages.
+ * Build a reviewer session's prompt. Each reviewer runs in a FRESH context —
+ * independence is the point: their take is unbiased by the other reviewers.
+ * Output is a small JSON object, parsed leniently (raw text degrades to the
+ * take itself, never lost).
  */
-export function buildImplementPrompt(
+export function buildReviewerPrompt(
   project: Project,
-  implementer: Persona,
+  reviewer: Persona,
   todo: Todo,
 ): string {
-  const proposal = todo.proposal
   return [
-    `You are ${implementer.name}, ${implementer.role} on the "${project.name}" team. ${implementer.personality}`,
+    `You are ${reviewer.name}, ${reviewer.role} on the "${project.name}" team. ${reviewer.personality}`,
     '',
-    'The user approved your team\'s proposal — implement it now, in this repository.',
+    'The user added this idea to the project board:',
     '',
-    `The idea: ${todo.text}`,
+    `"${todo.text}"`,
     todo.notes ? `Context from the user: ${todo.notes}` : '',
-    proposal ? `The approved proposal: ${proposal.summary}` : '',
-    proposal ? `Planned approach: ${proposal.approach}` : '',
-    proposal?.effort ? `Estimated effort: ${proposal.effort}` : '',
     '',
-    'Guidelines:',
-    '- Follow the planned approach unless the code proves it wrong; if you deviate, say why.',
-    '- Match the project\'s existing conventions, and run its tests/typechecks if it has them.',
-    '- If something genuinely needs the user\'s decision, stop and ask — this is a chat, they can reply.',
-    '- Finish with a short summary of what you changed (files touched, anything left open).',
+    'Investigate the codebase as needed to ground your review in reality — but this is a REVIEW: read anything, modify NOTHING. Do not create, edit, or delete any files.',
+    '',
+    'Then reply with ONLY a ```json block in this shape:',
+    '',
+    '```json',
+    JSON.stringify(
+      {
+        take: '<your single most important point about this idea, from your role\'s perspective — one short paragraph>',
+        concerns: ['<optional: specific concerns, each one sentence>'],
+        effort: '<optional: rough estimate, only if you can ground it>',
+      },
+      null,
+      2,
+    ),
+    '```',
+    '',
+    'One point, chosen well — the team lead synthesizes everyone\'s takes afterward. If the idea is outside your lens, say so briefly in `take` and stop.',
   ]
     .filter(Boolean)
     .join('\n')
 }
 
 /**
- * Build the team-thread ping announcing a finished implementation. This runs
- * in the TEAM session, so the normal JSON protocol applies.
+ * Parse a reviewer session's output. Lenient by design: a fenced or bare
+ * JSON object is preferred; anything else becomes the take verbatim, so a
+ * reviewer that ignored the format still contributes.
  */
-export function buildWorkCompletePrompt(
-  implementer: Persona,
-  todo: Todo,
-  resultMessage: ChatMessage | null,
-): string {
-  const summary = resultMessage
-    ? resultMessage.content.slice(0, 1500)
-    : '(the work session produced no summary)'
+export function parseReviewerOutput(content: string): ReviewerOutput {
+  const fenceRe = /```(?:json)?\s*\n([\s\S]*?)```/g
+  let lastFence: string | null = null
+  for (let m = fenceRe.exec(content); m !== null; m = fenceRe.exec(content)) {
+    lastFence = m[1]
+  }
+  for (const candidate of [lastFence, content.trim()]) {
+    if (!candidate) continue
+    try {
+      const result = ReviewerOutputSchema.safeParse(JSON.parse(candidate))
+      if (result.success) return result.data
+    } catch {
+      // Not JSON — fall through
+    }
+  }
+  return { take: content.trim().slice(0, 2000) || '(no output)' }
+}
+
+/**
+ * Build the standup-session turn for refining a proposal from user feedback.
+ * Runs in a standup ('team') session, so the JSON protocol applies — the
+ * revised proposal re-emitted with the same todoId flows through the normal
+ * router and replaces the stored one.
+ */
+export function buildRefinePrompt(todo: Todo, personas: Persona[], feedback: string): string {
+  const proposal = todo.proposal
   return [
-    `${implementer.name} just finished implementing the approved idea "${todo.text}" in a separate work session. Their closing summary:`,
+    `The user reviewed your team's proposal for the idea [${todo.id}] "${todo.text}" and wants changes before building.`,
     '',
-    summary,
+    proposal ? `Current proposal: ${proposal.summary}` : '',
+    proposal ? `Current approach: ${proposal.approach}` : '',
+    proposal?.brief ? `Current brief:\n${proposal.brief}` : '',
+    formatTakes(todo, personas),
     '',
-    `Announce the completion to the user as ${implementer.name} — one short message: what shipped and anything the user should look at. The idea has been moved to Done on their board. End with the same \`\`\`json block as always.`,
+    `The user's feedback:`,
+    feedback,
+    '',
+    'Revise the proposal — especially the `brief`, since that is what the builder will run on. Read the codebase if needed but modify nothing. Re-emit the FULL updated proposal in `proposals` with the same todoId (summary, approach, effort, brief). Have the proposing team member reply with one short message saying what changed. End with the same ```json block as always.',
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+/** Render an idea's reviewer takes for a synthesis or refine prompt. */
+function formatTakes(todo: Todo, personas: Persona[]): string {
+  if (!todo.takes?.length) return ''
+  const lines = todo.takes.map((t) => {
+    const who = personas.find((p) => p.id === t.personaId)
+    const concerns = t.concerns?.length ? ` Concerns: ${t.concerns.join(' / ')}` : ''
+    const effort = t.effort ? ` Effort: ${t.effort}.` : ''
+    return `  - ${who?.name ?? 'Reviewer'}: ${t.take}${concerns}${effort}`
+  })
+  return `Team takes on this idea (each formed independently):\n${lines.join('\n')}`
+}
+
+/**
+ * Build the prompt for an implementation ('work') session. Deliberately
+ * team-free: the executing CLI gets the tuned brief and neutral guardrails,
+ * nothing else — persona lore is attribution for the USER (session title,
+ * card), never context for the executor, where it would only distract.
+ */
+export function buildImplementPrompt(
+  _project: Project,
+  _implementer: Persona,
+  todo: Todo,
+): string {
+  const proposal = todo.proposal
+  // The brief IS the tuned execution prompt the review produced — when
+  // present it supersedes everything else. Fallbacks keep pre-brief
+  // proposals and bare ideas buildable.
+  const task = proposal?.brief
+    ? proposal.brief
+    : [
+        `Task: ${todo.text}`,
+        todo.notes ? `Context: ${todo.notes}` : '',
+        proposal ? `Planned approach: ${proposal.approach}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
+
+  return [
+    task,
+    '',
+    'Guidelines:',
+    '- Work in this repository, matching its existing conventions; run its tests/typechecks if it has them.',
+    '- Follow the plan above unless the code proves it wrong; if you deviate, say why.',
+    '- If something genuinely needs the user\'s decision, stop and ask — this is a chat, they can reply.',
+    '- Finish with a short summary of what you changed (files touched, anything left open).',
   ].join('\n')
 }
 
-/** Build the standup prompt: roster, todos, and the output contract. */
+/**
+ * Build the standup synthesis prompt. The reviewers have already spoken
+ * (independently — their takes ride on each todo); this turn is the lead
+ * digesting takes + agenda + memo into the run's output: messages to the
+ * user, proposals with execution briefs, typed user actions, and the next
+ * memo. Runs in the dated standup session the user can watch and reply to.
+ */
 export function buildStandupPrompt(
   project: Project,
   personas: Persona[],
   todos: Todo[],
+  memo?: string,
+  agenda?: string[],
 ): string {
   const roster = personas
     .map(
@@ -167,20 +260,31 @@ export function buildStandupPrompt(
   const todoList =
     todos.length > 0
       ? todos
-          .map((t) => `- [${t.id}] ${t.text}${t.notes ? `\n  Notes: ${t.notes}` : ''}`)
+          .map((t) =>
+            [
+              `- [${t.id}] ${t.text}${t.notes ? `\n  Notes: ${t.notes}` : ''}`,
+              formatTakes(t, personas).replace(/^/gm, '  '),
+            ]
+              .filter((s) => s.trim())
+              .join('\n'),
+          )
           .join('\n')
       : '(none — review the project itself and suggest improvements)'
 
   return [
-    `You are running the daily standup for the project "${project.name}" as its AI team. The team members are:`,
+    `You are running today's standup for the project "${project.name}" as its AI team. The team members are:`,
     '',
     roster,
     '',
-    `Today's open ideas/todos from the user:`,
+    memo ? `Your handoff note from the previous standup:\n${memo}\n` : '',
+    agenda?.length
+      ? `Since the last standup:\n${agenda.map((a) => `- ${a}`).join('\n')}\n`
+      : '',
+    `Today's open ideas/todos from the user (with the team's independent takes where reviewed):`,
     '',
     todoList,
     '',
-    'Deliberate as the team: have each relevant member weigh in from their role, disagree where warranted, and converge on concrete recommendations. Investigate the codebase as needed to ground the discussion in reality.',
+    `You speak for the whole team, synthesizing the takes above — where reviewers disagree, weigh the disagreement rather than smoothing it over. Investigate the codebase if you need to verify something, but this is PLANNING: read anything, modify nothing.`,
     '',
     `Then END your reply with a single fenced \`\`\`json block (nothing after it) in exactly this shape (team output protocol v${PROTOCOL_VERSION}):`,
     '',
@@ -189,27 +293,32 @@ export function buildStandupPrompt(
       {
         messages: [
           {
-            persona: '<team member name>',
+            persona: '<your name — the lead speaks for the team>',
             kind: 'proposal | question | update',
-            text: '<a short chat message to the user, written in that persona\'s voice>',
+            text: '<one short chat message to the user summarizing the standup>',
           },
         ],
         proposals: [
           {
             todoId: '<the [id] of the todo>',
             summary: '<one-line summary>',
-            approach: '<how to implement it>',
+            approach: '<how to implement it, for the user to read>',
             effort: '<rough estimate>',
+            brief: '<the execution prompt — see rules below>',
             persona: '<who proposes it>',
           },
         ],
         user_actions: [
           {
             persona: '<who raised it>',
-            text: '<a task only the user can do>',
-            notes: '<optional: why it is needed / how to do it>',
+            text: '<a task or decision only the user can handle>',
+            notes: '<optional: why it is needed>',
+            kind: 'decision | task',
+            steps: ['<for tasks: concrete numbered steps to complete it>'],
+            todoId: '<the [id] of the idea this gates, when it is a prerequisite of one>',
           },
         ],
+        memo: '<handoff note to your next standup: open questions, decisions made, what to revisit — a few sentences>',
       },
       null,
       2,
@@ -217,9 +326,12 @@ export function buildStandupPrompt(
     '```',
     '',
     'Rules for the JSON block:',
-    '- `messages` is what the user actually receives on their phone — keep each one short and personal, like a colleague texting them. The lead summarizes; other members may add a message only when they have a genuine question or point of their own.',
-    '- `proposals` maps your recommendations onto the todo ids above. Only include todos you actually formed a recommendation for.',
-    '- `user_actions` are tasks ONLY the user can do and that block progress: creating accounts, adding secrets or API keys, making purchases, approving external services, or decisions that are theirs to make. Include them sparingly — only genuine blockers — and omit the array when there are none.',
-    '- This conversation is persistent. In EVERY future reply in this session (including answers to the user\'s follow-up messages), end with the same ```json block — usually with a single message from whichever team member is answering.',
-  ].join('\n')
+    '- `messages` come from YOU, the lead, only — usually exactly one short summary, personal like a colleague texting. Do NOT fabricate messages from other team members: they already spoke through their independent takes, which the user sees on the board. If a reviewer\'s take contains a question the user must answer, turn it into a `user_actions` entry with kind `decision`, credited to that reviewer via `persona`.',
+    '- `proposals` maps your recommendations onto the todo ids above. Only include todos you actually formed a recommendation for. `approach` is the human-readable plan; `brief` is the real deliverable of this standup: the EXACT prompt a coding agent will be handed to implement the proposal. Write the brief with everything the agent needs and nothing it doesn\'t — the goal, the specific files and docs to read first (by path, e.g. `docs/pos.md`, `src/foo.ts`), hard constraints and things NOT to touch, and a definition of done (tests to run, behavior to verify). Ground it in what you actually found in the codebase. The brief must STAND ALONE: never reference the team, the takes, this conversation, or who proposed what — the executing agent knows none of that and needs none of it.',
+    '- `user_actions` are tasks ONLY the user can do and that block progress. Set `kind`: use `decision` when the user must choose or clarify something (phrase `text` as the question, with the options and your recommendation in `notes`); use `task` for external setup — accounts, secrets, purchases — and then include `steps`: a concrete numbered walkthrough (console URLs, exact commands, which file to put the value in). When an action gates a specific idea (an API key its build needs), set `todoId` to that idea\'s [id] so it shows as a prerequisite on the idea\'s card. Include them sparingly — only genuine blockers — and omit the array when there are none.',
+    '- `memo` is your memory: the next standup starts fresh and receives ONLY this note plus the board. Record decisions made, open questions, and anything you would otherwise forget. Keep it under a paragraph.',
+    '- The user may reply in this session today. In EVERY reply (including answers to their follow-ups), end with the same ```json block — usually a single message from whichever team member is answering, plus an updated `memo` if something worth remembering changed.',
+  ]
+    .filter(Boolean)
+    .join('\n')
 }

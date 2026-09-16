@@ -121,12 +121,14 @@ export function createSessionRoutes(
     }
   })
 
-  // DELETE /api/sessions/:id
+  // DELETE /api/sessions/:id — todos linked to a deleted work session lose
+  // the link so their Build button becomes usable again.
   router.delete('/:id', async (req, res) => {
     const { id } = req.params
 
     try {
       await sessionManager.deleteSession(id)
+      await storage.unlinkTodosFromWorkSession(id)
       res.json({ ok: true })
     } catch (err) {
       log.error('api', `Failed to delete session ${id}`, err)

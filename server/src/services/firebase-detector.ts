@@ -33,6 +33,7 @@ const FIREBASE_DEFAULT_PORTS: Record<string, number> = {
 export interface FirebaseDetectionResult {
   found: boolean
   firebaseDir: string | null       // relative path from project root
+  scriptDir: string | null         // relative dir holding the package.json with the script
   scriptName: string | null        // npm script name
   startCommand: string | null
   defaultPorts: Record<string, number>
@@ -45,6 +46,7 @@ export async function detectFirebaseEmulators(projectPath: string): Promise<Fire
   const result: FirebaseDetectionResult = {
     found: false,
     firebaseDir: null,
+    scriptDir: null,
     scriptName: null,
     startCommand: null,
     defaultPorts: {},
@@ -86,6 +88,7 @@ export async function detectFirebaseEmulators(projectPath: string): Promise<Fire
   if (scriptInfo) {
     result.scriptName = scriptInfo.scriptName
     result.startCommand = scriptInfo.command
+    result.scriptDir = scriptInfo.dir
   }
 
   return result
@@ -101,7 +104,9 @@ export function buildFirebaseServiceConfig(detection: FirebaseDetectionResult): 
     type: 'firebase-emulators',
     label: 'Firebase Emulators',
     startCommand: detection.startCommand,
-    cwd: detection.firebaseDir ?? undefined,
+    // The command is a bare `npm run <script>`, so it must run in the directory
+    // that actually owns that script — not necessarily the firebase.json dir.
+    cwd: detection.scriptDir ?? detection.firebaseDir ?? undefined,
   }
 }
 
@@ -112,17 +117,25 @@ export function buildFirebaseServiceConfig(detection: FirebaseDetectionResult): 
 /**
  * Parses Firebase emulator stdout for port assignments and UI URL.
  *
- * Matches lines like:
- *   │ Authentication 127.0.0.1:9099
- *   │ Firestore      127.0.0.1:8080
+ * Expects ANSI-stripped lines (ServiceManager does that before parsing), like:
+ *   │ Authentication │ 127.0.0.1:9099 │ http://127.0.0.1:4000/auth │
+ *   │ Firestore      │ 127.0.0.1:8080 │ http://127.0.0.1:4000/firestore │
  *   i  View Emulator UI at http://127.0.0.1:4000/
+ *     Emulator Hub host: 127.0.0.1 port: 4400
  */
 export const firebasePortParser: PortParser = (line: string, state: ServiceState) => {
-  // Port table row: │ ServiceName  host:port
-  const portMatch = /[│|]\s+(\w[\w\s]*\w)\s+([\d.]+):(\d+)/.exec(line)
+  // Port table row: │ ServiceName │ host:port │ …
+  const portMatch = /^\s*[│|]\s*([A-Za-z][A-Za-z ]*?)\s*[│|]\s*([\d.]+):(\d+)\s*[│|]/.exec(line)
   if (portMatch) {
     const service = portMatch[1].trim().toLowerCase().replace(/\s+/g, '-')
     state.ports[service] = { host: portMatch[2], port: parseInt(portMatch[3]) }
+    return
+  }
+
+  // The hub is reported outside the table
+  const hubMatch = /Emulator Hub host:\s*([\d.]+)\s+port:\s*(\d+)/.exec(line)
+  if (hubMatch) {
+    state.ports['hub'] = { host: hubMatch[1], port: parseInt(hubMatch[2]) }
     return
   }
 
@@ -161,7 +174,7 @@ async function findFirebaseJson(projectPath: string): Promise<string | null> {
 async function findEmulatorsScript(
   firebaseDir: string,
   projectPath: string,
-): Promise<{ scriptName: string; command: string } | null> {
+): Promise<{ scriptName: string; command: string; dir: string | null } | null> {
   // Look for package.json in firebaseDir, then project root
   const candidates = [firebaseDir]
   if (firebaseDir !== projectPath) candidates.push(projectPath)
@@ -179,12 +192,11 @@ async function findEmulatorsScript(
       for (const [name, cmd] of Object.entries(scripts)) {
         if (cmd.includes('firebase emulators:start') || cmd.includes('firebase emulators:exec')) {
           const pm = detectPm(dir, projectPath)
-          const subDir = path.relative(projectPath, dir) || null
-          const run = pm === 'npm' ? `npm run ${name}` : `${pm} run ${name}`
-          const command = subDir
-            ? (pm === 'npm' ? `${run} --prefix ${subDir}` : `${run} --cwd ${subDir}`)
-            : run
-          return { scriptName: name, command }
+          // No --prefix/--cwd flag here: the service config carries the
+          // directory as its own `cwd`, and passing both made npm resolve
+          // <dir>/<dir> and fail with ENOENT.
+          const command = pm === 'npm' ? `npm run ${name}` : `${pm} run ${name}`
+          return { scriptName: name, command, dir: path.relative(projectPath, dir) || null }
         }
       }
     } catch {

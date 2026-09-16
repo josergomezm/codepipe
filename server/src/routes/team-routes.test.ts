@@ -27,6 +27,7 @@ let project: Project
 let standupResult: StandupRunResult
 let implementResult: StandupRunResult
 let resolvedNotifications: string[]
+let refinements: string[]
 
 beforeEach(async () => {
   tmpDir = await mkdtemp(path.join(os.tmpdir(), 'codepipe-routes-'))
@@ -37,6 +38,7 @@ beforeEach(async () => {
   standupResult = { ran: true, sessionId: '55555555-5555-4555-8555-555555555555' }
   implementResult = { ran: true, sessionId: '66666666-6666-4666-8666-666666666666' }
   resolvedNotifications = []
+  refinements = []
   const standupStub = {
     runStandup: async (projectId: string) => {
       if (!(await storage.getProject(projectId))) throw new Error('Project not found')
@@ -48,6 +50,11 @@ beforeEach(async () => {
     implementProposal: async (todoId: string) => {
       if (!(await storage.listTodos()).some((t) => t.id === todoId)) throw new Error('Todo not found')
       return implementResult
+    },
+    refineProposal: async (todoId: string, feedback: string) => {
+      if (!(await storage.listTodos()).some((t) => t.id === todoId)) throw new Error('Todo not found')
+      refinements.push(feedback)
+      return { ran: true, sessionId: '77777777-7777-4777-8777-777777777777' }
     },
   } as unknown as StandupService
 
@@ -94,6 +101,23 @@ describe('todo routes', () => {
     await request(app).delete(`/api/todos/${created.body.id}`).expect(200)
     const empty = await request(app).get(`/api/todos?projectId=${project.id}`).expect(200)
     expect(empty.body).toHaveLength(0)
+  })
+
+  it('maps refine dispatch to 202 with validation', async () => {
+    const todo = await storage.addTodo({ projectId: project.id, text: 'Refine me' })
+
+    await request(app).post(`/api/todos/${todo.id}/refine`).send({}).expect(400)
+    const ok = await request(app)
+      .post(`/api/todos/${todo.id}/refine`)
+      .send({ feedback: 'Cap at 10s' })
+      .expect(202)
+    expect(ok.body.sessionId).toBeTruthy()
+    expect(refinements).toEqual(['Cap at 10s'])
+
+    await request(app)
+      .post('/api/todos/99999999-9999-4999-8999-999999999999/refine')
+      .send({ feedback: 'x' })
+      .expect(404)
   })
 
   it('maps implement dispatch to 202, skips to 409, unknown todo to 404', async () => {

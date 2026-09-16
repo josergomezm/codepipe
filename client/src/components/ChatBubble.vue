@@ -50,6 +50,10 @@ const isDeliberation = computed(() => props.message.metadata?.kind === 'delibera
 const deliberationEmpty = computed(() => isDeliberation.value && props.message.content.trim().length === 0)
 const deliberationOpen = ref(false)
 
+// Machine-built dispatch prompts (standup briefing, build brief) collapse.
+const isPrompt = computed(() => props.message.metadata?.kind === 'prompt')
+const promptOpen = ref(false)
+
 const copied = ref(false)
 async function copyContent() {
   await navigator.clipboard.writeText(props.message.content)
@@ -63,6 +67,30 @@ async function copyContent() {
   <div v-if="isSystem" class="flex justify-center px-4 py-2">
     <div class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-center dark:border-amber-800/40 dark:bg-amber-900/20">
       <p class="whitespace-pre-wrap text-sm text-amber-800 dark:text-amber-300">{{ message.content }}</p>
+    </div>
+  </div>
+
+  <!-- Machine-built dispatch prompt: collapsed behind a toggle -->
+  <div v-else-if="isUser && isPrompt" class="flex justify-end px-4 py-1">
+    <div class="max-w-[90%]">
+      <button
+        class="ml-auto flex items-center gap-1.5 rounded-lg border border-dashed border-blue-300 px-3 py-1.5 text-xs text-blue-600 transition hover:border-blue-400 dark:border-blue-800 dark:text-blue-400 dark:hover:border-blue-700"
+        @click="promptOpen = !promptOpen"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"
+          class="h-3 w-3 transition-transform" :class="{ 'rotate-90': promptOpen }"
+        >
+          <path fill-rule="evenodd" d="M8.22 5.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L11.94 10 8.22 6.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd" />
+        </svg>
+        Briefing sent
+      </button>
+      <div
+        v-if="promptOpen"
+        class="mt-1.5 overflow-hidden rounded-2xl border border-blue-200 bg-blue-50/50 px-4 py-2.5 dark:border-blue-900 dark:bg-blue-900/10"
+      >
+        <p class="whitespace-pre-wrap break-words text-xs text-gray-700 dark:text-gray-300">{{ message.content }}</p>
+      </div>
     </div>
   </div>
 
