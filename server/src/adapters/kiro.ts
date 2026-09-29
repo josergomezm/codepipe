@@ -77,6 +77,39 @@ export function parseKiroModelList(stdout: string): { id: string; name?: string 
   }
 }
 
+/**
+ * The models offered in the picker, in display order. Kiro lists ~20 models
+ * (old Claude versions, DeepSeek, Qwen…); we keep the ones worth picking and
+ * give them readable names. Ids Kiro doesn't offer yet (e.g. Sonnet 5.5) are
+ * dropped until the CLI starts listing them. Anything else is still reachable
+ * through the picker's "Custom…" entry.
+ */
+export const KIRO_PICKER_MODELS: { id: string; name: string }[] = [
+  { id: 'auto', name: 'Auto' },
+  { id: 'claude-opus-5.5', name: 'Opus 5.5' },
+  { id: 'claude-sonnet-5.5', name: 'Sonnet 5.5' },
+  { id: 'claude-sonnet-5', name: 'Sonnet 5' },
+  { id: 'gpt-5.6-sol', name: 'GPT 5.6 Sol' },
+  { id: 'gpt-5.6-terra', name: 'GPT 5.6 Terra' },
+  { id: 'gpt-5.6-luna', name: 'GPT 5.6 Luna' },
+]
+
+/**
+ * Narrow the CLI's model list to KIRO_PICKER_MODELS, keeping the credit rate
+ * from the CLI's label. When the CLI list is empty (CLI unavailable), the
+ * curated list is returned as-is so the picker still works.
+ */
+export function curateKiroModels(live: { id: string; name?: string }[]): { id: string; name?: string }[] {
+  if (live.length === 0) return KIRO_PICKER_MODELS.filter((m) => m.id !== 'claude-sonnet-5.5')
+  const byId = new Map(live.map((m) => [m.id, m]))
+  return KIRO_PICKER_MODELS.flatMap((m) => {
+    const found = byId.get(m.id)
+    if (!found) return []
+    const rate = /\(([\d.]+x)\)/.exec(found.name ?? '')?.[1]
+    return [{ id: m.id, name: rate ? `${m.name} (${rate})` : m.name }]
+  })
+}
+
 let cachedModels: { id: string; name?: string }[] | null = null
 let cachedModelsAt = 0
 const MODEL_CACHE_TTL_MS = 10 * 60 * 1000
@@ -97,12 +130,13 @@ export async function listKiroModels(): Promise<{ id: string; name?: string }[]>
     )
     const models = parseKiroModelList(stdout)
     if (models.length > 0) {
-      cachedModels = models
+      cachedModels = curateKiroModels(models)
       cachedModelsAt = now
+      return cachedModels
     }
-    return models
+    return curateKiroModels([])
   } catch {
-    return []
+    return curateKiroModels([])
   }
 }
 
@@ -233,8 +267,13 @@ export class KiroAdapter implements ICLIAdapter {
       args.push('--resume-id', cliSessionId)
     }
 
-    if (model) {
-      args.push('--model', model)
+    // The default (v2) engine ignores `--model` ("failed to set model …
+    // Method not found") and silently runs its default, so a pinned model
+    // switches the chat to the v3 engine, which honours it and can resume v2
+    // conversations. v3 prints no tool lines or credits, so "auto" — Kiro's
+    // own default — stays on v2 to keep that activity visible.
+    if (model && model !== 'auto') {
+      args.push('--v3', '--model', model)
     }
 
     // Build the input: attachment references + user text

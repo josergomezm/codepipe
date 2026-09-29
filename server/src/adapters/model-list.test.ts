@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseKiroModelList, KiroAdapter } from './kiro.js'
+import { parseKiroModelList, curateKiroModels, KiroAdapter } from './kiro.js'
 import { parseAgyModelList } from './gemini.js'
 
 describe('parseKiroModelList', () => {
@@ -29,14 +29,43 @@ describe('parseKiroModelList', () => {
   })
 })
 
+describe('curateKiroModels', () => {
+  it('keeps picker models in order with friendly names and the credit rate', () => {
+    const live = [
+      { id: 'gpt-5.6-luna', name: 'gpt-5.6-luna (1.1x)' },
+      { id: 'deepseek-3.2', name: 'deepseek-3.2 (0.25x)' },
+      { id: 'auto', name: 'auto (1x) — default' },
+      { id: 'claude-opus-5.5', name: 'claude-opus-5.5 (2x)' },
+    ]
+    expect(curateKiroModels(live)).toEqual([
+      { id: 'auto', name: 'Auto (1x)' },
+      { id: 'claude-opus-5.5', name: 'Opus 5.5 (2x)' },
+      { id: 'gpt-5.6-luna', name: 'GPT 5.6 Luna (1.1x)' },
+    ])
+  })
+
+  it('falls back to the static list when the CLI returned nothing', () => {
+    const ids = curateKiroModels([]).map((m) => m.id)
+    expect(ids[0]).toBe('auto')
+    expect(ids).toContain('claude-opus-5.5')
+  })
+})
+
 describe('KiroAdapter.buildMessageCommand model flag', () => {
-  it('appends --model when a model is selected', () => {
+  it('appends --v3 --model when a model is selected', () => {
     const adapter = new KiroAdapter()
     const { args } = adapter.buildMessageCommand('hello', 'sess-1', undefined, 'claude-sonnet-5')
+    expect(args).toContain('--v3')
     expect(args).toContain('--model')
     expect(args[args.indexOf('--model') + 1]).toBe('claude-sonnet-5')
     // Input must remain the last argument
     expect(args[args.length - 1]).toBe('hello')
+  })
+
+  it('treats auto as the default: stays on v2 with no --model', () => {
+    const { args } = new KiroAdapter().buildMessageCommand('hello', null, undefined, 'auto')
+    expect(args).not.toContain('--model')
+    expect(args).not.toContain('--v3')
   })
 
   it('omits --model when no model is selected', () => {

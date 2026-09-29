@@ -1634,7 +1634,8 @@ export class SessionManager implements ISessionManager {
       const clean = stripAnsi(output)
 
       // Parse the first "Chat SessionId: <uuid>" from the output
-      const match = /Chat SessionId:\s*([a-f0-9-]+)/i.exec(clean)
+      // v2 ids are bare UUIDs; v3 ids are `sess_<uuid>`
+      const match = /Chat SessionId:\s*([\w-]+)/i.exec(clean)
       if (match) {
         const cliSessionId = match[1]
         log.info('session', `Detected CLI session ID for session ${sessionId}: ${cliSessionId}`)
