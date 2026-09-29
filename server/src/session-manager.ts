@@ -1242,13 +1242,6 @@ export class SessionManager implements ISessionManager {
           break
         }
 
-        case 'prompt_detected': {
-          this.finalizeCurrentMessage(sessionId)
-          ctx.currentMessage = null
-          this.broadcast(sessionId, { type: 'status', data: 'idle' })
-          break
-        }
-
         case 'tool_use': {
           if (ctx.currentMessage && ctx.currentMessage.status === 'streaming') {
             this.finalizeCurrentMessage(sessionId)
@@ -1268,26 +1261,6 @@ export class SessionManager implements ISessionManager {
             log.error('session', `Failed to persist tool message for session ${sessionId}`, err)
           })
           this.broadcast(sessionId, { type: 'message', data: toolMsg })
-          break
-        }
-
-        case 'interactive_prompt': {
-          this.finalizeCurrentMessage(sessionId)
-          ctx.currentMessage = null
-
-          const promptMsg: ChatMessage = {
-            id: randomUUID(),
-            role: 'system',
-            content: event.content + (event.options ? ` [${event.options.join('/')}]` : ''),
-            timestamp: Date.now(),
-            status: 'complete',
-          }
-          ctx.session.messages.push(promptMsg)
-          this.storage.appendMessage(sessionId, promptMsg).catch((err) => {
-            log.error('session', `Failed to persist interactive prompt for session ${sessionId}`, err)
-          })
-          this.broadcast(sessionId, { type: 'message', data: promptMsg })
-          this.broadcast(sessionId, { type: 'status', data: 'idle' })
           break
         }
 

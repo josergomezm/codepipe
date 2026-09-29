@@ -24,10 +24,6 @@ const MessageCompleteEventSchema = z.object({
   metadata: AdapterCreditsSchema.optional(),
 })
 
-const PromptDetectedEventSchema = z.object({
-  type: z.literal('prompt_detected'),
-})
-
 const ToolUseEventSchema = z.object({
   type: z.literal('tool_use'),
   tool: z.string().min(1),
@@ -37,12 +33,6 @@ const ToolUseEventSchema = z.object({
 const ThinkingEventSchema = z.object({
   type: z.literal('thinking'),
   content: z.string().min(1),
-})
-
-const InteractivePromptEventSchema = z.object({
-  type: z.literal('interactive_prompt'),
-  content: z.string().min(1),
-  options: z.array(z.string().min(1)).optional(),
 })
 
 const CliSessionEventSchema = z.object({
@@ -62,10 +52,8 @@ const ModelInfoEventSchema = z.object({
 export const AdapterEventSchema = z.discriminatedUnion('type', [
   ChunkEventSchema,
   MessageCompleteEventSchema,
-  PromptDetectedEventSchema,
   ToolUseEventSchema,
   ThinkingEventSchema,
-  InteractivePromptEventSchema,
   CliSessionEventSchema,
   ModelInfoEventSchema,
 ])

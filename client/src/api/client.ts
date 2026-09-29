@@ -14,6 +14,12 @@ export const PROVIDER_LABELS: Record<ProviderType, string> = {
   codex: 'Codex',
 }
 
+/**
+ * Providers that can be chosen for new chats and personas — those with a
+ * server adapter. Codex is planned; add it here once its adapter exists.
+ */
+export const SELECTABLE_PROVIDERS: ProviderType[] = ['kiro', 'gemini', 'claude']
+
 export function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider as ProviderType] ?? provider.charAt(0).toUpperCase() + provider.slice(1)
 }

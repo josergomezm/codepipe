@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { PROVIDER_LABELS, type ProviderType } from '@/api/client'
+import { PROVIDER_LABELS, SELECTABLE_PROVIDERS, type ProviderType } from '@/api/client'
 
 const model = defineModel<ProviderType>({ default: 'kiro' })
 
-const providers = (Object.keys(PROVIDER_LABELS) as ProviderType[]).map((value) => ({
+const providers = SELECTABLE_PROVIDERS.map((value) => ({
   value,
   label: PROVIDER_LABELS[value],
 }))

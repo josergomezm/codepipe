@@ -7,7 +7,7 @@ and how to add support for a new AI CLI.
 
 - Node.js 22+
 - One or more supported AI CLIs installed and authenticated (`kiro-cli`,
-  `claude`, and/or `gemini`) if you want to run end-to-end.
+  `claude`, and/or `agy`) if you want to run end-to-end.
 
 ## Local setup
 
@@ -61,8 +61,8 @@ into normalized `AdapterEvent`s (`chunk`, `tool_use`, `message_complete`,
 
 ### 1. The CLI speaks ACP (preferred)
 
-If the tool can run as an Agent Client Protocol agent (like `gemini --acp` or
-`kiro-cli acp`), you usually don't write a parser at all:
+If the tool can run as an Agent Client Protocol agent (like `kiro-cli acp`),
+you usually don't write a parser at all:
 
 1. Add an `AcpProfile` in `server/src/acp/profile.ts` describing its launch
    args, JSON-RPC method names, and any post-session setup (e.g. an
@@ -78,16 +78,18 @@ agent emits update shapes it doesn't yet cover.
 
 ### 2. The CLI has a structured/JSON output mode
 
-Like Claude Code's `--output-format stream-json`. Implement a pure translator
-(`line: string => AdapterEvent[]`) — see `adapters/claude-stream-json.ts` —
+Like Claude Code's or Antigravity's `--output-format stream-json`. Implement a
+pure translator (`line: string => AdapterEvent[]`) — see
+`adapters/claude-stream-json.ts`, or `adapters/gemini.ts` for Antigravity —
 and an adapter with `nonInteractive = true` whose `onData` calls it and whose
 `buildMessageCommand` builds the per-message invocation. Report the CLI's
 session ID inline via a `cli_session` event so multi-turn resume works without
 scraping.
 
-### 3. The CLI only has human/TUI output (last resort)
+### 3. The CLI only has human-readable output (last resort)
 
-Parse its text in `onData`. This is what `adapters/kiro.ts` +
+Run it once per message (`nonInteractive = true`, as in option 2) and parse its
+plain output in `onData`. This is what `adapters/kiro.ts` +
 `adapters/kiro-patterns.ts` do, and it's inherently fragile — prefer 1 or 2 if
 the tool supports them.
 

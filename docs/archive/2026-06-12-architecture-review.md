@@ -1,5 +1,10 @@
 # CodePipe — Architecture Review, Parsing Rewrite & Open-Source Readiness
 
+> **Archived.** A point-in-time review from 2026-06-12, kept for history. Its
+> main recommendation — replace regex parsing with structured protocols — has
+> since been carried out (Kiro over ACP; Claude Code and Antigravity over
+> stream-json). See the README and CONTRIBUTING for how things work today.
+
 _Review date: 2026-06-12. Scope: full repo (server + client + specs). Headline recommendation: replace the regex-based CLI output parser with a structured protocol client (ACP for Kiro), the same class of approach Claude Code exposes via `--output-format stream-json`._
 
 ---

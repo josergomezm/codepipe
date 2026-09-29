@@ -14,10 +14,9 @@ describe('AdapterEventSchema', () => {
       { type: 'chunk', content: 'Hello', role: 'assistant' },
       { type: 'message_complete', role: 'assistant' },
       { type: 'message_complete', role: 'assistant', metadata: { credits: '0.05', time: '3s' } },
-      { type: 'prompt_detected' },
       { type: 'tool_use', tool: 'read', content: 'Reading file' },
       { type: 'thinking', content: 'Thinking...' },
-      { type: 'interactive_prompt', content: 'Allow?', options: ['y', 'n'] },
+      { type: 'cli_session', sessionId: 'sess_1' },
     ]
     for (const event of cases) {
       expect(AdapterEventSchema.safeParse(event).success, `Failed: ${JSON.stringify(event)}`).toBe(true)
@@ -31,7 +30,7 @@ describe('AdapterEventSchema', () => {
       { type: 'tool_use', tool: '', content: 'something' },
       { type: 'tool_use', tool: 'read', content: '' },
       { type: 'thinking', content: '' },
-      { type: 'interactive_prompt', content: '' },
+      { type: 'cli_session', sessionId: '' },
       { type: 'message_complete', role: 'assistant', metadata: { credits: '', time: '3s' } },
     ]
     for (const event of cases) {
@@ -41,6 +40,8 @@ describe('AdapterEventSchema', () => {
 
   it('rejects unknown event types', () => {
     expect(AdapterEventSchema.safeParse({ type: 'unknown' }).success).toBe(false)
+    // Retired PTY-era events are no longer part of the contract
+    expect(AdapterEventSchema.safeParse({ type: 'prompt_detected' }).success).toBe(false)
   })
 })
 
@@ -49,7 +50,7 @@ describe('validateAdapterEvents', () => {
     const events = [
       { type: 'chunk', content: 'Hello', role: 'assistant' },
       { type: 'chunk', content: '', role: 'assistant' },  // invalid
-      { type: 'prompt_detected' },
+      { type: 'cli_session', sessionId: 'sess_1' },
       { garbage: true },                                    // invalid
       null,                                                 // invalid
     ]

@@ -26,14 +26,15 @@ Open http://127.0.0.1:5552, pick a project directory and a provider, and start c
 
 The backend runs the real CLI tool for each conversation and normalizes its output into chat messages, which it streams to a Vue frontend over a WebSocket. Each conversation is tied to a specific project directory and AI provider.
 
-CodePipe supports two ways of talking to a CLI, chosen per adapter:
+CodePipe supports three ways of talking to a CLI, chosen per adapter:
 
-- **Structured (ACP)** — for tools that speak the [Agent Client Protocol](https://agentclientprotocol.com), CodePipe drives a persistent process over JSON-RPC and reads typed events (message chunks, tool calls, turn boundaries). This is robust and is the recommended path. Kiro CLI supports it via `kiro-cli acp`.
-- **Text parsing** — for tools without a structured mode, CodePipe spawns the process (PTY or one-shot) and parses its terminal output with a per-provider adapter. This is inherently more fragile and exists as a fallback.
+- **ACP** — for tools that speak the [Agent Client Protocol](https://agentclientprotocol.com), CodePipe drives a persistent process over JSON-RPC and reads typed events (message chunks, tool calls, turn boundaries). Kiro CLI supports it via `kiro-cli acp`.
+- **stream-json** — for tools with a structured output mode, CodePipe runs one process per message and reads newline-delimited JSON events, resuming the conversation by ID. Claude Code and Antigravity CLI work this way.
+- **Text parsing** — for tools with neither, CodePipe runs one process per message and parses its plain output with a per-provider adapter. This is inherently more fragile and exists as a fallback (Kiro's default transport).
 
 ## Tech Stack
 
-**Backend** — Node.js, TypeScript, Express, `ws` (WebSocket), `web-push` (notifications). Structured CLIs are driven over JSON-RPC (ACP) or newline-delimited JSON (`stream-json`); `node-pty` is available for the legacy terminal-parsing fallback.
+**Backend** — Node.js, TypeScript, Express, `ws` (WebSocket), `web-push` (notifications). CLIs are driven over JSON-RPC (ACP) or newline-delimited JSON (`stream-json`); `node-pty` powers the project Terminal tab.
 
 **Frontend** — Vue 3, Tailwind CSS, Vite, Pinia, plus a service worker + Web App Manifest for PWA install and push notifications.
 
@@ -77,7 +78,7 @@ The server reads these environment variables:
 - Multiple providers — Kiro CLI, Claude Code, and Antigravity CLI — behind one interface
 - **AI team with daily standups** — configurable personas review your per-project ideas list on a schedule and message you with proposals and questions, each with their own name and avatar (see [Your AI team](#your-ai-team-personas--standups))
 - **Headless runs** — `POST /api/sessions/:id/run` sends a message and returns the turn's final response, no WebSocket needed (the orchestration primitive behind standups)
-- Structured output parsing (ACP / stream-json) for reliable messages, tool calls, and turn boundaries, with a terminal-parsing fallback
+- Structured output parsing (ACP / stream-json) for reliable messages, tool calls, and turn boundaries, with a text-parsing fallback
 - Multiple concurrent sessions, each scoped to a project directory
 - **Changes tab** — every uncommitted file in the chat's project (staged, unstaged, untracked) with +/- counts and an inline diff; refreshes when the agent finishes a turn
 - **Terminal tab** — a real shell (PowerShell on Windows, `$SHELL` elsewhere; override with `CODEPIPE_SHELL`) in the project folder. It keeps running across tabs, reloads and devices, and replays its scrollback when you reconnect; a key bar adds Tab/Esc/Ctrl+C/arrows on phones
