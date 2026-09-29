@@ -310,14 +310,6 @@ export async function deleteProject(id: string): Promise<void> {
   await request<unknown>(`/api/projects/${id}`, { method: 'DELETE' })
 }
 
-export function reorderProjects(ids: string[]): Promise<{ ids: string[] }> {
-  return request<{ ids: string[] }>('/api/projects/order', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids }),
-  })
-}
-
 export function updateProject(id: string, data: { name?: string; devServer?: ProjectDevServer | null; standup?: ProjectStandupConfig | null }): Promise<Project> {
   return request<Project>(`/api/projects/${id}`, {
     method: 'PATCH',

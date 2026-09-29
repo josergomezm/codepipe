@@ -3,6 +3,11 @@ import { ref } from 'vue'
 import * as api from '../api/client'
 import type { Project, ProjectDevServer, DevServerInfo, ServiceWithState, ServiceConfig, ServiceState, PortRegistry } from '../api/client'
 
+/** Projects are always listed alphabetically by name ("App 2" before "App 10"). */
+function byName(a: Project, b: Project): number {
+  return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+}
+
 // Per-project service state (runtime, not persisted in project object)
 const serviceStateMap = ref<Map<string, ServiceWithState[]>>(new Map())
 
@@ -15,7 +20,7 @@ export const useProjectsStore = defineStore('projects', () => {
   async function fetchProjects() {
     try {
       const response = await api.fetchProjects()
-      projects.value = response.projects
+      projects.value = [...response.projects].sort(byName)
       tailscaleHostname.value = response.tailscaleHostname
       if (response.portRegistry) {
         portRegistry.value = response.portRegistry
@@ -29,7 +34,7 @@ export const useProjectsStore = defineStore('projects', () => {
   async function addProject(name: string, path: string): Promise<Project> {
     try {
       const project = await api.createProject(name, path)
-      projects.value.push(project)
+      projects.value = [...projects.value, project].sort(byName)
       error.value = null
       return project
     } catch (e) {
@@ -45,29 +50,6 @@ export const useProjectsStore = defineStore('projects', () => {
       error.value = null
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to remove project'
-    }
-  }
-
-  /** Move a project up (-1) or down (+1) one slot and persist the new order. */
-  async function moveProject(id: string, delta: number) {
-    const from = projects.value.findIndex((p) => p.id === id)
-    const to = from + delta
-    if (from === -1 || to < 0 || to >= projects.value.length) return
-    await setProjectOrder(projects.value.map((p) => p.id).map((pid, i, ids) =>
-      i === from ? ids[to] : i === to ? ids[from] : pid,
-    ))
-  }
-
-  /** Apply an order optimistically, then persist it; refetch on failure. */
-  async function setProjectOrder(ids: string[]) {
-    const byId = new Map(projects.value.map((p) => [p.id, p]))
-    projects.value = ids.map((id) => byId.get(id)).filter((p): p is Project => !!p)
-    try {
-      await api.reorderProjects(ids)
-      error.value = null
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to reorder projects'
-      await fetchProjects()
     }
   }
 
@@ -236,8 +218,6 @@ export const useProjectsStore = defineStore('projects', () => {
     fetchProjects,
     addProject,
     removeProject,
-    moveProject,
-    setProjectOrder,
     updateProjectDevServer,
     updateProjectStandup,
     startDevServer,
