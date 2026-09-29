@@ -15,7 +15,7 @@
 
 import { existsSync } from 'fs'
 import { homedir, platform } from 'os'
-import { join } from 'path'
+import { dirname, join } from 'path'
 
 import type { ProviderType } from '../schemas.js'
 import type { ICLIAdapter, AdapterEvent } from './types.js'
@@ -64,6 +64,7 @@ export class ClaudeAdapter implements ICLIAdapter {
     { id: 'default', name: 'Default (account setting)' },
     { id: 'sonnet', name: 'Sonnet (latest)' },
     { id: 'opus', name: 'Opus (latest)' },
+    { id: 'claude-opus-5-5', name: 'Opus 5.5' },
     { id: 'haiku', name: 'Haiku (latest)' },
     { id: 'fable', name: 'Fable (latest)' },
   ]
@@ -89,9 +90,15 @@ export class ClaudeAdapter implements ICLIAdapter {
       args.push('--resume', cliSessionId)
     }
 
-    // Inline attachment file references into the prompt text.
+    // Inline attachment file references into the prompt text. Print mode
+    // doesn't expand `@path`, so Claude opens the file with its Read tool —
+    // and uploads live outside the project dir, where Read is denied with no
+    // way to prompt. Granting the attachment folders up front lets it read them.
     let input = text
     if (attachments?.length) {
+      for (const dir of new Set(attachments.map((a) => dirname(a.path)))) {
+        args.push('--add-dir', dir)
+      }
       const refs = attachments.map((a) => this.formatAttachment(a.path, a.mimeType))
       input = refs.join(' ') + ' ' + text
     }

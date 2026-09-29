@@ -230,7 +230,8 @@ discovered depends on the provider — nothing is hardcoded:
   best-effort and worth confirming against your installed CLIs.)
 - **Claude Code**: the CLI has no command to enumerate models, so the picker
   offers Claude Code's documented aliases — `sonnet`, `opus`, `haiku`, `fable`
-  (each always maps to the current version) — plus a **Custom…** option to pin
+  (each always maps to the current version), a pinned **Opus 5.5**
+  (`claude-opus-5-5`) — plus a **Custom…** option to pin
   a full model id (e.g. `claude-sonnet-4-6`). The choice is passed via `--model`
   on the next message. These aliases live in the Claude adapter, so updating
   them is a one-line change rather than a UI edit.

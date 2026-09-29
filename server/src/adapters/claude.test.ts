@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { translateStreamJsonLine } from './claude-stream-json.js'
+import { join } from 'path'
 import { ClaudeAdapter, resolveClaudeBinary } from './claude.js'
 
 describe('translateStreamJsonLine', () => {
@@ -131,6 +132,17 @@ describe('ClaudeAdapter', () => {
   it('adds --model when a model is selected', () => {
     const { args } = new ClaudeAdapter().buildMessageCommand('hi', null, undefined, 'opus')
     expect(args[args.indexOf('--model') + 1]).toBe('opus')
+  })
+
+  it('grants each attachment folder once via --add-dir, before the prompt', () => {
+    const { args } = new ClaudeAdapter().buildMessageCommand('look', null, [
+      { path: join('/data', 'uploads', 'a.png'), mimeType: 'image/png' },
+      { path: join('/data', 'uploads', 'b.jpg'), mimeType: 'image/jpeg' },
+    ])
+    expect(args.filter((a) => a === '--add-dir')).toHaveLength(1)
+    expect(args[args.indexOf('--add-dir') + 1]).toBe(join('/data', 'uploads'))
+    expect(args.indexOf('--add-dir')).toBeLessThan(args.indexOf('-p'))
+    expect(args[args.length - 1]).toContain(`@${join('/data', 'uploads', 'a.png')}`)
   })
 
   it('omits --model when no model is selected', () => {
