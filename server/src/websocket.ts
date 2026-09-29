@@ -179,7 +179,7 @@ function handleConnection(
     return
   }
 
-  // Not live — check in-memory (pty exited but still in map) then storage
+  // Not live — check in-memory (archived but still in map) then storage
   const inMemoryArchived = liveSession && liveSession.status !== 'live' ? liveSession : null
   const archivePromise = inMemoryArchived
     ? Promise.resolve(inMemoryArchived)
@@ -205,7 +205,7 @@ function handleConnection(
 
           const msg = parsed.data
           if (msg.type === 'input') {
-            // Try to revive the session by creating a new pty with the same config
+            // Try to revive the session with the same config
             reviveSession(ws, sessionId, archivedSession, archivedHandler, msg.data, msg.attachments, sessionManager)
           }
         } catch (err) {
@@ -227,9 +227,9 @@ function handleConnection(
 }
 
 /**
- * Revive an archived session by spawning a new pty process and
- * re-attaching the WebSocket client. The session keeps its original ID
- * and message history — it just gets a fresh CLI process.
+ * Revive an archived session and re-attach the WebSocket client. The session
+ * keeps its original ID and message history — ACP adapters get a fresh agent
+ * process; one-shot adapters just resume on the next message.
  */
 async function reviveSession(
   ws: WebSocket,
@@ -243,7 +243,7 @@ async function reviveSession(
   try {
     log.info('ws', `Reviving archived session ${sessionId} (provider: ${archivedSession.provider})`)
 
-    // Revive the session — this spawns a new pty and re-registers it in the SessionManager
+    // Revive the session — re-registers it in the SessionManager (and starts an ACP agent if needed)
     await sessionManager.reviveSession(sessionId, archivedSession)
 
     // Remove only the archived-session handler, then attach the live-session ones
@@ -258,11 +258,8 @@ async function reviveSession(
     // Set up the standard live-session handlers
     attachLiveHandlers(ws, sessionId, sessionManager)
 
-    // Send the user's original input that triggered the revival.
-    // Non-interactive adapters can handle input immediately.
-    // Interactive (PTY) adapters need time for the CLI to initialize.
-    // TODO: When interactive adapters are added, detect adapter type and
-    // use SYSTEM_PROMPT_DELAY_MS + 500 for PTY-based sessions.
+    // Send the user's original input that triggered the revival. Every
+    // transport (ACP or one-shot) can take it immediately.
     try {
       sessionManager.handleInput(sessionId, inputText, attachments)
     } catch (err) {

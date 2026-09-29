@@ -96,29 +96,16 @@ export interface ICLIAdapter {
   readonly provider: ProviderType
   readonly command: string
   readonly args: string[]
-  readonly systemPrompt?: string
-
-  /**
-   * Whether this adapter uses non-interactive mode (spawn a short-lived
-   * process per message) rather than a persistent PTY process.
-   *
-   * When true, the SessionManager uses child_process.spawn per message
-   * instead of maintaining a long-lived PTY. The adapter's onData receives
-   * clean stdout lines instead of raw terminal output.
-   */
-  readonly nonInteractive?: boolean
 
   /**
    * Transport the SessionManager should use to drive this adapter:
-   *   - `'pty'` (default when unset and nonInteractive is false): persistent
-   *     pseudo-terminal, output parsed via `onData`.
-   *   - `'oneshot'` (implied by `nonInteractive: true`): spawn a short-lived
-   *     process per message, stdout parsed via `onData`.
+   *   - `'oneshot'`: spawn a short-lived process per message (built by
+   *     `buildMessageCommand`); each stdout line is parsed via `onData`.
    *   - `'acp'`: persistent process speaking the Agent Client Protocol
    *     (JSON-RPC). Output is structured, so `onData` is unused — the
    *     SessionManager runs an AcpSessionDriver instead.
    */
-  readonly transport?: 'pty' | 'oneshot' | 'acp'
+  readonly transport: 'oneshot' | 'acp'
 
   /**
    * ACP dialect for this adapter (only meaningful when transport === 'acp').
@@ -143,13 +130,6 @@ export interface ICLIAdapter {
   listModels?(): Promise<{ id: string; name?: string }[]>
 
   /**
-   * CLI flag that selects the model at process spawn (PTY adapters, e.g.
-   * `--model`). When set, the SessionManager appends `<flag> <model>` to the
-   * spawn args whenever the session has a persisted model selection.
-   */
-  readonly modelSpawnFlag?: string
-
-  /**
    * When true, the SessionManager detects the CLI's session ID by running the
    * adapter's session-list command after the first message (legacy Kiro
    * non-interactive behavior). Adapters that report their session ID inline
@@ -159,36 +139,15 @@ export interface ICLIAdapter {
 
   onData(cleanText: string): AdapterEvent[]
   onStderr?(text: string): AdapterEvent[]
-  notifyUserInput(text: string): void
-  notifySystemInput(text: string): void
-  reset(): void
 
   /**
-   * Format a file attachment as a string to inject into the CLI prompt.
-   * Each provider has its own syntax for referencing files.
-   * Returns the string to prepend/append to the user's message text.
-   */
-  formatAttachment(filePath: string, mimeType: string): string
-
-  /**
-   * Return the command + args needed to resume/continue a previous session.
-   * Each CLI tool has its own mechanism (e.g., `--continue`, `--resume <id>`).
-   *
-   * @param cliSessionId — the CLI tool's own session ID (captured during the
-   *   original session). If null, the adapter should fall back to a best-effort
-   *   resume (e.g., "resume most recent in this directory").
-   *
-   * If the CLI doesn't support session resumption at all, return `null`.
-   */
-  getResumeCommand(cliSessionId: string | null): { command: string; args: string[] } | null
-
-  /**
-   * Build the command + args for a single non-interactive message invocation.
-   * Only used when `nonInteractive` is true.
+   * Build the command + args for a single message invocation. Required for
+   * `transport === 'oneshot'`.
    *
    * @param text — the user's message text
    * @param cliSessionId — the CLI's session ID for multi-turn (null for first message)
    * @param attachments — optional file attachments
+   * @param model — the session's selected model, if any
    */
   buildMessageCommand?(
     text: string,
@@ -196,13 +155,6 @@ export interface ICLIAdapter {
     attachments?: { path: string; mimeType: string }[],
     model?: string | null,
   ): { command: string; args: string[] }
-
-  /**
-   * Directory where the CLI tool stores its own session files.
-   * Used to detect the CLI's session ID after spawning a new process.
-   * Return `null` if the CLI doesn't have a known session storage location.
-   */
-  readonly cliSessionDir: string | null
 }
 
 export type AdapterFactory = () => ICLIAdapter

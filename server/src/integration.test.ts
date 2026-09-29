@@ -55,50 +55,6 @@ vi.mock('child_process', async (importOriginal) => {
   }
 })
 
-// ---------------------------------------------------------------------------
-// Mock node-pty (still needed for the module import, even if Kiro doesn't use it)
-// ---------------------------------------------------------------------------
-
-let mockPtyOnDataCb: ((data: string) => void) | null = null
-let mockPtyOnExitCb: ((e: { exitCode: number; signal?: number }) => void) | null = null
-let mockPtyWritten: string[] = []
-let mockPtyKilled = false
-
-vi.mock('node-pty', () => ({
-  spawn: vi.fn(() => {
-    mockPtyOnDataCb = null
-    mockPtyOnExitCb = null
-    mockPtyWritten = []
-    mockPtyKilled = false
-
-    return {
-      onData(cb: (data: string) => void) {
-        mockPtyOnDataCb = cb
-        return { dispose: vi.fn() }
-      },
-      onExit(cb: (e: { exitCode: number; signal?: number }) => void) {
-        mockPtyOnExitCb = cb
-        return { dispose: vi.fn() }
-      },
-      write(data: string) {
-        mockPtyWritten.push(data)
-      },
-      kill() {
-        mockPtyKilled = true
-      },
-      pid: 12345,
-      cols: 120,
-      rows: 40,
-      process: 'mock-pty',
-      handleFlowControl: false,
-      resize: vi.fn(),
-      pause: vi.fn(),
-      resume: vi.fn(),
-      clear: vi.fn(),
-    }
-  }),
-}))
-
 // Import AFTER mock is set up
 import { StorageLayer } from './storage.js'
 import { SessionManager } from './session-manager.js'

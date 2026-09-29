@@ -105,10 +105,7 @@ export class GeminiAdapter implements ICLIAdapter {
   readonly provider: ProviderType = 'gemini'
   readonly command = resolveAgyBinary()
   readonly args: string[] = ['--output-format', 'stream-json', '--dangerously-skip-permissions']
-  readonly systemPrompt: string | undefined = undefined
-  /** Conversation ID is captured inline (cli_session event), not from disk. */
-  readonly cliSessionDir: string | null = null
-  readonly nonInteractive = true
+  /** Conversation ID is captured inline (cli_session event) and resumed via --conversation. */
   readonly transport = 'oneshot' as const
 
   /**
@@ -243,25 +240,13 @@ export class GeminiAdapter implements ICLIAdapter {
     return { command: this.command, args }
   }
 
-  notifyUserInput(_text: string): void {
-    /* no-op — state is per-process / resumed via --conversation */
-  }
-
-  notifySystemInput(_text: string): void {
-    /* no-op */
-  }
-
-  reset(): void {
+  /** Forget per-turn parse state; called when a turn's result arrives. */
+  private reset(): void {
     this.textSteps.clear()
     this.announcedTools.clear()
   }
 
   formatAttachment(filePath: string, _mimeType: string): string {
     return `@${filePath}`
-  }
-
-  getResumeCommand(): { command: string; args: string[] } | null {
-    // Resume is handled per-message via --conversation in buildMessageCommand.
-    return null
   }
 }

@@ -50,12 +50,8 @@ describe('KiroAdapter — properties', () => {
     expect(adapter.args).toContain('--wrap')
   })
 
-  it('is non-interactive', () => {
-    expect(new KiroAdapter().nonInteractive).toBe(true)
-  })
-
-  it('has no system prompt', () => {
-    expect(new KiroAdapter().systemPrompt).toBeUndefined()
+  it('runs one process per message', () => {
+    expect(new KiroAdapter().transport).toBe('oneshot')
   })
 })
 
@@ -243,25 +239,6 @@ describe('KiroAdapter — formatAttachment', () => {
 
   it('returns @path for text files', () => {
     expect(adapter.formatAttachment('/tmp/code.ts', 'text/typescript')).toBe('@/tmp/code.ts')
-  })
-})
-
-// ---------------------------------------------------------------------------
-// KiroAdapter — getResumeCommand
-// ---------------------------------------------------------------------------
-
-describe('KiroAdapter — getResumeCommand', () => {
-  const adapter = new KiroAdapter()
-
-  it('returns command with --resume-id when session ID provided', () => {
-    const result = adapter.getResumeCommand('abc-123')
-    expect(result).not.toBeNull()
-    expect(result!.args).toContain('--resume-id')
-    expect(result!.args).toContain('abc-123')
-  })
-
-  it('returns null when no session ID', () => {
-    expect(adapter.getResumeCommand(null)).toBeNull()
   })
 })
 

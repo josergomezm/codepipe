@@ -38,8 +38,6 @@ vi.mock('child_process', async (importOriginal) => {
   }
 })
 
-vi.mock('node-pty', () => ({ spawn: vi.fn() }))
-
 // Import AFTER mocks are set up
 import { StorageLayer } from './storage.js'
 import { SessionManager } from './session-manager.js'
@@ -58,17 +56,10 @@ const fakeAdapter: ICLIAdapter = {
   provider: 'kiro',
   command: 'fake-cli',
   args: [],
-  nonInteractive: true,
   transport: 'oneshot',
   onData: (line) =>
     line.length > 0 ? [{ type: 'chunk', role: 'assistant', content: line }] : [],
-  notifyUserInput: () => {},
-  notifySystemInput: () => {},
-  reset: () => {},
-  formatAttachment: () => '',
-  getResumeCommand: () => null,
   buildMessageCommand: (text) => ({ command: 'fake-cli', args: [text] }),
-  cliSessionDir: null,
 }
 
 function makeTodo(overrides: Partial<Todo> = {}): Todo {

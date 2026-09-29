@@ -48,10 +48,7 @@ export class ClaudeAdapter implements ICLIAdapter {
   readonly provider: ProviderType = 'claude'
   readonly command = resolveClaudeBinary()
   readonly args: string[] = ['--output-format', 'stream-json', '--verbose']
-  readonly systemPrompt: string | undefined = undefined
-  /** Session ID is captured inline (cli_session event), not from disk. */
-  readonly cliSessionDir: string | null = null
-  readonly nonInteractive = true
+  /** Session ID is captured inline (cli_session event) and resumed via --resume. */
   readonly transport = 'oneshot' as const
 
   /**
@@ -109,25 +106,8 @@ export class ClaudeAdapter implements ICLIAdapter {
     return { command: this.command, args }
   }
 
-  notifyUserInput(_text: string): void {
-    /* no-op — state is per-process / resumed via --resume */
-  }
-
-  notifySystemInput(_text: string): void {
-    /* no-op */
-  }
-
-  reset(): void {
-    /* no-op */
-  }
-
   formatAttachment(filePath: string, _mimeType: string): string {
     // Claude Code reads file references prefixed with @.
     return `@${filePath}`
-  }
-
-  getResumeCommand(): { command: string; args: string[] } | null {
-    // Resume is handled per-message via --resume in buildMessageCommand.
-    return null
   }
 }

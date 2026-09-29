@@ -12,8 +12,7 @@
  * Tool use is auto-approved with `--trust-all-tools`.
  */
 
-import path from 'path'
-import { homedir, platform } from 'os'
+import { platform } from 'os'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 
@@ -144,14 +143,8 @@ export class KiroAdapter implements ICLIAdapter {
   readonly provider: ProviderType = 'kiro'
   readonly command = resolveKiroBinary()
   readonly args: string[] = ['chat', '--no-interactive', '--trust-all-tools', '--wrap', 'never']
-  readonly systemPrompt: string | undefined = undefined
-  readonly cliSessionDir: string = path.join(homedir(), '.kiro', 'sessions', 'cli')
-
-  /**
-   * Whether this adapter uses non-interactive mode (spawn per message)
-   * rather than a persistent PTY process.
-   */
-  readonly nonInteractive = true
+  /** One `kiro-cli chat --no-interactive` process per message. */
+  readonly transport = 'oneshot' as const
 
   /** Kiro non-interactive reports its session ID only via `--list-sessions`. */
   readonly usesSessionListDetection = true
@@ -288,36 +281,10 @@ export class KiroAdapter implements ICLIAdapter {
     return { command: this.command, args }
   }
 
-  // ── Interface methods (simplified for non-interactive mode) ──────────
-
-  notifyUserInput(_text: string): void {
-    // No-op in non-interactive mode — state is managed per-process
-  }
-
-  notifySystemInput(_text: string): void {
-    // No-op in non-interactive mode — no persistent process to send to
-  }
-
-  reset(): void {
-    this.lastToolName = 'tool'
-  }
-
   formatAttachment(filePath: string, mimeType: string): string {
     if (mimeType.startsWith('image/')) {
       return filePath
     }
     return `@${filePath}`
-  }
-
-  getResumeCommand(cliSessionId: string | null): { command: string; args: string[] } | null {
-    // Not used in non-interactive mode — resume is handled per-message
-    // via buildMessageCommand. Keep for interface compatibility.
-    if (cliSessionId) {
-      return {
-        command: this.command,
-        args: ['chat', '--no-interactive', '--trust-all-tools', '--wrap', 'never', '--resume-id', cliSessionId],
-      }
-    }
-    return null
   }
 }

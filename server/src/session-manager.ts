@@ -1,9 +1,5 @@
 import { randomUUID } from 'crypto'
-import { readdir, readFile } from 'fs/promises'
-import { existsSync } from 'fs'
 import { spawn, type ChildProcess } from 'child_process'
-import path from 'path'
-import * as pty from 'node-pty'
 import type { WebSocket } from 'ws'
 
 import type {
@@ -34,9 +30,7 @@ import { log } from './logger.js'
  */
 export interface SessionContext {
   session: Session
-  /** PTY process — only used for interactive (legacy) adapters. */
-  pty: pty.IPty | null
-  /** Child process — only used for non-interactive adapters (current message). */
+  /** Child process — only used for one-shot adapters (current message). */
   childProcess: ChildProcess | null
   /** ACP driver — only used for adapters with transport === 'acp'. */
   acpDriver: AcpSessionDriver | null
@@ -138,9 +132,6 @@ export interface ISessionManager {
 /** Storage write debounce interval in milliseconds. */
 const STORAGE_DEBOUNCE_MS = 500
 
-/** Delay before sending the system prompt to let the CLI initialize. */
-export const SYSTEM_PROMPT_DELAY_MS = 3000
-
 export class SessionManager implements ISessionManager {
   private readonly sessions = new Map<string, SessionContext>()
   private readonly storage: IStorageLayer
@@ -199,7 +190,6 @@ export class SessionManager implements ISessionManager {
       // an ACP session. Output is structured JSON-RPC, parsed by the driver.
       const ctx: SessionContext = {
         session,
-        pty: null,
         childProcess: null,
         acpDriver: null,
         adapter,
@@ -217,47 +207,10 @@ export class SessionManager implements ISessionManager {
       return session
     }
 
-    if (adapter.nonInteractive) {
-      // Non-interactive mode: no process spawned at creation time.
-      // Each message will spawn its own short-lived process.
-      const ctx: SessionContext = {
-        session,
-        pty: null,
-        childProcess: null,
-        acpDriver: null,
-        adapter,
-        clients: new Set(),
-        currentMessage: null,
-        storageDebounceTimer: null,
-        pendingMessage: null,
-        projectPath: project.path,
-      }
-
-      this.sessions.set(session.id, ctx)
-      await this.storage.saveSession(session)
-
-      return session
-    }
-
-    // --- Interactive (PTY) mode — legacy path for future providers ---
-
-    // Snapshot CLI session directory before spawning
-    const preSpawnSessionFiles = await this.snapshotCliSessionDir(adapter)
-
-    const shell = adapter.command
-    const args = this.withModelFlag([...adapter.args], adapter, session.model ?? null)
-    log.info('session', `Spawning: ${shell} ${args.join(' ')} in ${project.path}`)
-    const ptyProcess = pty.spawn(shell, args, {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 40,
-      cwd: project.path,
-      env: { ...process.env } as Record<string, string>,
-    })
-
+    // One-shot mode: no process spawned at creation time.
+    // Each message will spawn its own short-lived process.
     const ctx: SessionContext = {
       session,
-      pty: ptyProcess,
       childProcess: null,
       acpDriver: null,
       adapter,
@@ -270,10 +223,6 @@ export class SessionManager implements ISessionManager {
 
     this.sessions.set(session.id, ctx)
     await this.storage.saveSession(session)
-
-    this.wirePtyToSession(session.id, ctx)
-    this.scheduleSystemPrompt(session.id, adapter)
-    this.detectAndStoreCliSessionId(session.id, adapter, preSpawnSessionFiles, project.path)
 
     return session
   }
@@ -319,7 +268,6 @@ export class SessionManager implements ISessionManager {
       // ACP revive: spawn a fresh agent and load the existing CLI session.
       const ctx: SessionContext = {
         session,
-        pty: null,
         childProcess: null,
         acpDriver: null,
         adapter,
@@ -337,43 +285,9 @@ export class SessionManager implements ISessionManager {
       return session
     }
 
-    if (adapter.nonInteractive) {
-      // Non-interactive: just re-register the session, no process needed
-      const ctx: SessionContext = {
-        session,
-        pty: null,
-        childProcess: null,
-        acpDriver: null,
-        adapter,
-        clients: new Set(),
-        currentMessage: null,
-        storageDebounceTimer: null,
-        pendingMessage: null,
-        projectPath: project.path,
-      }
-
-      this.sessions.set(sessionId, ctx)
-      await this.storage.updateSessionStatus(sessionId, 'live')
-
-      return session
-    }
-
-    // --- Interactive (PTY) mode ---
-    const resumeCmd = adapter.getResumeCommand(archivedSession.cliSessionId ?? null)
-    const shell = resumeCmd ? resumeCmd.command : adapter.command
-    const args = this.withModelFlag([...(resumeCmd ? resumeCmd.args : adapter.args)], adapter, session.model ?? null)
-    log.info('session', `Reviving session ${sessionId}: ${shell} ${args.join(' ')} in ${project.path}`)
-    const ptyProcess = pty.spawn(shell, args, {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 40,
-      cwd: project.path,
-      env: { ...process.env } as Record<string, string>,
-    })
-
+    // One-shot: just re-register the session, no process needed
     const ctx: SessionContext = {
       session,
-      pty: ptyProcess,
       childProcess: null,
       acpDriver: null,
       adapter,
@@ -386,11 +300,6 @@ export class SessionManager implements ISessionManager {
 
     this.sessions.set(sessionId, ctx)
     await this.storage.updateSessionStatus(sessionId, 'live')
-
-    this.wirePtyToSession(sessionId, ctx)
-    if (!resumeCmd) {
-      this.scheduleSystemPrompt(sessionId, adapter)
-    }
 
     return session
   }
@@ -419,15 +328,6 @@ export class SessionManager implements ISessionManager {
     }
 
     this.recordUserMessage(ctx, sessionId, text, attachments)
-
-    // Legacy interactive PTY path has no per-turn completion signal wired to
-    // the queue, so dispatch it directly (preserves prior behavior).
-    const queueable = ctx.adapter.transport === 'acp' || ctx.adapter.nonInteractive
-    if (!queueable) {
-      this.finalizeCurrentMessage(sessionId)
-      this.handleInteractiveInput(sessionId, ctx, text, attachments)
-      return
-    }
 
     // Queue the input; the pump dispatches one turn at a time so a message
     // sent while the CLI is busy waits instead of killing the in-flight turn.
@@ -482,12 +382,6 @@ export class SessionManager implements ISessionManager {
     const ctx = this.sessions.get(sessionId)
     if (!ctx) throw new Error(`Session ${sessionId} not found`)
 
-    const queueable = ctx.adapter.transport === 'acp' || ctx.adapter.nonInteractive
-    if (!queueable) {
-      throw new Error(
-        `runTurn is not supported for the ${ctx.adapter.provider} interactive transport (no turn-completion signal)`,
-      )
-    }
     if (ctx.session.status !== 'live') {
       throw new Error(`Session ${sessionId} is not live`)
     }
@@ -713,9 +607,6 @@ export class SessionManager implements ISessionManager {
     } else if (ctx.childProcess) {
       try { ctx.childProcess.kill() } catch { /* already dead */ }
       ctx.childProcess = null
-    } else if (ctx.pty) {
-      try { ctx.pty.kill() } catch { /* already dead */ }
-      ctx.pty = null
     }
 
     // Finalize any streaming message
@@ -725,29 +616,9 @@ export class SessionManager implements ISessionManager {
     // 3. Emit a system message so the user knows what happened
     this.emitSystemMessage(sessionId, ctx, 'CLI restarted.')
 
-    // 4. Respawn
+    // 4. Respawn (one-shot adapters spawn per message — nothing to do)
     if (ctx.adapter.transport === 'acp') {
       await this.startAcpDriver(sessionId, ctx, ctx.session.cliSessionId ?? null)
-    } else if (ctx.adapter.nonInteractive) {
-      // Nothing to spawn — non-interactive adapters spawn per-message
-    } else {
-      // Interactive (PTY) mode
-      const resumeCmd = ctx.adapter.getResumeCommand(ctx.session.cliSessionId ?? null)
-      const shell = resumeCmd ? resumeCmd.command : ctx.adapter.command
-      const args = this.withModelFlag([...(resumeCmd ? resumeCmd.args : ctx.adapter.args)], ctx.adapter, ctx.session.model ?? null)
-      log.info('session', `Respawning PTY: ${shell} ${args.join(' ')} in ${ctx.projectPath}`)
-      const ptyProcess = pty.spawn(shell, args, {
-        name: 'xterm-256color',
-        cols: 120,
-        rows: 40,
-        cwd: ctx.projectPath,
-        env: { ...process.env } as Record<string, string>,
-      })
-      ctx.pty = ptyProcess
-      this.wirePtyToSession(sessionId, ctx)
-      if (!resumeCmd) {
-        this.scheduleSystemPrompt(sessionId, ctx.adapter)
-      }
     }
 
     // 5. Tell clients we're idle and ready
@@ -792,9 +663,6 @@ export class SessionManager implements ISessionManager {
         log.warn('session', `setModel failed for session ${sessionId}: ${message}`)
         this.emitSystemMessage(sessionId, ctx, `Couldn't switch model: ${message}`)
       })
-    } else if (ctx.adapter.transport === 'pty' && ctx.adapter.modelSpawnFlag) {
-      // PTY CLIs take the model at spawn — it applies on the next restart
-      this.emitSystemMessage(sessionId, ctx, `Model saved — restart the CLI to switch to ${model}.`)
     }
 
     this.broadcastModelState(sessionId)
@@ -803,14 +671,6 @@ export class SessionManager implements ISessionManager {
   private broadcastModelState(sessionId: string): void {
     const state = this.getModelState(sessionId)
     if (state) this.broadcast(sessionId, { type: 'model_state', data: state })
-  }
-
-  /** Append the adapter's model spawn flag when a model is selected (PTY CLIs). */
-  private withModelFlag(args: string[], adapter: ICLIAdapter, model: string | null): string[] {
-    if (model && adapter.modelSpawnFlag) {
-      args.push(adapter.modelSpawnFlag, model)
-    }
-    return args
   }
 
   /**
@@ -1169,26 +1029,6 @@ export class SessionManager implements ISessionManager {
   }
 
   // -----------------------------------------------------------------------
-  // Interactive input (legacy PTY mode)
-  // -----------------------------------------------------------------------
-
-  private handleInteractiveInput(
-    sessionId: string,
-    ctx: SessionContext,
-    text: string,
-    attachments?: Attachment[],
-  ): void {
-    let cliPrompt = text
-    if (attachments?.length) {
-      const refs = attachments.map(a => ctx.adapter.formatAttachment(a.path, a.mimeType))
-      cliPrompt = refs.join(' ') + ' ' + text
-    }
-
-    ctx.adapter.notifyUserInput(cliPrompt)
-    ctx.pty!.write(cliPrompt + '\r')
-  }
-
-  // -----------------------------------------------------------------------
   // processAdapterEvents
   // -----------------------------------------------------------------------
 
@@ -1305,7 +1145,7 @@ export class SessionManager implements ISessionManager {
     }
     ctx.clients.add(socket)
     // Lazily populate the model picker: if nothing advertised the models yet
-    // (legacy Kiro, PTY agy), ask the CLI itself and broadcast when it lands.
+    // (Kiro, Antigravity), ask the CLI itself and broadcast when it lands.
     void this.ensureModelList(sessionId)
   }
 
@@ -1335,10 +1175,7 @@ export class SessionManager implements ISessionManager {
   async deleteSession(sessionId: string): Promise<void> {
     const ctx = this.sessions.get(sessionId)
     if (ctx) {
-      // Kill pty or child process if still running
-      if (ctx.pty) {
-        try { ctx.pty.kill() } catch { /* already dead */ }
-      }
+      // Kill the child process / ACP agent if still running
       if (ctx.childProcess) {
         try { ctx.childProcess.kill() } catch { /* already dead */ }
       }
@@ -1390,9 +1227,6 @@ export class SessionManager implements ISessionManager {
       }
 
       if (ctx.session.status === 'live') {
-        if (ctx.pty) {
-          try { ctx.pty.kill() } catch { /* already dead */ }
-        }
         if (ctx.childProcess) {
           try { ctx.childProcess.kill() } catch { /* already dead */ }
         }
@@ -1414,80 +1248,6 @@ export class SessionManager implements ISessionManager {
     }
 
     this.sessions.clear()
-  }
-
-  // -----------------------------------------------------------------------
-  // PTY wiring (interactive mode only)
-  // -----------------------------------------------------------------------
-
-  private wirePtyToSession(sessionId: string, ctx: SessionContext): void {
-    const { pty: ptyProcess, adapter } = ctx
-    if (!ptyProcess) return
-
-    ptyProcess.onData((data: string) => {
-      const cleanText = stripAnsi(data)
-      if (cleanText.trim().length === 0) return
-      log.debug('pty', `clean: ${JSON.stringify(cleanText).slice(0, 300)}`)
-      const rawEvents = adapter.onData(cleanText)
-      if (rawEvents.length === 0) return
-
-      const events = validateAdapterEvents(rawEvents, (msg) => {
-        log.warn('adapter', msg)
-      })
-
-      const dropped = rawEvents.length - events.length
-      if (dropped > 0) this.surfaceDroppedEvents(sessionId, ctx, dropped)
-
-      if (events.length === 0) return
-
-      const significantEvents = events.filter(e => e.type !== 'chunk')
-      if (significantEvents.length > 0) {
-        log.info('adapter', `${significantEvents.map(e => e.type).join(', ')}`)
-      }
-      this.processAdapterEvents(sessionId, events)
-    })
-
-    ptyProcess.onExit(({ exitCode }) => {
-      ctx.session.status = 'archived'
-      this.finalizeCurrentMessage(sessionId)
-
-      if (ctx.storageDebounceTimer) {
-        clearTimeout(ctx.storageDebounceTimer)
-        ctx.storageDebounceTimer = null
-      }
-
-      this.storage.updateSessionStatus(sessionId, 'archived').catch((err) => {
-        log.error('session', `Failed to archive session ${sessionId}`, err)
-      })
-
-      const exitMsg: ChatMessage = {
-        id: randomUUID(),
-        role: 'system',
-        content: `CLI process exited with code ${exitCode ?? 'unknown'}`,
-        timestamp: Date.now(),
-        status: 'complete',
-      }
-      ctx.session.messages.push(exitMsg)
-      this.storage.appendMessage(sessionId, exitMsg).catch((err) => {
-        log.error('session', `Failed to persist exit message for session ${sessionId}`, err)
-      })
-
-      this.broadcast(sessionId, { type: 'message', data: exitMsg })
-      this.broadcast(sessionId, { type: 'status', data: 'exited' })
-    })
-  }
-
-  private scheduleSystemPrompt(sessionId: string, adapter: ICLIAdapter): void {
-    if (!adapter.systemPrompt) return
-    const systemPrompt = adapter.systemPrompt
-    setTimeout(() => {
-      const currentCtx = this.sessions.get(sessionId)
-      if (currentCtx && currentCtx.session.status === 'live' && currentCtx.pty) {
-        log.info('session', `Sending system prompt for session ${sessionId}`)
-        currentCtx.adapter.notifySystemInput(systemPrompt)
-        currentCtx.pty.write(systemPrompt + '\r')
-      }
-    }, SYSTEM_PROMPT_DELAY_MS)
   }
 
   // -----------------------------------------------------------------------
@@ -1564,23 +1324,12 @@ export class SessionManager implements ISessionManager {
   // CLI session ID detection
   // -----------------------------------------------------------------------
 
-  private async snapshotCliSessionDir(adapter: ICLIAdapter): Promise<Set<string>> {
-    const dir = adapter.cliSessionDir
-    if (!dir || !existsSync(dir)) return new Set()
-    try {
-      const files = await readdir(dir)
-      return new Set(files.filter(f => f.endsWith('.json')))
-    } catch {
-      return new Set()
-    }
-  }
-
   /**
    * Detect the CLI session ID by running `kiro-cli.exe chat --list-sessions`
    * and parsing the most recent session ID from the output.
    *
-   * This is used for non-interactive mode where the CLI doesn't store sessions
-   * in a predictable file location we can sniff.
+   * Used by adapters whose CLI reports its session ID only through its
+   * session list (legacy Kiro non-interactive).
    */
   private detectCliSessionIdFromList(sessionId: string, ctx: SessionContext): void {
     const adapter = ctx.adapter
@@ -1624,76 +1373,5 @@ export class SessionManager implements ISessionManager {
     child.on('error', (err) => {
       log.error('session', `Failed to run --list-sessions for session ${sessionId}`, err)
     })
-  }
-
-  private detectAndStoreCliSessionId(
-    sessionId: string,
-    adapter: ICLIAdapter,
-    preSpawnFiles: Set<string>,
-    projectPath: string,
-  ): void {
-    const dir = adapter.cliSessionDir
-    if (!dir) return
-
-    const delays = [2000, 4000, 8000]
-    let attempt = 0
-
-    const tryDetect = async () => {
-      try {
-        if (!existsSync(dir)) return
-
-        const currentFiles = await readdir(dir)
-        const newFiles = currentFiles.filter(
-          f => f.endsWith('.json') && !preSpawnFiles.has(f),
-        )
-
-        if (newFiles.length === 0) {
-          attempt++
-          if (attempt < delays.length) {
-            setTimeout(tryDetect, delays[attempt])
-          } else {
-            log.warn('session', `Could not detect CLI session ID for session ${sessionId} after ${delays.length} attempts`)
-          }
-          return
-        }
-
-        let cliSessionId: string | null = null
-
-        if (newFiles.length === 1) {
-          cliSessionId = newFiles[0].replace('.json', '')
-        } else {
-          for (const file of newFiles) {
-            try {
-              const content = await readFile(path.join(dir, file), 'utf-8')
-              const data = JSON.parse(content)
-              if (data.cwd && path.resolve(data.cwd) === path.resolve(projectPath)) {
-                cliSessionId = file.replace('.json', '')
-                break
-              }
-            } catch {
-              // Skip unreadable files
-            }
-          }
-          if (!cliSessionId) {
-            cliSessionId = newFiles[newFiles.length - 1].replace('.json', '')
-          }
-        }
-
-        if (cliSessionId) {
-          log.info('session', `Detected CLI session ID for session ${sessionId}: ${cliSessionId}`)
-          const ctx = this.sessions.get(sessionId)
-          if (ctx) {
-            ctx.session.cliSessionId = cliSessionId
-            this.storage.saveSession(ctx.session).catch((err) => {
-              log.error('session', `Failed to persist CLI session ID for session ${sessionId}`, err)
-            })
-          }
-        }
-      } catch (err) {
-        log.error('session', `Error detecting CLI session ID for session ${sessionId}`, err)
-      }
-    }
-
-    setTimeout(tryDetect, delays[0])
   }
 }
