@@ -41,7 +41,6 @@ export interface IStorageLayer {
   addProject(project: Omit<Project, 'id'>): Promise<Project>
   updateProject(projectId: string, data: Partial<Omit<Project, 'id'>>): Promise<Project>
   removeProject(projectId: string): Promise<void>
-  reorderProjects(orderedIds: string[]): Promise<Project[]>
   getProject(projectId: string): Promise<Project | null>
   // Todos
   listTodos(projectId?: string): Promise<Todo[]>
@@ -296,25 +295,6 @@ export class StorageLayer implements IStorageLayer {
     })
     this.notify('projects')
     return updated
-  }
-
-  /**
-   * Reorder projects to match `orderedIds`. Unknown ids are ignored; projects
-   * missing from the list keep their relative order and go to the end.
-   */
-  async reorderProjects(orderedIds: string[]): Promise<Project[]> {
-    const reordered = await this.runExclusive(this.projectsFile, async () => {
-      const projects = await this.loadProjects()
-      const rank = new Map(orderedIds.map((id, i) => [id, i]))
-      const sorted = projects
-        .map((p, i) => ({ p, key: rank.get(p.id) ?? orderedIds.length + i }))
-        .sort((a, b) => a.key - b.key)
-        .map(({ p }) => p)
-      await this.atomicWrite(this.projectsFile, sorted)
-      return sorted
-    })
-    this.notify('projects')
-    return reordered
   }
 
   async getProject(projectId: string): Promise<Project | null> {
