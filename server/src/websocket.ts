@@ -9,17 +9,22 @@ import { WSClientMessageSchema } from './schemas.js'
 import type { Session, Attachment } from './schemas.js'
 import { log } from './logger.js'
 
+/** Handles an HTTP upgrade for a WebSocket path other than `/ws`. */
+export type UpgradeHandler = (request: IncomingMessage, socket: Duplex, head: Buffer) => void
+
 /**
  * Attach a WebSocket server to an existing HTTP server.
  *
  * Uses `noServer: true` so Express keeps handling normal HTTP requests
- * while WebSocket upgrade requests on `/ws` are routed here.
+ * while WebSocket upgrade requests on `/ws` are routed here. Other paths
+ * (e.g. `/ws/terminal`) go to `extraRoutes`; anything else is rejected.
  */
 export function setupWebSocket(
   server: HttpServer,
   sessionManager: ISessionManager,
   storage: IStorageLayer,
   events?: EventBus,
+  extraRoutes: Record<string, UpgradeHandler> = {},
 ): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true })
 
@@ -27,7 +32,9 @@ export function setupWebSocket(
     const url = new URL(request.url ?? '', 'http://localhost')
 
     if (url.pathname !== '/ws') {
-      socket.destroy()
+      const extra = extraRoutes[url.pathname]
+      if (extra) extra(request, socket, head)
+      else socket.destroy()
       return
     }
 

@@ -19,6 +19,9 @@ import { registerAdapter } from './adapters/registry.js'
 import { KiroAdapter } from './adapters/kiro.js'
 import { KiroAcpAdapter } from './adapters/kiro-acp.js'
 import { GeminiAdapter } from './adapters/gemini.js'
+import { createChangesRoutes } from './routes/changes.js'
+import { TerminalManager } from './terminal-manager.js'
+import { createTerminalUpgradeHandler } from './terminal-ws.js'
 import { ClaudeAdapter } from './adapters/claude.js'
 import { createSessionRoutes } from './routes/sessions.js'
 import { createProjectRoutes } from './routes/projects.js'
@@ -94,6 +97,7 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/sessions', createSessionRoutes(sessionManager, storage))
 app.use('/api/projects', createProjectRoutes(storage, devServerManager, serviceManager))
 app.use('/api/projects/:id/services', createServiceRoutes(storage, serviceManager))
+app.use('/api/projects/:id/changes', createChangesRoutes(storage))
 app.use('/api/browse', createBrowseRoutes())
 app.use('/api/upload', createUploadRoutes('./data/uploads'))
 app.use('/api/push', createPushRoutes(pushService))
@@ -108,7 +112,10 @@ app.use('/api/standup', createStandupRoutes(standupService, storage))
 // ---------------------------------------------------------------------------
 
 const server = createServer(app)
-setupWebSocket(server, sessionManager, storage, eventBus)
+const terminalManager = new TerminalManager()
+setupWebSocket(server, sessionManager, storage, eventBus, {
+  '/ws/terminal': createTerminalUpgradeHandler(storage, terminalManager),
+})
 
 // Only listen when running directly (not imported by tests)
 const isMainModule = !process.env['VITEST']
@@ -131,6 +138,7 @@ if (isMainModule) {
       standupService.stop()
       await devServerManager.shutdownAll()
       await serviceManager.shutdownAll()
+      terminalManager.killAll()
       await sessionManager.shutdown()
     } catch (err) {
       log.error('server', 'Error during shutdown', err)

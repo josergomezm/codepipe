@@ -369,6 +369,39 @@ export interface DetectFirebaseResponse {
   suggested: ServiceConfig | null
 }
 
+// --- Uncommitted changes (git) ---
+
+export type ChangeStatus = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'conflicted' | 'typechange'
+
+export interface ChangedFile {
+  path: string
+  oldPath?: string
+  status: ChangeStatus
+  staged: boolean
+  additions: number | null
+  deletions: number | null
+  binary: boolean
+}
+
+export type ChangesResult =
+  | { isRepo: false }
+  | { isRepo: true; branch: string | null; files: ChangedFile[] }
+
+export interface FileDiff {
+  path: string
+  diff: string
+  truncated: boolean
+  binary: boolean
+}
+
+export function fetchChanges(projectId: string): Promise<ChangesResult> {
+  return request<ChangesResult>(`/api/projects/${projectId}/changes`)
+}
+
+export function fetchFileDiff(projectId: string, path: string): Promise<FileDiff> {
+  return request<FileDiff>(`/api/projects/${projectId}/changes/diff?path=${encodeURIComponent(path)}`)
+}
+
 export function fetchServices(projectId: string): Promise<{ services: ServiceWithState[] }> {
   return request<{ services: ServiceWithState[] }>(`/api/projects/${projectId}/services`)
 }

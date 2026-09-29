@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed, onUnmounted } from 'vue'
+import { ref, watch, computed, onUnmounted, defineAsyncComponent } from 'vue'
 import { useSessionsStore } from '@/stores/sessions'
 import { useProjectsStore } from '@/stores/projects'
 import { useUiStore } from '@/stores/ui'
@@ -8,6 +8,9 @@ import MessageList from '@/components/MessageList.vue'
 import ChatInput from '@/components/ChatInput.vue'
 import ChatLoader from '@/components/ChatLoader.vue'
 import ModelPicker from '@/components/ModelPicker.vue'
+import ChangesPanel from '@/components/ChangesPanel.vue'
+// xterm.js is large — load it only when a terminal tab is first opened.
+const TerminalPanel = defineAsyncComponent(() => import('@/components/TerminalPanel.vue'))
 
 const store = useSessionsStore()
 const projectsStore = useProjectsStore()
@@ -15,6 +18,14 @@ const ui = useUiStore()
 const { connect, disconnect, connectionError, clearConnectionError, restart } = useSession()
 
 const showMenu = ref(false)
+
+// Chat / Changes / Terminal tabs, scoped to the active chat's project.
+type Tab = 'chat' | 'changes' | 'terminal'
+const activeTab = ref<Tab>('chat')
+const changesCount = ref<number | null>(null)
+const changesPanel = ref<InstanceType<typeof ChangesPanel> | null>(null)
+// Terminals start a real shell, so only mount one once its tab is opened.
+const terminalProjects = ref<Set<string>>(new Set())
 
 // The currently active session's metadata
 const activeSession = computed(() => store.sessions.find(s => s.id === store.activeSessionId) ?? null)
@@ -48,6 +59,23 @@ const activeProjectName = computed(() => {
 const devServerUrl = computed(() => {
   if (!activeSession.value) return null
   return projectsStore.getProjectDevUrl(activeSession.value.projectId)
+})
+
+const activeProjectId = computed(() => activeSession.value?.projectId ?? null)
+
+function selectTab(tab: Tab) {
+  activeTab.value = tab
+  if (tab === 'terminal' && activeProjectId.value) terminalProjects.value.add(activeProjectId.value)
+}
+
+watch(activeProjectId, (id) => {
+  changesCount.value = null
+  if (activeTab.value === 'terminal' && id) terminalProjects.value.add(id)
+})
+
+// When the agent finishes a turn it has likely edited files — refresh.
+watch(() => store.sessionStatus, (status, prev) => {
+  if (prev === 'typing' && status === 'idle') changesPanel.value?.refresh()
 })
 
 function openDevServer() {
@@ -169,10 +197,50 @@ function handleRestart() {
 
     <!-- Active chat -->
     <template v-else>
-      <ChatLoader v-if="store.loading" />
-      <template v-else>
-        <MessageList />
-        <ChatInput />
+      <!-- Tabs -->
+      <div class="flex shrink-0 gap-1 border-b border-gray-200 px-3 dark:border-gray-800">
+        <button
+          v-for="tab in (['chat', 'changes', 'terminal'] as const)"
+          :key="tab"
+          class="-mb-px flex items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-xs font-medium capitalize transition"
+          :class="activeTab === tab
+            ? 'border-violet-500 text-violet-700 dark:text-violet-300'
+            : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'"
+          @click="selectTab(tab)"
+        >
+          {{ tab }}
+          <span
+            v-if="tab === 'changes' && changesCount"
+            class="rounded-full bg-gray-200 px-1.5 text-[10px] font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+          >{{ changesCount }}</span>
+        </button>
+      </div>
+
+      <div v-show="activeTab === 'chat'" class="flex min-h-0 flex-1 flex-col">
+        <ChatLoader v-if="store.loading" />
+        <template v-else>
+          <MessageList />
+          <ChatInput />
+        </template>
+      </div>
+
+      <ChangesPanel
+        v-if="activeProjectId"
+        v-show="activeTab === 'changes'"
+        ref="changesPanel"
+        :key="activeProjectId"
+        :project-id="activeProjectId"
+        :active="activeTab === 'changes'"
+        @count="changesCount = $event"
+      />
+
+      <!-- One terminal per project, kept alive while switching tabs/chats -->
+      <template v-for="pid in terminalProjects" :key="pid">
+        <TerminalPanel
+          v-show="activeTab === 'terminal' && pid === activeProjectId"
+          :project-id="pid"
+          :active="activeTab === 'terminal' && pid === activeProjectId"
+        />
       </template>
     </template>
   </div>

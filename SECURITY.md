@@ -5,7 +5,7 @@
 CodePipe is a tool that runs **real AI CLI agents on your machine** and exposes
 a chat interface to drive them. Understand this before deploying it:
 
-- **It executes code.** The wrapped CLIs (Kiro, Claude Code, Gemini) can read
+- **It executes code.** The wrapped CLIs (Kiro, Claude Code, Antigravity) can read
   and write files, run shell commands, and call network/MCP tools in the
   selected project directory. CodePipe spawns those CLIs with the same
   privileges as the user running the server.
@@ -16,6 +16,15 @@ a chat interface to drive them. Understand this before deploying it:
   public interface. For remote access, use [Tailscale](./README.md#remote-access-with-tailscale),
   which keeps it on your private tailnet — nothing is exposed to the internet.
 
+### Project terminal
+
+The **Terminal** tab opens a real shell in the project folder with the same
+privileges as the server user — it's a direct remote shell, not a sandbox.
+This doesn't widen the trust boundary (anyone who can reach CodePipe can
+already have an agent run commands), but it makes it immediate, so the
+localhost/tailnet guidance above matters even more. Shells keep running until
+you exit or kill them, or the server stops.
+
 ### Tool auto-approval
 
 Because there is no interactive terminal to approve tool calls, each adapter
@@ -23,8 +32,9 @@ auto-approves them so the agent can actually work. This is intentional but
 means the agent acts without per-action confirmation:
 
 - **Kiro (text transport):** launched with `--trust-all-tools`.
-- **Kiro / Gemini (ACP):** the client auto-approves `request_permission`
-  prompts; Gemini is additionally switched to an auto-approve session mode.
+- **Kiro (ACP):** the client auto-approves `request_permission` prompts.
+- **Antigravity:** launched with `--dangerously-skip-permissions`; headless
+  mode can't prompt, and without it shell commands are silently denied.
 - **Claude Code:** defaults to `--permission-mode acceptEdits`. This does **not**
   auto-approve arbitrary Bash or network access. To grant fuller autonomy set
   `CLAUDE_PERMISSION_MODE` or append `--dangerously-skip-permissions` via
