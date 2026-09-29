@@ -10,10 +10,15 @@ import '@xterm/xterm/css/xterm.css'
  * panel just detaches — use "Kill" to end it.
  */
 const props = defineProps<{ projectId: string; active: boolean }>()
+/** A command finished (Enter, then output went quiet) — files may have changed. */
+const emit = defineEmits<{ settled: [] }>()
 
 const container = ref<HTMLDivElement | null>(null)
 const state = ref<'connecting' | 'open' | 'exited' | 'error'>('connecting')
 const exitCode = ref<number | null>(null)
+const confirmingKill = ref(false)
+/** Shown when we reconnected to a different shell than before. */
+const shellReplaced = ref(false)
 
 let term: Terminal | null = null
 let fit: FitAddon | null = null
@@ -21,6 +26,47 @@ let ws: WebSocket | null = null
 let resizeObserver: ResizeObserver | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let disposed = false
+/** Which shell we're showing; a different id on reconnect means it restarted. */
+let shellId: string | null = readShellId()
+/** Set when the user asked for a new shell, so no "restarted" notice. */
+let expectingNewShell = false
+let settleTimer: ReturnType<typeof setTimeout> | null = null
+let awaitingSettle = false
+let confirmTimer: ReturnType<typeof setTimeout> | null = null
+
+const SETTLE_MS = 1500
+
+// The shell id outlives page reloads (Vite reloads the page when its dev
+// server reconnects; phones reload backgrounded tabs), so keep it per tab.
+function shellIdKey() {
+  return `codepipe.terminal.shell.${props.projectId}`
+}
+
+function readShellId(): string | null {
+  try {
+    return sessionStorage.getItem(shellIdKey())
+  } catch {
+    return null
+  }
+}
+
+function writeShellId(id: string | null) {
+  try {
+    if (id) sessionStorage.setItem(shellIdKey(), id)
+    else sessionStorage.removeItem(shellIdKey())
+  } catch {
+    /* storage unavailable — the notice just won't survive a reload */
+  }
+}
+
+/** Restart the quiet-period timer that ends in a `settled` event. */
+function armSettle() {
+  if (settleTimer) clearTimeout(settleTimer)
+  settleTimer = setTimeout(() => {
+    awaitingSettle = false
+    emit('settled')
+  }, SETTLE_MS)
+}
 
 function send(msg: unknown) {
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg))
@@ -48,15 +94,26 @@ function connect() {
     sendSize()
   }
   socket.onmessage = (ev) => {
-    const msg = JSON.parse(ev.data as string) as { type: string; data?: string; code?: number }
+    const msg = JSON.parse(ev.data as string) as { type: string; data?: string; code?: number; shellId?: string }
     if (msg.type === 'snapshot') {
       term?.reset()
       term?.write(msg.data ?? '')
+      // Reconnected to a different shell than before: the old one ended
+      // (usually a server restart). Say so instead of silently starting over.
+      // It's a UI banner, not terminal text: a fresh shell clears the screen.
+      if (shellId && msg.shellId !== shellId && !expectingNewShell) shellReplaced.value = true
+      shellId = msg.shellId ?? null
+      writeShellId(shellId)
+      expectingNewShell = false
     } else if (msg.type === 'output') {
       term?.write(msg.data ?? '')
+      if (awaitingSettle) armSettle()
     } else if (msg.type === 'exit') {
       exitCode.value = msg.code ?? null
       state.value = 'exited'
+      // It ended normally; the next shell is expected, not a surprise.
+      shellId = null
+      writeShellId(null)
     }
   }
   socket.onclose = (ev) => {
@@ -76,13 +133,23 @@ function connect() {
 
 function restart() {
   exitCode.value = null
+  expectingNewShell = true
+  shellReplaced.value = false
   ws?.close()
   ws = null
   term?.reset()
   connect()
 }
 
+/** Kill needs a second tap within a few seconds — easy to hit by accident on a phone. */
 function kill() {
+  if (!confirmingKill.value) {
+    confirmingKill.value = true
+    confirmTimer = setTimeout(() => (confirmingKill.value = false), 3000)
+    return
+  }
+  if (confirmTimer) clearTimeout(confirmTimer)
+  confirmingKill.value = false
   send({ type: 'kill' })
 }
 
@@ -117,7 +184,13 @@ onMounted(() => {
   fit = new FitAddon()
   term.loadAddon(fit)
   term.open(container.value!)
-  term.onData((data) => send({ type: 'input', data }))
+  term.onData((data) => {
+    send({ type: 'input', data })
+    if (data.includes('\r')) {
+      awaitingSettle = true
+      armSettle()
+    }
+  })
 
   resizeObserver = new ResizeObserver(() => sendSize())
   resizeObserver.observe(container.value!)
@@ -127,6 +200,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   disposed = true
   if (reconnectTimer) clearTimeout(reconnectTimer)
+  if (settleTimer) clearTimeout(settleTimer)
+  if (confirmTimer) clearTimeout(confirmTimer)
   resizeObserver?.disconnect()
   ws?.close()
   term?.dispose()
@@ -169,10 +244,19 @@ watch(() => props.active, async (active) => {
       >New shell</button>
       <button
         v-else-if="state === 'open'"
-        class="rounded-md px-2 py-0.5 transition hover:bg-white/10 hover:text-red-400"
+        class="rounded-md px-2 py-0.5 transition"
+        :class="confirmingKill ? 'bg-red-600 font-medium text-white hover:bg-red-500' : 'hover:bg-white/10 hover:text-red-400'"
         title="End this shell"
         @click="kill"
-      >Kill</button>
+      >{{ confirmingKill ? 'Tap again to kill' : 'Kill' }}</button>
+    </div>
+
+    <div
+      v-if="shellReplaced"
+      class="flex shrink-0 items-center gap-2 border-b border-amber-500/20 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-300"
+    >
+      <span class="flex-1">New shell — the previous one ended, usually because the server restarted.</span>
+      <button class="rounded p-0.5 hover:bg-white/10" title="Dismiss" @click="shellReplaced = false">✕</button>
     </div>
 
     <div ref="container" class="min-h-0 flex-1 overflow-hidden px-2 pt-1" @click="focusTerm" />

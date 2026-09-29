@@ -13,6 +13,7 @@ const diffs = ref<Map<string, FileDiff>>(new Map())
 const diffLoading = ref<string | null>(null)
 
 const files = computed<ChangedFile[]>(() => (result.value?.isRepo ? result.value.files : []))
+const totalFiles = computed(() => (result.value?.isRepo ? result.value.totalFiles : 0))
 const totals = computed(() =>
   files.value.reduce(
     (t, f) => ({ add: t.add + (f.additions ?? 0), del: t.del + (f.deletions ?? 0) }),
@@ -33,7 +34,7 @@ async function load() {
     error.value = e instanceof Error ? e.message : 'Failed to load changes'
   } finally {
     loading.value = false
-    emit('count', files.value.length)
+    emit('count', totalFiles.value)
   }
 }
 
@@ -111,7 +112,7 @@ const LINE_CLASS = {
     <div class="flex shrink-0 items-center gap-2 border-b border-gray-200 px-3 py-2 text-xs dark:border-gray-800">
       <template v-if="result?.isRepo">
         <span v-if="result.branch" class="truncate font-medium text-gray-700 dark:text-gray-300">{{ result.branch }}</span>
-        <span class="text-gray-400 dark:text-gray-500">{{ files.length }} file{{ files.length === 1 ? '' : 's' }}</span>
+        <span class="text-gray-400 dark:text-gray-500">{{ totalFiles }} file{{ totalFiles === 1 ? '' : 's' }}</span>
         <span v-if="files.length" class="text-green-600 dark:text-green-400">+{{ totals.add }}</span>
         <span v-if="files.length" class="text-red-600 dark:text-red-400">−{{ totals.del }}</span>
       </template>
@@ -130,6 +131,13 @@ const LINE_CLASS = {
     </div>
 
     <div v-if="error" class="shrink-0 bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-900/20 dark:text-red-400">{{ error }}</div>
+    <div
+      v-if="totalFiles > files.length"
+      class="shrink-0 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-400"
+    >
+      Showing {{ files.length }} of {{ totalFiles }} files — mostly new, untracked files. A build or dependency folder
+      may be missing from <code>.gitignore</code>.
+    </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto">
       <div v-if="result && !result.isRepo" class="px-4 py-10 text-center text-sm text-gray-500 dark:text-gray-400">

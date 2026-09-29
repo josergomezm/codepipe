@@ -1,4 +1,11 @@
 <script setup lang="ts">
+/**
+ * Kiro reports bare credit numbers ("0.15"); Claude a dollar cost ("$0.0123")
+ * and Antigravity tokens ("24.7k tokens") — those already say what they are.
+ */
+function usageLabel(value: string): string {
+  return /^[\d.]+$/.test(value) ? `Credits: ${value}` : value
+}
 import { computed, ref } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { useTeamStore } from '@/stores/team'
@@ -163,7 +170,7 @@ async function copyContent() {
       <!-- Credits footer for completed assistant messages -->
       <div v-if="!isStreaming && message.metadata?.credits"
            class="mt-2 flex items-center gap-3 border-t border-gray-200 pt-1.5 text-xs text-gray-400 dark:border-gray-700 dark:text-gray-500">
-        <span v-if="message.metadata.credits">Credits: {{ message.metadata.credits }}</span>
+        <span v-if="message.metadata.credits">{{ usageLabel(message.metadata.credits) }}</span>
         <span v-if="message.metadata.time">{{ message.metadata.time }}</span>
       </div>
     </div>

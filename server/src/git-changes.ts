@@ -7,13 +7,24 @@
  */
 
 import { execFile } from 'child_process'
+import { open } from 'fs/promises'
+import { join } from 'path'
 
 /** Git's well-known empty tree — the base for repos with no commits yet. */
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 /** Diffs larger than this are cut off (the UI says so). */
 const MAX_DIFF_BYTES = 512 * 1024
 /** Untracked files beyond this are listed without +/- counts. */
-const MAX_UNTRACKED_COUNTED = 300
+const MAX_UNTRACKED_COUNTED = 500
+/** Untracked files larger than this are listed without +/- counts. */
+const MAX_COUNTED_BYTES = 2 * 1024 * 1024
+/** Parallel file reads when counting untracked lines. */
+const COUNT_CONCURRENCY = 16
+/**
+ * Most files the list returns. An unignored build or dependency folder can
+ * add tens of thousands of untracked files; the total is still reported.
+ */
+const MAX_LISTED_FILES = 1000
 
 export type ChangeStatus = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'conflicted' | 'typechange'
 
@@ -31,7 +42,13 @@ export interface ChangedFile {
 
 export type ChangesResult =
   | { isRepo: false }
-  | { isRepo: true; branch: string | null; files: ChangedFile[] }
+  | {
+      isRepo: true
+      branch: string | null
+      files: ChangedFile[]
+      /** Total changed files, when more than `files.length` exist. */
+      totalFiles: number
+    }
 
 export interface FileDiff {
   path: string
@@ -150,22 +167,65 @@ export async function getChanges(cwd: string): Promise<ChangesResult> {
   ])
   const tracked = parseNumstatZ((await git(cwd, ['diff', base, '--numstat', '-z', '-M'])).stdout)
 
-  let counted = 0
-  const files = await Promise.all(
-    entries.map(async (e): Promise<ChangedFile> => {
-      if (e.status === 'untracked') {
-        if (counted++ >= MAX_UNTRACKED_COUNTED) return { ...e, additions: null, deletions: null, binary: false }
-        const stat = parseNumstatZ((await git(cwd, ['diff', '--no-index', '--numstat', '-z', '--', '/dev/null', e.path])).stdout)
-        const s = [...stat.values()][0]
-        return { ...e, additions: s?.additions ?? null, deletions: s?.deletions ?? 0, binary: s?.binary ?? false }
-      }
-      const s = tracked.get(e.path)
-      return { ...e, additions: s?.additions ?? null, deletions: s?.deletions ?? null, binary: s?.binary ?? false }
-    }),
+  // Tracked files first (they're what the agent edited), then untracked.
+  entries.sort((a, b) => Number(a.status === 'untracked') - Number(b.status === 'untracked') || a.path.localeCompare(b.path))
+  const listed = entries.slice(0, MAX_LISTED_FILES)
+
+  const toCount = listed.filter((e) => e.status === 'untracked').slice(0, MAX_UNTRACKED_COUNTED)
+  const untrackedStats = new Map(
+    await mapLimit(toCount, COUNT_CONCURRENCY, async (e) => [e.path, await countNewFile(join(cwd, e.path))] as const),
   )
 
+  const files = listed.map((e): ChangedFile => {
+    if (e.status === 'untracked') {
+      const s = untrackedStats.get(e.path)
+      return { ...e, additions: s?.additions ?? null, deletions: s ? 0 : null, binary: s?.binary ?? false }
+    }
+    const s = tracked.get(e.path)
+    return { ...e, additions: s?.additions ?? null, deletions: s?.deletions ?? null, binary: s?.binary ?? false }
+  })
+
   files.sort((a, b) => a.path.localeCompare(b.path))
-  return { isRepo: true, branch: branch.stdout.trim() || null, files }
+  return { isRepo: true, branch: branch.stdout.trim() || null, files, totalFiles: entries.length }
+}
+
+/**
+ * Line count for a new file, read directly instead of spawning git per file.
+ * Binary (a NUL byte in the first 8 KB, git's own heuristic) and oversized
+ * files get no count.
+ */
+async function countNewFile(absPath: string): Promise<{ additions: number | null; binary: boolean } | null> {
+  let handle
+  try {
+    handle = await open(absPath, 'r')
+    const { size } = await handle.stat()
+    const head = Buffer.alloc(Math.min(size, 8192))
+    await handle.read(head, 0, head.length, 0)
+    if (head.includes(0)) return { additions: null, binary: true }
+    if (size > MAX_COUNTED_BYTES) return null
+    const text = (await handle.readFile()).toString('utf8')
+    if (text.length === 0) return { additions: 0, binary: false }
+    const lines = text.split('\n').length - (text.endsWith('\n') ? 1 : 0)
+    return { additions: lines, binary: false }
+  } catch {
+    return null // unreadable, deleted meanwhile, or a directory (submodule)
+  } finally {
+    await handle?.close()
+  }
+}
+
+/** Promise.all with at most `limit` tasks in flight. */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++
+      results[i] = await fn(items[i])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return results
 }
 
 /**

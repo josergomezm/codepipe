@@ -59,6 +59,25 @@ describe('getChanges / getFileDiff (real repo)', () => {
     ])
   })
 
+  it('counts untracked files without git, flags binaries, and caps the list', async () => {
+    // "a-" sorts before the generated files, so it survives the cap
+    writeFileSync(join(dir, 'a-logo.bin'), Buffer.from([0x89, 0x50, 0x00, 0x01]))
+    for (let i = 0; i < 1005; i++) writeFileSync(join(dir, `gen-${String(i).padStart(4, '0')}.txt`), 'x\n')
+    try {
+      const result = await getChanges(dir)
+      if (!result.isRepo) throw new Error('expected a repo')
+      expect(result.totalFiles).toBe(1009)
+      expect(result.files).toHaveLength(1000)
+      // Tracked changes are always kept, whatever the untracked flood
+      expect(result.files.map((f) => f.path)).toEqual(expect.arrayContaining(['keep.txt', 'remove.txt']))
+      expect(result.files.find((f) => f.path === 'a-logo.bin')).toMatchObject({ binary: true, additions: null })
+      expect(result.files.find((f) => f.path === 'gen-0000.txt')).toMatchObject({ additions: 1, deletions: 0 })
+    } finally {
+      unlinkSync(join(dir, 'a-logo.bin'))
+      for (let i = 0; i < 1005; i++) unlinkSync(join(dir, `gen-${String(i).padStart(4, '0')}.txt`))
+    }
+  })
+
   it('returns a unified diff for tracked and untracked files', async () => {
     const tracked = await getFileDiff(dir, 'keep.txt')
     expect(tracked?.diff).toContain('-two')

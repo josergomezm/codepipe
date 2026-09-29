@@ -385,7 +385,7 @@ export interface ChangedFile {
 
 export type ChangesResult =
   | { isRepo: false }
-  | { isRepo: true; branch: string | null; files: ChangedFile[] }
+  | { isRepo: true; branch: string | null; files: ChangedFile[]; totalFiles: number }
 
 export interface FileDiff {
   path: string

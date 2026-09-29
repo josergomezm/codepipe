@@ -73,7 +73,8 @@ watch(activeProjectId, (id) => {
   if (activeTab.value === 'terminal' && id) terminalProjects.value.add(id)
 })
 
-// When the agent finishes a turn it has likely edited files — refresh.
+// When the agent finishes a turn it has likely edited files — refresh. (The
+// terminal does the same after each command, via its `settled` event.)
 watch(() => store.sessionStatus, (status, prev) => {
   if (prev === 'typing' && status === 'idle') changesPanel.value?.refresh()
 })
@@ -240,6 +241,7 @@ function handleRestart() {
           v-show="activeTab === 'terminal' && pid === activeProjectId"
           :project-id="pid"
           :active="activeTab === 'terminal' && pid === activeProjectId"
+          @settled="pid === activeProjectId && changesPanel?.refresh()"
         />
       </template>
     </template>
