@@ -167,7 +167,7 @@ export class AcpSessionDriver {
       this.emitModels(result)
     }
 
-    // Provider-specific post-session setup (e.g. Gemini auto-approve mode).
+    // Provider-specific post-session setup (e.g. an auto-approve mode).
     if (this.profile.afterSession && this.sessionId) {
       try {
         await this.profile.afterSession({

@@ -1,8 +1,27 @@
 import { describe, it, expect, vi } from 'vitest'
 import { EventEmitter } from 'events'
 import { AcpSessionDriver, type AcpChildLike } from './driver.js'
-import { GEMINI_ACP_PROFILE, SPEC_ACP_PROFILE } from './profile.js'
+import { SPEC_ACP_PROFILE, type AcpProfile } from './profile.js'
 import type { AdapterEvent } from '../adapters/types.js'
+
+/**
+ * A non-spec ACP dialect: bare method names, its own set-model method, and a
+ * post-session auto-approve call — proves the driver follows the profile.
+ */
+const CUSTOM_DIALECT_PROFILE: AcpProfile = {
+  args: ['--acp'],
+  methods: {
+    initialize: 'initialize',
+    newSession: 'newSession',
+    loadSession: 'loadSession',
+    prompt: 'prompt',
+    cancel: 'cancel',
+  },
+  setModelMethod: 'unstable_setSessionModel',
+  afterSession: async ({ request, sessionId }) => {
+    await request('setSessionMode', { sessionId, modeId: 'auto-approve', mode: 'auto-approve' })
+  },
+}
 
 /** Fake agent that records frames and answers using a given method set. */
 class FakeAgent extends EventEmitter implements AcpChildLike {
@@ -40,21 +59,20 @@ class FakeAgent extends EventEmitter implements AcpChildLike {
 }
 
 describe('profiles', () => {
-  it('Gemini profile uses --acp and its own method names', () => {
-    expect(GEMINI_ACP_PROFILE.args).toEqual(['--acp'])
-    expect(GEMINI_ACP_PROFILE.methods.newSession).toBe('newSession')
-    expect(GEMINI_ACP_PROFILE.methods.prompt).toBe('prompt')
+  it('spec profile uses session/* method names', () => {
+    expect(SPEC_ACP_PROFILE.args).toEqual(['acp'])
     expect(SPEC_ACP_PROFILE.methods.newSession).toBe('session/new')
+    expect(SPEC_ACP_PROFILE.methods.prompt).toBe('session/prompt')
   })
 
-  it('drives a Gemini-dialect agent: newSession, setSessionMode, prompt', async () => {
+  it('drives a custom-dialect agent: newSession, setSessionMode, prompt', async () => {
     const agent = new FakeAgent('newSession', 'prompt')
     const events: AdapterEvent[] = []
     const onIdle = vi.fn()
     const driver = new AcpSessionDriver({
       binary: 'gemini',
       cwd: '/p',
-      profile: GEMINI_ACP_PROFILE,
+      profile: CUSTOM_DIALECT_PROFILE,
       spawn: () => agent,
       callbacks: { onEvent: (e) => events.push(e), onIdle },
     })
@@ -78,7 +96,7 @@ describe('profiles', () => {
     const driver = new AcpSessionDriver({
       binary: 'gemini',
       cwd: '/p',
-      profile: GEMINI_ACP_PROFILE,
+      profile: CUSTOM_DIALECT_PROFILE,
       spawn: () => agent,
       callbacks: { onEvent: (e) => events.push(e) },
     })
@@ -103,7 +121,7 @@ describe('profiles', () => {
     const driver = new AcpSessionDriver({
       binary: 'gemini',
       cwd: '/p',
-      profile: GEMINI_ACP_PROFILE,
+      profile: CUSTOM_DIALECT_PROFILE,
       spawn: (binary, args) => {
         seen.binary = binary
         seen.args = args

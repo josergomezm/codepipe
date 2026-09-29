@@ -69,7 +69,7 @@ const useKiroAcp = (process.env['KIRO_TRANSPORT'] ?? '').toLowerCase() === 'acp'
 registerAdapter('kiro', () => (useKiroAcp ? new KiroAcpAdapter() : new KiroAdapter()))
 log.info('server', `Kiro transport: ${useKiroAcp ? 'acp' : 'non-interactive'}`)
 
-// Gemini CLI over ACP (`gemini --acp`).
+// Antigravity CLI over stream-json (`agy -p --output-format stream-json`).
 registerAdapter('gemini', () => new GeminiAdapter())
 
 // Claude Code over stream-json (`claude -p --output-format stream-json`).

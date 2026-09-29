@@ -2,11 +2,11 @@
 
 A web app that makes AI CLI tools look and feel like a chat application.
 
-CodePipe wraps terminal-based AI agents — Kiro CLI, Gemini CLI, Claude Code, and eventually Codex — in a clean messaging interface. You get conversation history, multiple concurrent sessions, project-scoped workspaces, and markdown-rendered output, all while running the real CLI tools under the hood.
+CodePipe wraps terminal-based AI agents — Kiro CLI, Antigravity CLI, Claude Code, and eventually Codex — in a clean messaging interface. You get conversation history, multiple concurrent sessions, project-scoped workspaces, and markdown-rendered output, all while running the real CLI tools under the hood.
 
 ## Quick Start
 
-You'll need Node.js 22+ and at least one supported AI CLI installed and authenticated (`kiro-cli`, `claude`, or `gemini`).
+You'll need Node.js 22+ and at least one supported AI CLI installed and authenticated (`kiro-cli`, `claude`, or `agy`).
 
 ```bash
 # 1. Backend (http://127.0.0.1:5551)
@@ -45,12 +45,12 @@ CodePipe supports two ways of talking to a CLI, chosen per adapter:
 |-------------|----------------------------------------|-------------|
 | Kiro CLI    | ACP (`kiro-cli acp`) or text-parsing   | Implemented |
 | Claude Code | stream-json (`claude -p`)              | Implemented |
-| Gemini CLI  | ACP (`gemini --acp`)                   | Implemented |
+| Antigravity | stream-json (`agy -p`)                 | Implemented |
 | Codex       | —                                      | Future      |
 
-Each provider has a dedicated adapter. Kiro ships in two flavors: the structured ACP transport (recommended, set `KIRO_TRANSPORT=acp`) and a legacy non-interactive text-parsing transport (default). Claude Code uses its native newline-delimited `stream-json` output. Gemini CLI is driven over ACP, the same JSON-RPC protocol as Kiro.
+Each provider has a dedicated adapter. Kiro ships in two flavors: the structured ACP transport (recommended, set `KIRO_TRANSPORT=acp`) and a legacy non-interactive text-parsing transport (default). Claude Code uses its native newline-delimited `stream-json` output. Antigravity CLI (`agy`, Google's successor to Gemini CLI) uses its own `stream-json` output the same way, resuming conversations with `--conversation <id>`. It has no ACP mode.
 
-> The ACP details for Kiro and Gemini, and the Claude stream-json event mapping, were built against published docs. Verify against your installed CLIs — the adapters are defensive and every binary/flag is overridable via env (see Configuration).
+> The ACP details for Kiro and the Claude/Antigravity stream-json event mappings were built against published docs. Verify against your installed CLIs — the adapters are defensive and every binary/flag is overridable via env (see Configuration).
 
 ## Configuration
 
@@ -62,7 +62,7 @@ The server reads these environment variables:
 | `HOST`            | `127.0.0.1`   | Backend bind address.                                                       |
 | `KIRO_TRANSPORT`  | _(unset)_     | Set to `acp` to drive Kiro CLI over the Agent Client Protocol (recommended) instead of the legacy text-parsing path. |
 | `KIRO_CLI_BIN`    | platform name | Override the Kiro binary (absolute path or name on `PATH`). Defaults to `kiro-cli` (`kiro-cli.exe` on Windows). |
-| `GEMINI_CLI_BIN`  | `gemini`      | Override the Gemini CLI binary.                                            |
+| `AGY_CLI_BIN`     | `agy`         | Override the Antigravity CLI binary (`agy.exe` on Windows; `GEMINI_CLI_BIN` is still honoured). |
 | `CLAUDE_CLI_BIN`  | `claude`      | Override the Claude Code binary (`claude.cmd` on Windows).                 |
 | `CLAUDE_PERMISSION_MODE` | `acceptEdits` | Claude Code `--permission-mode`. See SECURITY.md before broadening.   |
 | `CLAUDE_EXTRA_ARGS` | _(unset)_   | Extra flags appended to Claude Code (e.g. `--dangerously-skip-permissions`). |
@@ -74,13 +74,13 @@ The server reads these environment variables:
 ## Features
 
 - Chat-style UI with conversation sidebar, message bubbles, and markdown rendering
-- Multiple providers — Kiro CLI, Claude Code, and Gemini CLI — behind one interface
+- Multiple providers — Kiro CLI, Claude Code, and Antigravity CLI — behind one interface
 - **AI team with daily standups** — configurable personas review your per-project ideas list on a schedule and message you with proposals and questions, each with their own name and avatar (see [Your AI team](#your-ai-team-personas--standups))
 - **Headless runs** — `POST /api/sessions/:id/run` sends a message and returns the turn's final response, no WebSocket needed (the orchestration primitive behind standups)
 - Structured output parsing (ACP / stream-json) for reliable messages, tool calls, and turn boundaries, with a terminal-parsing fallback
 - Multiple concurrent sessions, each scoped to a project directory
 - **Stop button** to cancel an in-flight turn, and input **queueing** so messages sent mid-turn run in order instead of interrupting
-- **Per-session model selection** — a dynamic dropdown for providers that advertise their models (Kiro, Gemini), a free-text override for those that don't (Claude Code)
+- **Per-session model selection** — a dynamic dropdown for providers that advertise their models (Kiro, Antigravity), a free-text override for those that don't (Claude Code)
 - **Installable PWA** with **push notifications** when an agent finishes — use it on your phone like Slack
 - Remote access over Tailscale (HTTPS, private tailnet, no public exposure)
 - File attachments, typing indicator, persistent history, and live/archived session states
@@ -224,10 +224,12 @@ desktop browsers.
 Each session has a model picker in the chat header. How the choices are
 discovered depends on the provider — nothing is hardcoded:
 
-- **Kiro and Gemini (ACP)**: the available models are pulled from the agent
-  itself over the protocol, so the picker is a real dropdown. (The exact way
-  agents advertise models is an optional ACP extension and varies, so this is
-  best-effort and worth confirming against your installed CLIs.)
+- **Kiro**: the models come from `kiro-cli chat --list-models`, narrowed to a
+  short list (Auto, Opus, Sonnet, GPT 5.6). Kiro's default engine ignores
+  `--model`, so picking a specific model runs that chat on Kiro's v3 engine;
+  **Auto** stays on the default engine, which shows tool activity and credits.
+- **Antigravity**: the models come from `agy models`, and the choice is passed
+  via `--model` on each message, so switching needs no restart.
 - **Claude Code**: the CLI has no command to enumerate models, so the picker
   offers Claude Code's documented aliases — `sonnet`, `opus`, `haiku`, `fable`
   (each always maps to the current version), a pinned **Opus 5.5**

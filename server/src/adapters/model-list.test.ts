@@ -85,6 +85,14 @@ describe('parseAgyModelList', () => {
     ])
   })
 
+  it('parses the tab-separated "<id>\\t<name>" format and skips the banner', () => {
+    const out = 'Fetching available models...\ngemini-3.8-flash-high\tGemini 3.8 Flash (High)\nclaude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)\n'
+    expect(parseAgyModelList(out)).toEqual([
+      { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' },
+      { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6 (Thinking)' },
+    ])
+  })
+
   it('returns [] for empty output', () => {
     expect(parseAgyModelList('')).toEqual([])
   })

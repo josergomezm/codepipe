@@ -3,7 +3,7 @@
  *
  * `claude -p "<prompt>" --output-format stream-json --verbose` emits
  * newline-delimited JSON, one event per line. This is Claude Code's native
- * structured output — the equivalent of Kiro/Gemini's ACP for parsing
+ * structured output — the equivalent of Kiro's ACP for parsing
  * purposes. We translate each event into CodePipe's `AdapterEvent` model.
  *
  * Event shapes (from the Claude Code headless docs):

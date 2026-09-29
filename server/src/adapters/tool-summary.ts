@@ -30,24 +30,27 @@ export function oneLine(value: unknown, max = 140): string {
 
 /**
  * Summarize a tool call's input as a single line. Recognizes common
- * Claude Code / ACP tool shapes (Bash, Read/Write/Edit, Grep, WebFetch,
- * Agent/Task) and falls back to a compact view of the first few fields.
+ * Claude Code / ACP / Antigravity tool shapes (Bash, Read/Write/Edit, Grep,
+ * WebFetch, Agent/Task) and falls back to a compact view of the first few fields.
  */
 export function summarizeToolInput(name: string, input: unknown): string {
   if (!isRecord(input)) return name
   const i = input
   const str = (k: string) => (typeof i[k] === 'string' ? (i[k] as string) : undefined)
 
-  const command = str('command')
+  const command = str('command') ?? str('CommandLine')
   if (command) return oneLine(command)
 
-  const filePath = str('file_path') ?? str('path') ?? str('notebook_path')
+  const filePath =
+    str('file_path') ?? str('path') ?? str('notebook_path') ??
+    // Antigravity (agy) uses PascalCase parameter names
+    str('AbsolutePath') ?? str('TargetFile') ?? str('DirectoryPath')
   if (filePath) return oneLine(filePath)
 
-  const search = str('pattern') ?? str('query')
+  const search = str('pattern') ?? str('query') ?? str('Pattern') ?? str('Query')
   if (search) return oneLine(search)
 
-  const url = str('url')
+  const url = str('url') ?? str('Url')
   if (url) return oneLine(url)
 
   // Agent/Task-style tools: prefer "<subagent>: <description>", ignore the prompt.
