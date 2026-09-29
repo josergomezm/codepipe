@@ -48,6 +48,29 @@ export const useProjectsStore = defineStore('projects', () => {
     }
   }
 
+  /** Move a project up (-1) or down (+1) one slot and persist the new order. */
+  async function moveProject(id: string, delta: number) {
+    const from = projects.value.findIndex((p) => p.id === id)
+    const to = from + delta
+    if (from === -1 || to < 0 || to >= projects.value.length) return
+    await setProjectOrder(projects.value.map((p) => p.id).map((pid, i, ids) =>
+      i === from ? ids[to] : i === to ? ids[from] : pid,
+    ))
+  }
+
+  /** Apply an order optimistically, then persist it; refetch on failure. */
+  async function setProjectOrder(ids: string[]) {
+    const byId = new Map(projects.value.map((p) => [p.id, p]))
+    projects.value = ids.map((id) => byId.get(id)).filter((p): p is Project => !!p)
+    try {
+      await api.reorderProjects(ids)
+      error.value = null
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to reorder projects'
+      await fetchProjects()
+    }
+  }
+
   async function updateProjectDevServer(id: string, devServer: ProjectDevServer | null) {
     try {
       const updated = await api.updateProject(id, { devServer })
@@ -213,6 +236,8 @@ export const useProjectsStore = defineStore('projects', () => {
     fetchProjects,
     addProject,
     removeProject,
+    moveProject,
+    setProjectOrder,
     updateProjectDevServer,
     updateProjectStandup,
     startDevServer,

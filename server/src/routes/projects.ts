@@ -79,6 +79,23 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
     }
   })
 
+  // PUT /api/projects/order — persist sidebar order
+  router.put('/order', async (req, res) => {
+    const ids = req.body?.ids
+    if (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string')) {
+      res.status(400).json({ error: 'ids must be an array of strings' })
+      return
+    }
+
+    try {
+      const projects = await storage.reorderProjects(ids)
+      res.json({ ids: projects.map((p) => p.id) })
+    } catch (err) {
+      log.error('api', 'Failed to reorder projects', err)
+      res.status(500).json({ error: 'Failed to reorder projects' })
+    }
+  })
+
   // PATCH /api/projects/:id — update a project (name, devServer config, etc.)
   router.patch('/:id', async (req, res) => {
     const { id } = req.params

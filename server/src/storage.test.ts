@@ -112,6 +112,15 @@ describe('Project CRUD', () => {
     const all = await storage.listProjects()
     expect(all).toHaveLength(1)
   })
+
+  it('reorders projects, appending ones missing from the list', async () => {
+    const a = await storage.addProject(makeProject())
+    const b = await storage.addProject(makeProject())
+    const c = await storage.addProject(makeProject())
+    await storage.reorderProjects([c.id, randomUUID(), a.id])
+    const all = await storage.listProjects()
+    expect(all.map((p) => p.id)).toEqual([c.id, a.id, b.id])
+  })
 })
 
 // =========================================================================

@@ -32,6 +32,8 @@ const renamingSessionId = ref<string | null>(null)
 const renameInput = ref('')
 const quickChatProjectId = ref<string | null>(null)
 const quickChatProvider = ref<ProviderType>('kiro')
+const reordering = ref(false)
+const dragProjectId = ref<string | null>(null)
 
 // Auto-expand the project that contains the active session
 watch(
@@ -61,6 +63,34 @@ const sessionsByProject = computed(() => {
   }
   return map
 })
+
+function hasUnread(projectId: string): boolean {
+  return sessionsByProject.value.get(projectId)?.some((s) => sessionStore.isUnread(s)) ?? false
+}
+
+function startReorder() {
+  openMenuId.value = null
+  quickChatProjectId.value = null
+  reordering.value = true
+}
+
+function onDragStart(projectId: string, e: DragEvent) {
+  dragProjectId.value = projectId
+  e.dataTransfer?.setData('text/plain', projectId)
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+}
+
+function onDrop(targetId: string) {
+  const sourceId = dragProjectId.value
+  dragProjectId.value = null
+  if (!sourceId || sourceId === targetId) return
+  const all = projectStore.projects.map((p) => p.id)
+  // Dragging down lands after the target, dragging up lands before it
+  const after = all.indexOf(sourceId) < all.indexOf(targetId)
+  const ids = all.filter((id) => id !== sourceId)
+  ids.splice(ids.indexOf(targetId) + (after ? 1 : 0), 0, sourceId)
+  projectStore.setProjectOrder(ids)
+}
 
 function toggleProject(projectId: string) {
   if (expandedProjects.value.has(projectId)) {
@@ -190,22 +220,38 @@ async function stopDevServer(id: string) {
 
 <template>
   <div class="flex flex-col gap-1" @click="closeMenu">
-    <h3 class="px-2 text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
-      Projects
-    </h3>
+    <div class="flex items-center justify-between px-2">
+      <h3 class="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+        Projects
+      </h3>
+      <button
+        v-if="reordering"
+        class="rounded bg-blue-600 px-2 py-0.5 text-[10px] font-medium text-white transition hover:bg-blue-700"
+        @click.stop="reordering = false"
+      >
+        Done
+      </button>
+    </div>
 
     <div v-if="projectStore.projects.length === 0" class="px-2 py-1 text-xs text-gray-400 dark:text-gray-500">
       No projects added
     </div>
 
     <div
-      v-for="project in projectStore.projects"
+      v-for="(project, index) in projectStore.projects"
       :key="project.id"
       class="flex flex-col"
+      :class="{ 'opacity-50': dragProjectId === project.id }"
+      :draggable="reordering"
+      @dragstart="onDragStart(project.id, $event)"
+      @dragend="dragProjectId = null"
+      @dragover.prevent
+      @drop.prevent="onDrop(project.id)"
     >
       <!-- Project header row -->
       <div
         class="group relative flex items-center justify-between rounded-lg px-2 py-1.5 text-sm text-gray-700 dark:text-gray-300"
+        :class="{ 'cursor-grab bg-gray-50 dark:bg-gray-800/50': reordering }"
       >
         <div class="min-w-0 flex-1 flex items-center gap-1.5 cursor-pointer" @click="toggleProject(project.id)">
           <!-- Expand/collapse chevron -->
@@ -226,6 +272,12 @@ async function stopDevServer(id: string) {
           >
             {{ sessionsByProject.get(project.id)!.length }}
           </span>
+          <!-- Blue dot when any chat in this project is unread -->
+          <span
+            v-if="hasUnread(project.id)"
+            class="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500"
+            title="New messages"
+          />
           <!-- Green dot for running dev server -->
           <span
             v-if="project.devServerStatus?.status === 'running'"
@@ -246,8 +298,33 @@ async function stopDevServer(id: string) {
           </span>
         </div>
 
+        <!-- Reorder controls -->
+        <template v-if="reordering">
+          <button
+            class="shrink-0 rounded p-1 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 disabled:opacity-30 disabled:hover:bg-transparent dark:hover:bg-gray-700 dark:hover:text-gray-300"
+            title="Move up"
+            :disabled="index === 0"
+            @click.stop="projectStore.moveProject(project.id, -1)"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-3.5 w-3.5">
+              <path fill-rule="evenodd" d="M11.78 9.78a.75.75 0 0 1-1.06 0L8 7.06 5.28 9.78a.75.75 0 0 1-1.06-1.06l3.25-3.25a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1 0 1.06Z" clip-rule="evenodd" />
+            </svg>
+          </button>
+          <button
+            class="shrink-0 rounded p-1 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 disabled:opacity-30 disabled:hover:bg-transparent dark:hover:bg-gray-700 dark:hover:text-gray-300"
+            title="Move down"
+            :disabled="index === projectStore.projects.length - 1"
+            @click.stop="projectStore.moveProject(project.id, 1)"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-3.5 w-3.5">
+              <path fill-rule="evenodd" d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd" />
+            </svg>
+          </button>
+        </template>
+
         <!-- New chat button (plus) -->
         <button
+          v-if="!reordering"
           class="shrink-0 rounded p-1 text-gray-400 transition hover:bg-gray-100 hover:text-blue-600 dark:hover:bg-gray-700 dark:hover:text-blue-400"
           title="New chat in this project"
           @click.stop="openQuickChat(project.id)"
@@ -259,6 +336,7 @@ async function stopDevServer(id: string) {
 
         <!-- Three-dot menu button -->
         <button
+          v-if="!reordering"
           class="shrink-0 rounded p-1 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
           @click.stop="toggleMenu(project.id)"
         >
@@ -322,6 +400,17 @@ async function stopDevServer(id: string) {
               v-if="teamStore.openTodoCount(project.id) > 0"
               class="rounded-full bg-blue-100 px-1.5 text-[10px] font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
             >{{ teamStore.openTodoCount(project.id) }}</span>
+          </button>
+
+          <!-- Rearrange projects -->
+          <button
+            class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
+            @click="startReorder"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-3.5 w-3.5">
+              <path fill-rule="evenodd" d="M5.22 1.22a.75.75 0 0 1 1.06 0l2.5 2.5a.75.75 0 0 1-1.06 1.06L6.5 3.56v8.69a.75.75 0 0 1-1.5 0V3.56L3.78 4.78a.75.75 0 0 1-1.06-1.06l2.5-2.5Zm4.53 2.03a.75.75 0 0 1 .75.75v8.44l1.22-1.22a.75.75 0 1 1 1.06 1.06l-2.5 2.5a.75.75 0 0 1-1.06 0l-2.5-2.5a.75.75 0 1 1 1.06-1.06L9 12.44V4a.75.75 0 0 1 .75-.75Z" clip-rule="evenodd" />
+            </svg>
+            Rearrange
           </button>
 
           <!-- Settings -->
