@@ -1,6 +1,22 @@
 // Types matching backend schemas (redefined for frontend — can't import from server)
 
 export type ProviderType = 'kiro' | 'gemini' | 'claude' | 'codex'
+
+/**
+ * Display names for providers. The `gemini` id predates Google replacing
+ * Gemini CLI with Antigravity (`agy`); it stays as the stored id so existing
+ * sessions keep working, but the UI always says Antigravity.
+ */
+export const PROVIDER_LABELS: Record<ProviderType, string> = {
+  kiro: 'Kiro',
+  gemini: 'Antigravity',
+  claude: 'Claude',
+  codex: 'Codex',
+}
+
+export function providerLabel(provider: string): string {
+  return PROVIDER_LABELS[provider as ProviderType] ?? provider.charAt(0).toUpperCase() + provider.slice(1)
+}
 export type SessionStatus = 'live' | 'archived'
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool'
 export type MessageStatus = 'streaming' | 'complete'

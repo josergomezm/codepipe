@@ -10,7 +10,7 @@ import ProjectServicesModal from '@/components/ProjectServicesModal.vue'
 import ProjectIdeasModal from '@/components/ProjectIdeasModal.vue'
 import IconPlus from '@/components/icons/IconPlus.vue'
 import { useTeamStore } from '@/stores/team'
-import type { ProviderType } from '@/api/client'
+import { providerLabel, type ProviderType } from '@/api/client'
 
 const projectStore = useProjectsStore()
 const sessionStore = useSessionsStore()
@@ -135,10 +135,6 @@ async function removeSession(sessionId: string) {
     disconnect()
   }
   await sessionStore.deleteSession(sessionId)
-}
-
-function providerLabel(provider: string): string {
-  return provider.charAt(0).toUpperCase() + provider.slice(1)
 }
 
 function onFolderSelected(path: string) {
@@ -465,7 +461,7 @@ async function stopDevServer(id: string) {
           class="min-w-0 flex-1 rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-blue-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
         >
           <option value="kiro">Kiro</option>
-          <option value="gemini">Gemini</option>
+          <option value="gemini">Antigravity</option>
           <option value="claude">Claude</option>
           <!-- Codex has no adapter yet — re-enable once it's implemented -->
           <!-- <option value="codex">Codex</option> -->

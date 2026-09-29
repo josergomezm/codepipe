@@ -1,14 +1,12 @@
 <script setup lang="ts">
-import type { ProviderType } from '@/api/client'
+import { PROVIDER_LABELS, type ProviderType } from '@/api/client'
 
 const model = defineModel<ProviderType>({ default: 'kiro' })
 
-const providers: { value: ProviderType; label: string }[] = [
-  { value: 'kiro', label: 'Kiro' },
-  { value: 'gemini', label: 'Gemini' },
-  { value: 'claude', label: 'Claude' },
-  { value: 'codex', label: 'Codex' },
-]
+const providers = (Object.keys(PROVIDER_LABELS) as ProviderType[]).map((value) => ({
+  value,
+  label: PROVIDER_LABELS[value],
+}))
 </script>
 
 <template>

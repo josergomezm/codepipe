@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useTeamStore } from '@/stores/team'
 import PersonaAvatar from '@/components/PersonaAvatar.vue'
-import type { Persona, ProviderType } from '@/api/client'
+import { providerLabel, type Persona, type ProviderType } from '@/api/client'
 
 const emit = defineEmits<{ close: [] }>()
 
@@ -139,7 +139,7 @@ function close() {
                 >lead</span>
               </div>
               <div class="truncate text-xs text-gray-400 dark:text-gray-500">
-                {{ persona.role }} · {{ persona.provider }}<span v-if="persona.model"> ({{ persona.model }})</span>
+                {{ persona.role }} · {{ providerLabel(persona.provider) }}<span v-if="persona.model"> ({{ persona.model }})</span>
               </div>
             </div>
             <button
@@ -191,7 +191,7 @@ function close() {
                 class="rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 focus:border-blue-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
               >
                 <option value="kiro">Kiro</option>
-                <option value="gemini">Gemini</option>
+                <option value="gemini">Antigravity</option>
                 <option value="claude">Claude</option>
                 <!-- Codex has no adapter yet — re-enable once it's implemented -->
                 <!-- <option value="codex">Codex</option> -->

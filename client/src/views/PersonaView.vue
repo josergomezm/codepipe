@@ -5,7 +5,7 @@ import { useTeamStore } from '@/stores/team'
 import { useProjectsStore } from '@/stores/projects'
 import { useUiStore } from '@/stores/ui'
 import PersonaAvatar from '@/components/PersonaAvatar.vue'
-import type { ActionItem, Todo, TodoStatus } from '@/api/client'
+import { providerLabel, type ActionItem, type Todo, type TodoStatus } from '@/api/client'
 
 const route = useRoute()
 const router = useRouter()
@@ -138,7 +138,7 @@ function openBoard(projectId: string) {
             <span v-if="persona.isLead" class="ml-1 rounded-full bg-purple-100 px-1.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/40 dark:text-purple-300">lead</span>
           </span>
           <span class="block truncate text-xs text-gray-400 dark:text-gray-500">
-            {{ persona.role }} · {{ persona.provider }}<span v-if="persona.model"> ({{ persona.model }})</span>
+            {{ persona.role }} · {{ providerLabel(persona.provider) }}<span v-if="persona.model"> ({{ persona.model }})</span>
           </span>
         </div>
       </template>
