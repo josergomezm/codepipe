@@ -132,6 +132,9 @@ export interface ISessionManager {
 /** Storage write debounce interval in milliseconds. */
 const STORAGE_DEBOUNCE_MS = 500
 
+/** Longest we hold a session's queue waiting on `--list-sessions` (Kiro). */
+const LIST_SESSIONS_TIMEOUT_MS = 20_000
+
 export class SessionManager implements ISessionManager {
   private readonly sessions = new Map<string, SessionContext>()
   private readonly storage: IStorageLayer
@@ -963,8 +966,12 @@ export class SessionManager implements ISessionManager {
       // Detect CLI session ID after first message — only for adapters that
       // rely on a session-list scrape (Kiro non-interactive). Adapters that
       // report their session ID inline (cli_session event) skip this.
+      // The turn only finishes once detection is done: the list command
+      // takes seconds, and a queued follow-up dispatched before it returns
+      // would start a brand-new CLI conversation and lose all context.
       if (isFirstMessage && ctx.adapter.usesSessionListDetection && !ctx.session.cliSessionId) {
-        this.detectCliSessionIdFromList(sessionId, ctx)
+        void this.detectCliSessionIdFromList(sessionId, ctx).finally(() => this.finishTurn(sessionId))
+        return
       }
 
       // Turn finished — dispatch the next queued input, if any.
@@ -1329,18 +1336,37 @@ export class SessionManager implements ISessionManager {
    * and parsing the most recent session ID from the output.
    *
    * Used by adapters whose CLI reports its session ID only through its
-   * session list (legacy Kiro non-interactive).
+   * session list (legacy Kiro non-interactive). Resolves once the list
+   * command finishes, fails, or times out — never rejects, so callers can
+   * safely chain the next turn on it.
    */
-  private detectCliSessionIdFromList(sessionId: string, ctx: SessionContext): void {
-    const adapter = ctx.adapter
+  private detectCliSessionIdFromList(sessionId: string, ctx: SessionContext): Promise<void> {
+    return new Promise((resolve) => {
+      const adapter = ctx.adapter
 
-    const child = spawn(adapter.command, ['chat', '--list-sessions'], {
-      cwd: ctx.projectPath,
-      env: { ...process.env },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: false,
+      const child = spawn(adapter.command, ['chat', '--list-sessions'], {
+        cwd: ctx.projectPath,
+        env: { ...process.env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: false,
+      })
+
+      // A hung list command must not stall the session's input queue.
+      const timer = setTimeout(() => {
+        log.warn('session', `--list-sessions timed out for session ${sessionId}`)
+        try { child.kill() } catch { /* already exited */ }
+        resolve()
+      }, LIST_SESSIONS_TIMEOUT_MS)
+      const done = () => {
+        clearTimeout(timer)
+        resolve()
+      }
+
+      this.parseSessionList(sessionId, ctx, child, done)
     })
+  }
 
+  private parseSessionList(sessionId: string, ctx: SessionContext, child: ChildProcess, done: () => void): void {
     let output = ''
 
     child.stdout?.on('data', (data: Buffer) => {
@@ -1368,10 +1394,12 @@ export class SessionManager implements ISessionManager {
       } else {
         log.warn('session', `Could not detect CLI session ID for session ${sessionId} from --list-sessions output`)
       }
+      done()
     })
 
     child.on('error', (err) => {
       log.error('session', `Failed to run --list-sessions for session ${sessionId}`, err)
+      done()
     })
   }
 }
