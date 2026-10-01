@@ -4,6 +4,14 @@ import { z } from 'zod'
 
 export const ProviderTypeSchema = z.enum(['kiro', 'gemini', 'claude', 'codex'])
 
+/** Names for messages users see. `gemini` is the stored id for Antigravity CLI. */
+export const PROVIDER_DISPLAY_NAMES: Record<z.infer<typeof ProviderTypeSchema>, string> = {
+  kiro: 'Kiro',
+  gemini: 'Antigravity',
+  claude: 'Claude',
+  codex: 'Codex',
+}
+
 export const SessionStatusSchema = z.enum(['live', 'archived'])
 
 /**

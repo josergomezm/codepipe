@@ -1,3 +1,6 @@
+// Must stay the first import: installs the crash handlers before any other
+// module's top-level code can throw.
+import './crash-guard.js'
 import express from 'express'
 import { createServer } from 'http'
 
@@ -37,7 +40,9 @@ import { setupWebSocket } from './websocket.js'
 import { getProviderHealth } from './provider-health.js'
 import { PushService } from './push.js'
 import { createPushRoutes } from './routes/push.js'
-import { log } from './logger.js'
+import { log, setCrashContext } from './logger.js'
+import { startHealthMonitor } from './health.js'
+import { createDiagnosticsRoutes } from './routes/diagnostics.js'
 
 // ---------------------------------------------------------------------------
 // Initialize storage and session manager
@@ -106,6 +111,7 @@ app.use('/api/actions', createActionRoutes(storage, standupService))
 app.use('/api/personas', createPersonaRoutes(storage, './data/avatars'))
 app.use('/api/avatars', express.static('./data/avatars', { maxAge: '1d' }))
 app.use('/api/standup', createStandupRoutes(standupService, storage))
+app.use('/api/diagnostics', createDiagnosticsRoutes(() => healthCounts()))
 
 // ---------------------------------------------------------------------------
 // HTTP + WebSocket server
@@ -116,6 +122,16 @@ const terminalManager = new TerminalManager()
 setupWebSocket(server, sessionManager, storage, eventBus, {
   '/ws/terminal': createTerminalUpgradeHandler(storage, terminalManager),
 })
+
+/** What's running right now — for health samples, diagnostics and crash reports. */
+function healthCounts(): Record<string, number> {
+  return {
+    ...sessionManager.getStats(),
+    shells: terminalManager.shellCount(),
+    runningServices: serviceManager.listRunning().length,
+  }
+}
+setCrashContext(() => healthCounts())
 
 // Only listen when running directly (not imported by tests)
 const isMainModule = !process.env['VITEST']
@@ -129,6 +145,8 @@ if (isMainModule) {
   })
 
   standupService.start()
+  startHealthMonitor(healthCounts)
+  log.info('server', `Started (pid ${process.pid}, node ${process.version}${process.env['CODEPIPE_SUPERVISED'] === '1' ? ', supervised' : ''})`)
 
   // Graceful shutdown
   async function gracefulShutdown(signal: string): Promise<void> {

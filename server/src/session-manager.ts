@@ -12,6 +12,7 @@ import type {
   ModelState,
   ModelOption,
 } from './schemas.js'
+import { PROVIDER_DISPLAY_NAMES } from './schemas.js'
 import type { IStorageLayer } from './storage.js'
 import type { ICLIAdapter } from './adapters/types.js'
 import { type AdapterEvent, validateAdapterEvents } from './adapters/types.js'
@@ -134,6 +135,19 @@ const STORAGE_DEBOUNCE_MS = 500
 
 /** Longest we hold a session's queue waiting on `--list-sessions` (Kiro). */
 const LIST_SESSIONS_TIMEOUT_MS = 20_000
+
+/** How much of a CLI's stderr to keep for failure reports. */
+const STDERR_TAIL_CHARS = 4000
+
+/** The last non-empty, non-noise line of CLI stderr, trimmed for a chat notice. */
+export function lastMeaningfulLine(text: string): string | null {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !/^(\[INFO\]|\[DEBUG\]|▸ Credits:|\(Use `node --trace-warnings)/.test(l))
+  const last = lines.at(-1)
+  return last ? (last.length > 200 ? last.slice(0, 199) + '…' : last) : null
+}
 
 export class SessionManager implements ISessionManager {
   private readonly sessions = new Map<string, SessionContext>()
@@ -901,6 +915,13 @@ export class SessionManager implements ISessionManager {
     })
 
     ctx.childProcess = child
+    const startedAt = Date.now()
+    // If the adapter itself explains a failure (e.g. Antigravity's error
+    // result), we don't add a second, generic notice.
+    const messagesAtStart = ctx.session.messages.length
+    // Last few KB of stderr, reported if the CLI dies — that's where CLIs
+    // print why (auth expired, crash trace, bad flag…).
+    let stderrTail = ''
 
     // Signal typing status
     this.broadcast(sessionId, { type: 'status', data: 'typing' })
@@ -925,6 +946,7 @@ export class SessionManager implements ISessionManager {
     // Capture stderr — parse for credits, log the rest
     child.stderr?.on('data', (data: Buffer) => {
       const text = data.toString()
+      stderrTail = (stderrTail + text).slice(-STDERR_TAIL_CHARS)
 
       // Parse stderr for credits (Kiro CLI sends credits to stderr)
       if (adapter.onStderr) {
@@ -946,14 +968,15 @@ export class SessionManager implements ISessionManager {
       }
     })
 
-    child.on('close', (exitCode) => {
+    child.on('close', (exitCode, signal) => {
       // Process any remaining buffered content
       if (stdoutBuffer.trim().length > 0) {
         this.processNonInteractiveLine(sessionId, ctx, stdoutBuffer)
         stdoutBuffer = ''
       }
 
-      ctx.childProcess = null
+      // A newer turn may already own the slot (it killed this one).
+      if (ctx.childProcess === child) ctx.childProcess = null
 
       // Finalize the current streaming message
       this.finalizeCurrentMessage(sessionId)
@@ -961,7 +984,29 @@ export class SessionManager implements ISessionManager {
       // Signal idle
       this.broadcast(sessionId, { type: 'status', data: 'idle' })
 
-      log.info('session', `CLI process exited with code ${exitCode} for session ${sessionId}`)
+      const seconds = Math.round((Date.now() - startedAt) / 1000)
+      // `killed` means we ended it (Stop, restart, replaced) — not a failure.
+      if ((exitCode !== 0 || signal) && !child.killed) {
+        const name = PROVIDER_DISPLAY_NAMES[adapter.provider] ?? adapter.provider
+        log.warn('cli', `${name} CLI failed for session ${sessionId}`, {
+          exitCode,
+          signal,
+          seconds,
+          command,
+          stderrTail: stripAnsi(stderrTail).trim().slice(-STDERR_TAIL_CHARS),
+        })
+        const explained = ctx.session.messages.slice(messagesAtStart).some((m) => m.role === 'system')
+        if (!explained) {
+          const reason = lastMeaningfulLine(stripAnsi(stderrTail))
+          this.emitSystemMessage(
+            sessionId,
+            ctx,
+            `The ${name} CLI exited unexpectedly (${signal ? `signal ${signal}` : `code ${exitCode}`})${reason ? `: ${reason}` : '.'}`,
+          )
+        }
+      } else {
+        log.info('session', `CLI process exited with code ${exitCode} after ${seconds}s for session ${sessionId}`)
+      }
 
       // Detect CLI session ID after first message — only for adapters that
       // rely on a session-list scrape (Kiro non-interactive). Adapters that
@@ -1168,6 +1213,20 @@ export class SessionManager implements ISessionManager {
 
   getSession(sessionId: string): Session | undefined {
     return this.sessions.get(sessionId)?.session
+  }
+
+  /** Counts for health monitoring and crash reports. */
+  getStats(): Record<string, number> {
+    let liveSessions = 0, busyTurns = 0, cliProcesses = 0, acpAgents = 0, queuedInputs = 0, chatClients = 0
+    for (const ctx of this.sessions.values()) {
+      if (ctx.session.status === 'live') liveSessions++
+      if (ctx.busy) busyTurns++
+      if (ctx.childProcess) cliProcesses++
+      if (ctx.acpDriver) acpAgents++
+      queuedInputs += ctx.inputQueue?.length ?? 0
+      chatClients += ctx.clients.size
+    }
+    return { sessionsInMemory: this.sessions.size, liveSessions, busyTurns, cliProcesses, acpAgents, queuedInputs, chatClients }
   }
 
   listSessions(): SessionMeta[] {

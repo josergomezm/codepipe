@@ -12,7 +12,8 @@ You'll need Node.js 22+ and at least one supported AI CLI installed and authenti
 # 1. Backend (http://127.0.0.1:5551)
 cd server
 npm install
-npm run dev          # or: KIRO_TRANSPORT=acp npm run dev  (recommended for Kiro)
+npm run serve        # supervised: restarts after a crash (see Keeping it running)
+                     # or `npm run dev` while working on CodePipe itself (auto-reloads)
 
 # 2. Frontend (http://127.0.0.1:5552) — in a second terminal
 cd client
@@ -21,6 +22,26 @@ npm run dev
 ```
 
 Open http://127.0.0.1:5552, pick a project directory and a provider, and start chatting. To use it from your phone with notifications, see [Remote Access](#remote-access-with-tailscale) and [Install on your phone](#install-on-your-phone--notifications-pwa). For configuration options, see [Configuration](#configuration).
+
+## Keeping it running
+
+For everyday use, start the backend with **`npm run serve`**. It runs the server under a small supervisor (`server/scripts/supervise.mjs`) that restarts it after any crash, backing off if it crashes repeatedly. Use `npm run dev` only while working on CodePipe itself. It reloads whenever a source file changes, including when an agent in one of your chats edits CodePipe, which restarts the server mid-reply; and if the server crashes under `dev`, it stays down until a file changes.
+
+When something goes wrong, the **Diagnostics** page (sidebar → Workspace) shows:
+
+- **Health:** uptime, memory, live chats, CLI processes and shells, and the worst event-loop stall, plus a 24-hour memory trend. A sample is also written to the log every 10 minutes, so slow leaks show up before they crash anything.
+- **Crashes & restarts:** every crash report and supervisor restart. Tap one to read the full report.
+- **Recent warnings & errors**.
+
+Everything is also on disk under `server/data/`:
+
+| Path | What's in it |
+|------|--------------|
+| `server.log` (+ `server.1.log` … `server.5.log`) | The full log, with ISO timestamps; rotates at 10 MB. Errors include their message, code and stack. |
+| `crashes/` | One report per crash: the error and stack, what was running (chats, CLI processes, shells), memory, and the last 300 log lines. Uncaught exceptions end the process; unhandled promise rejections are reported and the server keeps running. Deaths JavaScript can't catch (out of memory, native crashes, being killed) get a report from the server's last stderr, written by the supervisor. The newest 50 are kept. |
+| `restarts.jsonl` | One line per supervisor restart: time, exit code, uptime, and the matching report. |
+
+When a CLI process fails mid-reply, the chat says so (with the CLI's own last error line) and the log records its exit code, run time and the tail of its stderr.
 
 ## How It Works
 
@@ -69,6 +90,11 @@ The server reads these environment variables:
 | `CLAUDE_EXTRA_ARGS` | _(unset)_   | Extra flags appended to Claude Code (e.g. `--dangerously-skip-permissions`). |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | _(unset)_ | Web Push keys. Generate with `npm run gen-vapid`. Push is disabled without them. |
 | `VAPID_SUBJECT`   | `mailto:admin@codepipe.local` | Contact URI sent with push (a `mailto:` or `https:` URL). |
+| `LOG_LEVEL`       | `info`        | `debug`, `info`, `warn`, `error` or `fatal`. |
+| `LOG_MAX_BYTES`   | `10485760`    | Rotate `server.log` at this size (5 old files kept). |
+| `HEALTH_INTERVAL_MS` | `600000`   | How often a health sample is logged. |
+| `HEALTH_RSS_WARN_MB` | `1500`     | Log a warning when memory use passes this. |
+| `CODEPIPE_CWD`    | `server/`     | (`npm run serve` only) Folder the server runs in, which is where its `data/` lives. |
 
 `GET /api/health` reports server status plus, for each registered provider, the resolved binary and whether it appears to be installed — useful for catching a missing CLI before creating a session.
 

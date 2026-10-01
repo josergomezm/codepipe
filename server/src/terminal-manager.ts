@@ -89,6 +89,11 @@ export function smallestSize(sizes: Iterable<{ cols: number; rows: number } | nu
 export class TerminalManager {
   private readonly terminals = new Map<string, ProjectTerminal>()
 
+  /** Running shells, for health monitoring. */
+  shellCount(): number {
+    return this.terminals.size
+  }
+
   /** Whether a shell is currently running for the project. */
   isRunning(projectId: string): boolean {
     return this.terminals.has(projectId)

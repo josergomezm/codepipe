@@ -15,6 +15,11 @@ const router = createRouter({
       component: () => import('../views/IdeasBoardView.vue'),
     },
     {
+      path: '/diagnostics',
+      name: 'diagnostics',
+      component: () => import('../views/DiagnosticsView.vue'),
+    },
+    {
       path: '/ledger',
       name: 'ledger',
       component: () => import('../views/LedgerView.vue'),

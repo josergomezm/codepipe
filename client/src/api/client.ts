@@ -392,6 +392,58 @@ export interface FileDiff {
   binary: boolean
 }
 
+// --- Diagnostics ---
+
+export interface HealthSample {
+  time: string
+  uptimeSeconds: number
+  rssMb: number
+  heapUsedMb: number
+  maxLoopDelayMs: number
+  liveSessions?: number
+  cliProcesses?: number
+  acpAgents?: number
+  busyTurns?: number
+  shells?: number
+  [count: string]: number | string | undefined
+}
+
+export interface CrashSummary {
+  file: string
+  time: string
+  /** uncaughtException | unhandledRejection | process-exit */
+  kind: string
+  message: string
+  sizeBytes: number
+}
+
+export interface RestartRecord {
+  time: string
+  exitCode: number | null
+  signal: string | null
+  uptimeSeconds: number
+  report: string | null
+}
+
+export interface Diagnostics {
+  process: { pid: number; node: string; platform: string; startedAt: string; supervised: boolean }
+  current: HealthSample
+  samples: HealthSample[]
+  crashes: CrashSummary[]
+  restarts: RestartRecord[]
+  recentProblems: string[]
+}
+
+export function fetchDiagnostics(): Promise<Diagnostics> {
+  return request<Diagnostics>('/api/diagnostics')
+}
+
+export async function fetchCrashReport(file: string): Promise<string> {
+  const res = await fetch(`/api/diagnostics/crashes/${encodeURIComponent(file)}`)
+  if (!res.ok) throw new Error(res.statusText)
+  return res.text()
+}
+
 export function fetchChanges(projectId: string): Promise<ChangesResult> {
   return request<ChangesResult>(`/api/projects/${projectId}/changes`)
 }
