@@ -42,6 +42,7 @@ Everything is also on disk under `server/data/`:
 | `restarts.jsonl` | One line per supervisor restart: time, exit code, uptime, and the matching report. |
 
 When a CLI process fails mid-reply, the chat says so (with the CLI's own last error line) and the log records its exit code, run time and the tail of its stderr.
+Terminal shells are logged the same way (start with pid, every client attach and detach, and exit with code, uptime and who ended it). If a shell can't start (the project folder is gone, or `CODEPIPE_SHELL` is wrong), the Terminal tab shows the reason and a **Try again** button instead of retrying silently.
 
 ## How It Works
 

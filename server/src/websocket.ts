@@ -46,6 +46,14 @@ export function setupWebSocket(
   wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
     const url = new URL(request.url ?? '', 'http://localhost')
 
+    // `ws` emits 'error' on a server socket for protocol problems (e.g. a
+    // corrupt frame from a flaky mobile connection). With no listener Node
+    // throws, which would take the whole backend down. Log it; ws closes the
+    // socket itself and the client reconnects.
+    ws.on('error', (err) => {
+      log.warn('ws', `WebSocket error (${url.pathname}${url.search})`, err)
+    })
+
     // Global change-hint subscription (/ws?events=1): the client refetches
     // whatever collection the hint names — events carry no data.
     if (url.searchParams.get('events') === '1') {

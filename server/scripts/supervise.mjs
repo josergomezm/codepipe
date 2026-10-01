@@ -105,6 +105,13 @@ function start() {
   })
 }
 
+/**
+ * Harmless stderr from child helpers, never the cause of a server death:
+ * node-pty's Windows kill helper crashes with this when the shell had
+ * already exited (the helper is a separate process).
+ */
+const KNOWN_NOISE = /AttachConsole failed|conpty_console_list_agent|getConsoleProcessList\(shellPid\)/
+
 /** The server's own log lines (also mirrored to stderr for warnings/errors). */
 const LOG_LINE = /^\d{4}-\d\d-\d\dT[\d:.]+Z \[(\w+)\s*\]/
 
@@ -114,7 +121,7 @@ const LOG_LINE = /^\d{4}-\d\d-\d\dT[\d:.]+Z \[(\w+)\s*\]/
  */
 function headline(text) {
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
-  const raw = lines.filter((l) => !LOG_LINE.test(l) && !l.startsWith('at ') && !l.startsWith('{'))
+  const raw = lines.filter((l) => !LOG_LINE.test(l) && !l.startsWith('at ') && !l.startsWith('{') && !KNOWN_NOISE.test(l))
   // Native crashes print the message, then stack frames ("1: 00007FF6 …").
   const errorLike = raw.filter((l) => /FATAL ERROR|out of memory|Error\b|Exception|panic|Segmentation fault|Assertion/i.test(l))
   if (errorLike.length) return errorLike.at(-1)

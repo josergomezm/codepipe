@@ -15,6 +15,10 @@ const emit = defineEmits<{ settled: [] }>()
 
 const container = ref<HTMLDivElement | null>(null)
 const state = ref<'connecting' | 'open' | 'exited' | 'error'>('connecting')
+/** Why the shell isn't available, from the server (state === 'error'). */
+const errorMessage = ref('')
+/** Reconnect delay; grows while the server is unreachable. */
+let retryDelayMs = 1000
 const exitCode = ref<number | null>(null)
 const confirmingKill = ref(false)
 /** Shown when we reconnected to a different shell than before. */
@@ -94,8 +98,16 @@ function connect() {
     sendSize()
   }
   socket.onmessage = (ev) => {
-    const msg = JSON.parse(ev.data as string) as { type: string; data?: string; code?: number; shellId?: string }
-    if (msg.type === 'snapshot') {
+    let msg: { type: string; data?: string; code?: number; shellId?: string; message?: string }
+    try {
+      msg = JSON.parse(ev.data as string)
+    } catch {
+      return // not a frame we understand
+    }
+    if (msg.type === 'error') {
+      errorMessage.value = msg.message ?? "Couldn't start a shell."
+    } else if (msg.type === 'snapshot') {
+      retryDelayMs = 1000
       term?.reset()
       term?.write(msg.data ?? '')
       // Reconnected to a different shell than before: the old one ended
@@ -120,19 +132,25 @@ function connect() {
     if (ws !== socket) return
     ws = null
     if (disposed || state.value === 'exited') return
-    if (ev.code === 4404) {
+    // The server told us why there's no shell — retrying won't help.
+    if (ev.code === 4404 || ev.code === 4500) {
+      if (ev.code === 4404) errorMessage.value = "This project doesn't exist on the server any more."
       state.value = 'error'
       return
     }
     // Dropped connection (server restart, network blip) — the shell survives
-    // on the server, so reattach and get the snapshot back.
+    // on the server, so reattach and get the snapshot back. Back off while
+    // the server is down instead of hammering it.
     state.value = 'connecting'
-    reconnectTimer = setTimeout(connect, 2000)
+    reconnectTimer = setTimeout(connect, retryDelayMs)
+    retryDelayMs = Math.min(retryDelayMs * 2, 15_000)
   }
 }
 
 function restart() {
   exitCode.value = null
+  errorMessage.value = ''
+  retryDelayMs = 1000
   expectingNewShell = true
   shellReplaced.value = false
   ws?.close()
@@ -234,14 +252,14 @@ watch(() => props.active, async (active) => {
         <template v-if="state === 'open'">Shell running</template>
         <template v-else-if="state === 'connecting'">Connecting…</template>
         <template v-else-if="state === 'exited'">Shell exited{{ exitCode !== null ? ` (code ${exitCode})` : '' }}</template>
-        <template v-else>Project not found</template>
+        <template v-else>No shell</template>
       </span>
       <div class="flex-1" />
       <button
-        v-if="state === 'exited'"
+        v-if="state === 'exited' || state === 'error'"
         class="rounded-md bg-violet-600 px-2 py-0.5 font-medium text-white transition hover:bg-violet-500"
         @click="restart"
-      >New shell</button>
+      >{{ state === 'error' ? 'Try again' : 'New shell' }}</button>
       <button
         v-else-if="state === 'open'"
         class="rounded-md px-2 py-0.5 transition"
@@ -249,6 +267,13 @@ watch(() => props.active, async (active) => {
         title="End this shell"
         @click="kill"
       >{{ confirmingKill ? 'Tap again to kill' : 'Kill' }}</button>
+    </div>
+
+    <div
+      v-if="state === 'error'"
+      class="shrink-0 border-b border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300"
+    >
+      {{ errorMessage || "Couldn't start a shell." }}
     </div>
 
     <div

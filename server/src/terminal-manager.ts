@@ -11,12 +11,17 @@
  * With several screens attached (e.g. desktop + phone), the shell is sized to
  * the smallest one, like tmux, so no screen sees lines wrapped for another.
  *
+ * Nothing a shell or client does may throw out of an event handler: that
+ * would be an uncaught exception and take the whole backend down with it.
+ *
  * Wire protocol (JSON text frames over `/ws/terminal?projectId=<id>`):
  *   client → server  {type:'input', data} | {type:'resize', cols, rows} | {type:'kill'}
  *   server → client  {type:'snapshot', shellId, data} | {type:'output', data} | {type:'exit', code}
+ *                    | {type:'error', message} (no shell could start; the socket then closes with 4500)
  */
 
 import * as pty from 'node-pty'
+import { existsSync, statSync } from 'fs'
 import { platform } from 'os'
 import { randomUUID } from 'crypto'
 import type { WebSocket } from 'ws'
@@ -44,6 +49,11 @@ export function resolveShell(): { command: string; args: string[] } {
 interface ProjectTerminal {
   /** Changes whenever a new shell starts, so clients can tell a restart. */
   id: string
+  startedAt: number
+  /** Why the shell is ending, when we ended it (for the exit log line). */
+  killReason?: string
+  /** Set once the shell has exited. */
+  exited?: boolean
   pty: pty.IPty
   mirror: InstanceType<typeof HeadlessTerminal>
   serializer: InstanceType<typeof SerializeAddon>
@@ -86,6 +96,9 @@ export function smallestSize(sizes: Iterable<{ cols: number; rows: number } | nu
   return best
 }
 
+/** A shell that couldn't be started, with a message fit to show the user. */
+export class TerminalStartError extends Error {}
+
 export class TerminalManager {
   private readonly terminals = new Map<string, ProjectTerminal>()
 
@@ -99,41 +112,67 @@ export class TerminalManager {
     return this.terminals.has(projectId)
   }
 
-  /** Connect a client socket to the project's shell, starting one if needed. */
+  /**
+   * Connect a client socket to the project's shell, starting one if needed.
+   * Throws TerminalStartError (with a user-facing message) if no shell can run.
+   */
   attach(projectId: string, cwd: string, ws: WebSocket): void {
     const term = this.terminals.get(projectId) ?? this.start(projectId, cwd)
     term.clients.set(ws, null)
+    log.info('terminal', `Client attached to shell for project ${projectId} (${term.clients.size} connected)`)
 
     // Replay the current screen + scrollback before streaming live output.
-    send(ws, { type: 'snapshot', shellId: term.id, data: term.serializer.serialize() })
+    let snapshot = ''
+    try {
+      snapshot = term.serializer.serialize()
+    } catch (err) {
+      log.warn('terminal', `Couldn't serialize scrollback for project ${projectId}`, err)
+    }
+    send(ws, { type: 'snapshot', shellId: term.id, data: snapshot })
 
     ws.on('message', (raw) => {
       const msg = parseClientMessage(raw.toString())
       if (!msg) return
       const live = this.terminals.get(projectId)
       if (!live || live !== term) return
-      if (msg.type === 'input') live.pty.write(msg.data)
-      else if (msg.type === 'resize') {
-        live.clients.set(ws, { cols: msg.cols, rows: msg.rows })
-        this.fitToClients(live)
-      } else if (msg.type === 'kill') this.kill(projectId)
+      try {
+        if (msg.type === 'input') live.pty.write(msg.data)
+        else if (msg.type === 'resize') {
+          live.clients.set(ws, { cols: msg.cols, rows: msg.rows })
+          this.fitToClients(live)
+        } else if (msg.type === 'kill') this.kill(projectId, 'killed from the Terminal tab')
+      } catch (err) {
+        // e.g. writing to or resizing a shell that exited a moment ago
+        log.warn('terminal', `Ignored ${msg.type} for project ${projectId}: the shell didn't accept it`, err)
+      }
     })
 
+    // Socket 'error' events are handled where the socket is created (terminal-ws).
     ws.on('close', () => {
       term.clients.delete(ws)
+      log.info('terminal', `Client detached from shell for project ${projectId} (${term.clients.size} connected)`)
       // The smallest screen may have left — let the others grow back.
-      if (this.terminals.get(projectId) === term) this.fitToClients(term)
+      if (this.terminals.get(projectId) !== term) return
+      try {
+        this.fitToClients(term)
+      } catch (err) {
+        log.warn('terminal', `Couldn't resize shell for project ${projectId}`, err)
+      }
     })
   }
 
-  kill(projectId: string): void {
+  kill(projectId: string, reason = 'killed'): void {
     const term = this.terminals.get(projectId)
-    if (!term) return
+    // Killing an already-exited shell makes node-pty's Windows helper print
+    // a harmless "AttachConsole failed" crash to stderr — skip it.
+    if (!term || term.exited) return
+    term.killReason = reason
+    log.info('terminal', `Ending shell for project ${projectId}: ${reason}`)
     try { term.pty.kill() } catch { /* already exited */ }
   }
 
-  killAll(): void {
-    for (const id of [...this.terminals.keys()]) this.kill(id)
+  killAll(reason = 'server shutting down'): void {
+    for (const id of [...this.terminals.keys()]) this.kill(id, reason)
   }
 
   private fitToClients(term: ProjectTerminal): void {
@@ -147,15 +186,38 @@ export class TerminalManager {
 
   private start(projectId: string, cwd: string): ProjectTerminal {
     const shell = resolveShell()
-    log.info('terminal', `Starting ${shell.command} for project ${projectId} in ${cwd}`)
 
-    const proc = pty.spawn(shell.command, shell.args, {
-      name: 'xterm-256color',
-      cols: DEFAULT_COLS,
-      rows: DEFAULT_ROWS,
-      cwd,
-      env: { ...process.env } as Record<string, string>,
+    // Fail with a clear reason rather than an opaque spawn error.
+    if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
+      log.warn('terminal', `Not starting a shell for project ${projectId}: folder missing (${cwd})`)
+      throw new TerminalStartError(`The project folder doesn't exist any more: ${cwd}`)
+    }
+
+    let proc: pty.IPty
+    try {
+      proc = pty.spawn(shell.command, shell.args, {
+        name: 'xterm-256color',
+        cols: DEFAULT_COLS,
+        rows: DEFAULT_ROWS,
+        cwd,
+        env: { ...process.env } as Record<string, string>,
+      })
+    } catch (err) {
+      log.error('terminal', `Failed to start ${shell.command} for project ${projectId} in ${cwd}`, err)
+      const detail = err instanceof Error ? err.message : String(err)
+      const hint = process.env['CODEPIPE_SHELL'] ? ' (check CODEPIPE_SHELL)' : ''
+      throw new TerminalStartError(`Couldn't start ${shell.command}: ${detail}${hint}`)
+    }
+    log.info('terminal', `Started ${shell.command} (pid ${proc.pid}) for project ${projectId} in ${cwd}`)
+
+    // node-pty re-throws socket errors other than EIO (e.g. EPIPE, ECONNRESET)
+    // unless a second 'error' listener exists — from inside an event handler,
+    // i.e. as an uncaught exception that would crash the server. `on` exists
+    // at runtime but isn't in node-pty's IPty type.
+    ;(proc as unknown as { on(event: 'error', fn: (err: Error) => void): void }).on('error', (err) => {
+      log.warn('terminal', `Shell I/O error for project ${projectId} (pid ${proc.pid})`, err)
     })
+
     const mirror = new HeadlessTerminal({
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
@@ -167,6 +229,7 @@ export class TerminalManager {
 
     const term: ProjectTerminal = {
       id: randomUUID(),
+      startedAt: Date.now(),
       pty: proc,
       mirror,
       serializer,
@@ -176,17 +239,32 @@ export class TerminalManager {
     }
     this.terminals.set(projectId, term)
 
+    let mirrorOk = true
     proc.onData((data) => {
-      mirror.write(data)
+      if (mirrorOk) {
+        try {
+          mirror.write(data)
+        } catch (err) {
+          // Lose scrollback replay for this shell rather than the server.
+          mirrorOk = false
+          log.warn('terminal', `Scrollback mirror failed for project ${projectId}; live output continues`, err)
+        }
+      }
       for (const ws of term.clients.keys()) send(ws, { type: 'output', data })
     })
 
-    proc.onExit(({ exitCode }) => {
-      log.info('terminal', `Shell for project ${projectId} exited with code ${exitCode}`)
+    proc.onExit(({ exitCode, signal }) => {
+      term.exited = true
+      const uptime = Math.round((Date.now() - term.startedAt) / 1000)
+      const how = term.killReason ?? (exitCode === 0 ? 'exited' : 'exited unexpectedly')
+      const line = `Shell for project ${projectId} (pid ${proc.pid}) ${how}: code ${exitCode}${signal ? `, signal ${signal}` : ''}, after ${uptime}s`
+      if (term.killReason || exitCode === 0) log.info('terminal', line)
+      else log.warn('terminal', line)
+
       // Only forget it if it's still the registered terminal for the project.
       if (this.terminals.get(projectId) === term) this.terminals.delete(projectId)
       for (const ws of term.clients.keys()) send(ws, { type: 'exit', code: exitCode })
-      mirror.dispose()
+      try { mirror.dispose() } catch { /* already gone */ }
     })
 
     return term
@@ -194,5 +272,10 @@ export class TerminalManager {
 }
 
 function send(ws: WebSocket, msg: unknown): void {
-  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg))
+  if (ws.readyState !== ws.OPEN) return
+  try {
+    ws.send(JSON.stringify(msg))
+  } catch (err) {
+    log.warn('terminal', 'Failed to send to a terminal client', err)
+  }
 }
