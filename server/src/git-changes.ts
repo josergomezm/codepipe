@@ -9,6 +9,7 @@
 import { execFile } from 'child_process'
 import { open } from 'fs/promises'
 import { join } from 'path'
+import { ISOLATED_CHILD } from './child-options.js'
 
 /** Git's well-known empty tree — the base for repos with no commits yet. */
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
@@ -67,7 +68,7 @@ function git(cwd: string, args: string[]): Promise<GitResult> {
     execFile(
       'git',
       ['-c', 'core.quotePath=false', ...args],
-      { cwd, maxBuffer: 64 * 1024 * 1024, windowsHide: true, encoding: 'utf8' },
+      { cwd, maxBuffer: 64 * 1024 * 1024, ...ISOLATED_CHILD, encoding: 'utf8' },
       (err, stdout) => {
         // A non-zero exit is data (e.g. `diff --no-index` exits 1 on changes);
         // only a failure to spawn git at all is an error.

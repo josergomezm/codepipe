@@ -1,6 +1,7 @@
 import { execSync } from 'child_process'
 import { getServeStatus } from './tailscale.js'
 import type { RunningService } from './service-manager.js'
+import { ISOLATED_CHILD } from './child-options.js'
 
 // ---------------------------------------------------------------------------
 // Central port registry
@@ -238,6 +239,7 @@ export function isLocalPortListening(port: number): boolean {
         encoding: 'utf-8',
         timeout: 3000,
         stdio: ['pipe', 'pipe', 'pipe'],
+        ...ISOLATED_CHILD,
       })
       // Only count 127.0.0.1 or 0.0.0.0 bindings — not Tailscale interface (100.x.x.x)
       return output.trim().split('\n').some((line) => {
@@ -251,6 +253,7 @@ export function isLocalPortListening(port: number): boolean {
         encoding: 'utf-8',
         timeout: 3000,
         stdio: ['pipe', 'pipe', 'pipe'],
+        ...ISOLATED_CHILD,
       })
       return output.trim().length > 0
     }

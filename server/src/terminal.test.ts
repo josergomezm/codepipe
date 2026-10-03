@@ -2,6 +2,11 @@
  * Terminal failure paths, against a real HTTP server, real WebSocket clients
  * and real shells. Each case must leave the server running: an exception
  * escaping a socket or pty event handler would crash the whole backend.
+ *
+ * `npm test` runs this file in its own pass. Alongside other test files in
+ * parallel Vitest workers, node-pty on Windows occasionally takes its worker
+ * process down while shells are torn down (a test-runner interaction — the
+ * same kill sequences are stable in a normal Node process).
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import { createServer, type Server } from 'http'
@@ -61,7 +66,7 @@ function connect(projectId: string) {
   return { ws, frames, closed, opened }
 }
 
-async function waitFor(check: () => boolean, ms = 10_000) {
+async function waitFor(check: () => boolean, ms = 25_000) {
   const end = Date.now() + ms
   while (!check()) {
     if (Date.now() > end) throw new Error('timed out')
@@ -74,7 +79,8 @@ async function serverStillWorks() {
   expect(await res.text()).toBe('alive')
 }
 
-describe('terminal error handling', () => {
+// Real shells: PowerShell can take a few seconds to start on a busy machine.
+describe('terminal error handling', { timeout: 30_000 }, () => {
   it('reports a missing project folder instead of retrying forever', async () => {
     const c = connect('gone')
     const { code } = await c.closed

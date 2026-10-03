@@ -4,7 +4,7 @@
  *
  *   npm run serve
  *
- * Runs `tsx src/index.ts` (no file watching, so an agent editing CodePipe's
+ * Runs src/index.ts under tsx's loader (no file watching, so an agent editing CodePipe's
  * own code can't restart the server mid-turn) and restarts it whenever it
  * exits abnormally, with exponential backoff for crash loops.
  *
@@ -23,7 +23,7 @@ import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const serverDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const runDir = path.resolve(process.env.CODEPIPE_CWD || serverDir)
@@ -32,7 +32,10 @@ const dataDir = path.join(runDir, 'data')
 const crashDir = path.join(dataDir, 'crashes')
 const restartsFile = path.join(dataDir, 'restarts.jsonl')
 const logFile = path.join(dataDir, 'server.log')
-const tsxCli = createRequire(import.meta.url).resolve('tsx/cli')
+// The server runs as ONE Node process with tsx's loader — no `tsx` CLI
+// wrapper in between, so signals, exit codes and stdio reach it directly and
+// killing it can't leave an orphaned grandchild holding the port.
+const tsxLoader = pathToFileURL(createRequire(import.meta.url).resolve('tsx/esm')).href
 
 const MIN_DELAY_MS = 1000
 const MAX_DELAY_MS = 60_000
@@ -59,9 +62,12 @@ function start() {
   const startedAt = Date.now()
   let stderrTail = ''
 
-  child = spawn(process.execPath, [tsxCli, '--tsconfig', path.join(serverDir, 'tsconfig.json'), entry], {
+  // Not windowsHide: the server deliberately shares this console, so your
+  // Ctrl+C reaches it and it shuts down gracefully on its own. (The CLIs it
+  // starts are isolated from this console — see src/child-options.ts.)
+  child = spawn(process.execPath, ['--import', tsxLoader, entry], {
     cwd: runDir,
-    env: { ...process.env, CODEPIPE_SUPERVISED: '1' },
+    env: { ...process.env, CODEPIPE_SUPERVISED: '1', TSX_TSCONFIG_PATH: path.join(serverDir, 'tsconfig.json') },
     stdio: ['inherit', 'inherit', 'pipe'],
   })
   note('INFO', `Started server (pid ${child.pid})`)
@@ -81,9 +87,11 @@ function start() {
       process.exit(0)
     }
 
-    // The server's own crash handler writes a report for JS errors. Anything
-    // else (OOM, native crash, killed from outside) gets one from stderr.
-    const newReports = crashFiles().filter((f) => !before.has(f))
+    // The server's own crash handler writes a report for a fatal JS error
+    // (uncaughtException). Only that kind explains a death: rejection reports
+    // from earlier in the run were non-fatal. Anything else (OOM, native
+    // crash, killed from outside) gets a report built from stderr.
+    const newReports = crashFiles().filter((f) => !before.has(f) && f.endsWith('-uncaughtException.log'))
     let report = newReports.sort().at(-1) ?? null
     if (!report) {
       const time = new Date().toISOString()
@@ -133,19 +141,26 @@ function headline(text) {
 /** Windows reports some exit codes as unsigned 32-bit (e.g. 4294967295 for -1). */
 const signedCode = (code) => (typeof code === 'number' && code > 0x7fffffff ? code - 0x100000000 : code)
 
+const STOP_TIMEOUT_MS = 15_000
+
 function stop(signal) {
   if (stopping) return
   stopping = true
   if (!child) process.exit(0)
-  note('INFO', `Received ${signal} — stopping server…`)
-  // On Windows a console Ctrl+C already reaches the child; signalling again is harmless.
-  try { child.kill('SIGINT') } catch { /* already gone */ }
+  note('INFO', `Received ${signal} — waiting for the server to shut down…`)
+  // A console Ctrl+C reaches the server too (it shares this console), and it
+  // shuts down gracefully by itself — saving messages, archiving chats. On
+  // Windows child.kill() is an immediate hard kill, so don't cut that short.
+  // Elsewhere (or for SIGTERM), forward the signal; Node handles it gracefully.
+  if (!(process.platform === 'win32' && signal === 'SIGINT')) {
+    try { child.kill(signal) } catch { /* already gone */ }
+  }
   setTimeout(() => {
     if (child) {
-      note('WARN', 'Server did not stop within 10s — killing it')
+      note('WARN', `Server did not stop within ${STOP_TIMEOUT_MS / 1000}s — killing it`)
       try { child.kill('SIGKILL') } catch { /* already gone */ }
     }
-  }, 10_000).unref()
+  }, STOP_TIMEOUT_MS).unref()
 }
 
 process.on('SIGINT', () => stop('SIGINT'))

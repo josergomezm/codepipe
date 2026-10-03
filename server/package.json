@@ -10,7 +10,7 @@
     "serve": "node scripts/supervise.mjs",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "vitest run",
+    "test": "vitest run --exclude src/terminal.test.ts && vitest run src/terminal.test.ts",
     "test:watch": "vitest",
     "gen-vapid": "web-push generate-vapid-keys"
   },

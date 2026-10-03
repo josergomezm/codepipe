@@ -1,9 +1,10 @@
-import { spawnSync } from 'child_process'
+import { spawn } from 'child_process'
 import { existsSync } from 'fs'
 import path from 'path'
 
 import { listProviders, getAdapter } from './adapters/registry.js'
 import type { ProviderType } from './schemas.js'
+import { ISOLATED_CHILD } from './child-options.js'
 
 export interface ProviderHealth {
   provider: ProviderType
@@ -13,6 +14,10 @@ export interface ProviderHealth {
   available: boolean
 }
 
+const PROBE_TIMEOUT_MS = 3000
+/** Installed CLIs rarely change; don't re-run every probe on each request. */
+const CACHE_MS = 60_000
+
 /**
  * Best-effort check that a CLI binary is runnable on this machine.
  *
@@ -21,41 +26,53 @@ export interface ProviderHealth {
  *   short timeout; ENOENT (not found on PATH) marks it unavailable. A non-zero
  *   exit code still counts as "available" — the binary exists, it just didn't
  *   like `--version`.
+ *
+ * Async on purpose: some CLIs take seconds to print a version (agy can take
+ * 3 s+), and a synchronous probe froze the whole server meanwhile.
  */
-export function isBinaryAvailable(command: string): boolean {
+export function isBinaryAvailable(command: string): Promise<boolean> {
   if (command.includes(path.sep) || command.includes('/')) {
-    return existsSync(command)
+    return Promise.resolve(existsSync(command))
   }
-
-  try {
-    const result = spawnSync(command, ['--version'], {
-      timeout: 3000,
-      stdio: 'ignore',
-      shell: false,
-    })
-    if (result.error) {
-      // ENOENT => not on PATH. Other errors (e.g. timeout) => treat as present.
-      const code = (result.error as NodeJS.ErrnoException).code
-      return code !== 'ENOENT'
+  return new Promise((resolve) => {
+    let settled = false
+    const done = (available: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(available)
     }
-    return true
-  } catch {
-    return false
-  }
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(command, ['--version'], { stdio: 'ignore', shell: false, ...ISOLATED_CHILD })
+    } catch {
+      resolve(false)
+      return
+    }
+    // Slow to answer still means it's installed.
+    const timer = setTimeout(() => {
+      try { child.kill() } catch { /* already gone */ }
+      done(true)
+    }, PROBE_TIMEOUT_MS)
+    child.on('error', (err: NodeJS.ErrnoException) => done(err.code !== 'ENOENT'))
+    child.on('close', () => done(true))
+  })
 }
 
+let cache: { at: number; result: Promise<ProviderHealth[]> } | null = null
+
 /**
- * Report availability for every registered provider. Used by `/api/health`
- * and (later) to gate session creation / hide unavailable providers in the UI.
+ * Report availability for every registered provider, probing them in
+ * parallel and caching the answer for a minute. Used by `/api/health`.
  */
-export function getProviderHealth(): ProviderHealth[] {
-  return listProviders().map((provider) => {
-    const adapter = getAdapter(provider)
-    const command = adapter?.command ?? ''
-    return {
-      provider,
-      command,
-      available: command ? isBinaryAvailable(command) : false,
-    }
-  })
+export function getProviderHealth(): Promise<ProviderHealth[]> {
+  if (cache && Date.now() - cache.at < CACHE_MS) return cache.result
+  const result = Promise.all(
+    listProviders().map(async (provider) => {
+      const command = getAdapter(provider)?.command ?? ''
+      return { provider, command, available: command ? await isBinaryAvailable(command) : false }
+    }),
+  )
+  cache = { at: Date.now(), result }
+  return result
 }

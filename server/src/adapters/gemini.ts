@@ -28,6 +28,7 @@ import { promisify } from 'util'
 import type { ProviderType } from '../schemas.js'
 import type { ICLIAdapter, AdapterEvent } from './types.js'
 import { summarizeToolInput } from './tool-summary.js'
+import { ISOLATED_CHILD } from '../child-options.js'
 
 /** Resolve the Antigravity CLI binary: `AGY_CLI_BIN` override (falls back to `GEMINI_CLI_BIN`), else platform default. */
 export function resolveAgyBinary(): string {
@@ -70,7 +71,7 @@ export async function listAgyModels(): Promise<{ id: string; name?: string }[]> 
   try {
     const { stdout } = await execFileAsync(resolveAgyBinary(), ['models'], {
       timeout: 15000,
-      windowsHide: true,
+      ...ISOLATED_CHILD,
     })
     const models = parseAgyModelList(stdout)
     if (models.length > 0) {

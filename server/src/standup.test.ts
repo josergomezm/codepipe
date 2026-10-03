@@ -52,6 +52,15 @@ import type { PushPayload, PushService } from './push.js'
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * vi.waitFor with room to breathe: these tests run real (fake-CLI) child
+ * processes, and on a busy Windows machine a few turns can take longer than
+ * vi.waitFor's 1 s default.
+ */
+function waitFor<T>(check: () => T | Promise<T>): Promise<T> {
+  return vi.waitFor(check, { timeout: 10_000, interval: 50 })
+}
+
 const fakeAdapter: ICLIAdapter = {
   provider: 'kiro',
   command: 'fake-cli',
@@ -92,7 +101,7 @@ function makePersona(overrides: Partial<Persona> = {}): Persona {
  * spawn asynchronously (reviewers, synthesis) can't race a stale callback.
  */
 async function completeTurn(lines: string[]): Promise<void> {
-  await vi.waitFor(() => {
+  await waitFor(() => {
     if (mockSpawnCount <= consumedSpawns || !mockSpawnCloseCb) {
       throw new Error('next CLI turn not spawned yet')
     }
@@ -508,7 +517,7 @@ describe('runTurn and StandupService', () => {
 
     // Turn 1 completes while input 2 is still queued — it must be routed.
     await completeTurn(['Thinking.', '```json', JSON.stringify({ messages: [{ persona: 'Maya', text: 'Answer one' }] }), '```'])
-    await vi.waitFor(() => {
+    await waitFor(() => {
       const s = sessionManager.getSession(session.id)!
       if (!s.messages.some((m) => m.metadata?.personaId === lead.id && m.content === 'Answer one')) {
         throw new Error('turn 1 not routed yet')
@@ -516,7 +525,7 @@ describe('runTurn and StandupService', () => {
     })
 
     await completeTurn(['More.', '```json', JSON.stringify({ messages: [{ persona: 'Maya', text: 'Answer two' }] }), '```'])
-    await vi.waitFor(() => {
+    await waitFor(() => {
       const s = sessionManager.getSession(session.id)!
       if (!s.messages.some((m) => m.metadata?.personaId === lead.id && m.content === 'Answer two')) {
         throw new Error('turn 2 not routed yet')
@@ -541,7 +550,7 @@ describe('runTurn and StandupService', () => {
     for (let i = 1; i <= 3; i++) {
       sessionManager.handleInput(session.id, `question ${i}`)
       await completeTurn([`plain reply ${i}, no protocol tail`])
-      await vi.waitFor(async () => {
+      await waitFor(async () => {
         const state = await storage.getStandupState(project.id)
         if ((state?.protocolFailStreak ?? 0) !== i) throw new Error('streak not recorded yet')
       })
@@ -557,7 +566,7 @@ describe('runTurn and StandupService', () => {
     // A compliant turn resets the streak.
     sessionManager.handleInput(session.id, 'question 4')
     await completeTurn(['Back on protocol.', '```json', JSON.stringify({ messages: [{ persona: 'Maya', text: 'Fixed.' }] }), '```'])
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const state = await storage.getStandupState(project.id)
       if (state?.protocolFailStreak !== 0) throw new Error('streak not reset yet')
     })
@@ -599,7 +608,7 @@ describe('runTurn and StandupService', () => {
 
     // Turn 1: Aria's throwaway reviewer session (on gemini).
     await completeTurn(['```json', JSON.stringify({ take: 'Backoff belongs in useSession.ts — small change.', concerns: ['Mind mobile Safari reconnects'], effort: '2h' }), '```'])
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const [t] = await storage.listTodos(project.id)
       if (!t.takes?.length) throw new Error('take not stored yet')
     })
@@ -624,7 +633,7 @@ describe('runTurn and StandupService', () => {
     await completeTurn(['We discussed it.', '```json', JSON.stringify(tail), '```'])
 
     // Routing is async after the turn lands — wait for its effects.
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const todos = await storage.listTodos(project.id)
       if (todos[0].status !== 'proposed') throw new Error('not routed yet')
     })
@@ -644,7 +653,7 @@ describe('runTurn and StandupService', () => {
     expect(personaMessages[1].metadata?.personaId).toBe(dev.id)
 
     // The memo persisted as the next standup's memory.
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const state = await storage.getStandupState(project.id)
       if (!state?.memo?.includes('Backoff proposed')) throw new Error('memo not saved yet')
     })
@@ -672,7 +681,7 @@ describe('runTurn and StandupService', () => {
     expect(again.ran).toBe(true)
     expect(again.sessionId).not.toBe(result.sessionId) // ephemeral: new dated session
     await completeTurn(['Again.', '```json', JSON.stringify(tail), '```'])
-    await vi.waitFor(() => {
+    await waitFor(() => {
       const s = sessionManager.getSession(again.sessionId!)
       if (!s?.messages.some((m) => m.metadata?.personaId)) throw new Error('second run not routed yet')
     })
@@ -694,7 +703,7 @@ describe('runTurn and StandupService', () => {
     const first = await standup.runStandup(project.id, { force: false })
     expect(first.ran).toBe(true)
     await completeTurn(['Hmm.', '```json', JSON.stringify({ messages: [{ persona: 'Maya', text: 'Need more context.' }] }), '```'])
-    await vi.waitFor(() => {
+    await waitFor(() => {
       const session = sessionManager.getSession(first.sessionId!)
       if (!session?.messages.some((m) => m.metadata?.personaId)) throw new Error('not routed yet')
     })
@@ -743,11 +752,11 @@ describe('runTurn and StandupService', () => {
     // The implementation turn completes → idea ships, and the completion
     // joins the next standup's agenda instead of costing an announcement turn.
     await completeTurn(['Implemented the backoff in useSession.ts. Tests pass.'])
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const t = (await storage.listTodos(project.id)).find((x) => x.id === todo.id)!
       if (t.status !== 'done' || !t.completedAt) throw new Error('not shipped yet')
     })
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const state = await storage.getStandupState(project.id)
       if (!state?.agenda?.some((a) => a.includes('Aria shipped'))) throw new Error('agenda not queued yet')
     })
@@ -783,7 +792,7 @@ describe('runTurn and StandupService', () => {
       proposals: [{ todoId: todo.id, summary: 'Backoff v2', approach: 'Plan v2', brief: 'Brief v2: cap 10s, test mobile Safari' }],
     }
     await completeTurn(['Discussing the feedback.', '```json', JSON.stringify(revised), '```'])
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const t = (await storage.listTodos(project.id)).find((x) => x.id === todo.id)!
       if (t.proposal?.brief !== 'Brief v2: cap 10s, test mobile Safari') throw new Error('not revised yet')
     })
@@ -822,7 +831,7 @@ describe('runTurn and StandupService', () => {
     state = await storage.getStandupState(project.id)
     expect(state?.agenda).toHaveLength(0)
     await completeTurn(['Noted.', '```json', JSON.stringify({ messages: [{ persona: 'Maya', text: 'Stripe is unblocked — nice.' }], memo: 'Stripe account exists now.' }), '```'])
-    await vi.waitFor(() => {
+    await waitFor(() => {
       const s = sessionManager.getSession(run.sessionId!)
       if (!s?.messages.some((m) => m.metadata?.personaId === lead.id)) throw new Error('not routed yet')
     })

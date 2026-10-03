@@ -52,8 +52,6 @@ interface ProjectTerminal {
   startedAt: number
   /** Why the shell is ending, when we ended it (for the exit log line). */
   killReason?: string
-  /** Set once the shell has exited. */
-  exited?: boolean
   pty: pty.IPty
   mirror: InstanceType<typeof HeadlessTerminal>
   serializer: InstanceType<typeof SerializeAddon>
@@ -163,9 +161,11 @@ export class TerminalManager {
 
   kill(projectId: string, reason = 'killed'): void {
     const term = this.terminals.get(projectId)
-    // Killing an already-exited shell makes node-pty's Windows helper print
-    // a harmless "AttachConsole failed" crash to stderr — skip it.
-    if (!term || term.exited) return
+    // Exited shells leave the map in onExit, so `term` is still running — or
+    // exited a moment ago and onExit hasn't fired yet. In that window
+    // node-pty's Windows kill helper prints a harmless "AttachConsole failed"
+    // crash to stderr; the supervisor filters it out of crash headlines.
+    if (!term) return
     term.killReason = reason
     log.info('terminal', `Ending shell for project ${projectId}: ${reason}`)
     try { term.pty.kill() } catch { /* already exited */ }
@@ -254,7 +254,6 @@ export class TerminalManager {
     })
 
     proc.onExit(({ exitCode, signal }) => {
-      term.exited = true
       const uptime = Math.round((Date.now() - term.startedAt) / 1000)
       const how = term.killReason ?? (exitCode === 0 ? 'exited' : 'exited unexpectedly')
       const line = `Shell for project ${projectId} (pid ${proc.pid}) ${how}: code ${exitCode}${signal ? `, signal ${signal}` : ''}, after ${uptime}s`

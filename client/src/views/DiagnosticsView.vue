@@ -41,11 +41,14 @@ async function toggleReport(file: string) {
   }
   openReport.value = file
   reportText.value = 'Loading…'
+  let text: string
   try {
-    reportText.value = await fetchCrashReport(file)
+    text = await fetchCrashReport(file)
   } catch (e) {
-    reportText.value = e instanceof Error ? e.message : 'Failed to load report'
+    text = e instanceof Error ? e.message : 'Failed to load report'
   }
+  // Another report may have been opened while this one loaded.
+  if (openReport.value === file) reportText.value = text
 }
 
 /** Crashes and supervisor restarts, newest first. A restart links its report. */

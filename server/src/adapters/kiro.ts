@@ -24,6 +24,7 @@ import {
   extractToolName,
   TOOL_NAME_PATTERN,
 } from './kiro-patterns.js'
+import { ISOLATED_CHILD } from '../child-options.js'
 
 /**
  * Resolve the Kiro CLI binary name for the current platform.
@@ -125,7 +126,7 @@ export async function listKiroModels(): Promise<{ id: string; name?: string }[]>
     const { stdout } = await execFileAsync(
       resolveKiroBinary(),
       ['chat', '--list-models', '--format', 'json'],
-      { timeout: 15000, windowsHide: true },
+      { timeout: 15000, ...ISOLATED_CHILD },
     )
     const models = parseKiroModelList(stdout)
     if (models.length > 0) {

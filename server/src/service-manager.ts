@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'child_process'
 import path from 'path'
 import { log } from './logger.js'
 import type { ProjectServiceConfig } from './schemas.js'
+import { ISOLATED_CHILD } from './child-options.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -128,6 +129,7 @@ export class ServiceManager {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: true,
+      ...ISOLATED_CHILD,
     })
 
     if (child.pid === undefined) {
@@ -232,7 +234,7 @@ export class ServiceManager {
 
     try {
       if (process.platform === 'win32') {
-        spawn('taskkill', ['/pid', String(pid), '/f', '/t'], { stdio: 'ignore' })
+        spawn('taskkill', ['/pid', String(pid), '/f', '/t'], { stdio: 'ignore', ...ISOLATED_CHILD })
       } else {
         entry.process.kill('SIGTERM')
       }

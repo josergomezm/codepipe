@@ -1,17 +1,10 @@
-// Must stay the first import: installs the crash handlers before any other
-// module's top-level code can throw.
+// These two must stay the first imports, in this order: .env is loaded before
+// any module reads its settings, then the crash handlers are installed before
+// any other module's top-level code can throw.
+import './env.js'
 import './crash-guard.js'
 import express from 'express'
 import { createServer } from 'http'
-
-// Load environment variables from a local `.env` file if present (e.g. VAPID
-// keys for Web Push). Optional — the app runs fine without it, push just stays
-// disabled. Uses Node's built-in loader (no dependency).
-try {
-  process.loadEnvFile('./.env')
-} catch {
-  /* no .env file — fine */
-}
 
 import { StorageLayer } from './storage.js'
 import { EventBus } from './events.js'
@@ -41,6 +34,7 @@ import { getProviderHealth } from './provider-health.js'
 import { PushService } from './push.js'
 import { createPushRoutes } from './routes/push.js'
 import { log, setCrashContext } from './logger.js'
+import { onFatal } from './crash-guard.js'
 import { startHealthMonitor } from './health.js'
 import { createDiagnosticsRoutes } from './routes/diagnostics.js'
 
@@ -93,9 +87,13 @@ app.use(express.json())
 // Health check — reports server status plus per-provider binary availability,
 // so clients can detect that, e.g., kiro-cli isn't installed before a session
 // is created and fails opaquely.
-app.get('/api/health', (_req, res) => {
-  const providers = getProviderHealth()
-  res.json({ status: 'ok', providers })
+app.get('/api/health', async (_req, res) => {
+  try {
+    res.json({ status: 'ok', providers: await getProviderHealth() })
+  } catch (err) {
+    log.error('api', 'Provider health check failed', err)
+    res.json({ status: 'ok', providers: [] })
+  }
 })
 
 // Mount REST routes
@@ -132,6 +130,11 @@ function healthCounts(): Record<string, number> {
   }
 }
 setCrashContext(() => healthCounts())
+// On a fatal crash, don't leave agents and shells running untracked.
+onFatal(() => {
+  sessionManager.killAllProcesses()
+  terminalManager.killAll('server crashed')
+})
 
 // Only listen when running directly (not imported by tests)
 const isMainModule = !process.env['VITEST']

@@ -21,6 +21,16 @@ const REJECTION_WINDOW_MS = 10 * 60 * 1000
 let exiting = false
 let rejectionWindowStart = 0
 let rejectionReports = 0
+const fatalCleanups: Array<() => void> = []
+
+/**
+ * Register synchronous cleanup to run before a fatal exit — e.g. stopping CLI
+ * processes, which on Windows would otherwise outlive the server and keep
+ * working (editing files) with nothing tracking them.
+ */
+export function onFatal(cleanup: () => void): void {
+  fatalCleanups.push(cleanup)
+}
 
 export function installCrashGuard(): void {
   process.on('uncaughtException', (err, origin) => {
@@ -28,6 +38,13 @@ export function installCrashGuard(): void {
     exiting = true
     const file = writeCrashReport('uncaughtException', err)
     log.fatal('process', `Uncaught exception (${origin}) — exiting${file ? `. Report: ${file}` : ''}`, err)
+    for (const cleanup of fatalCleanups) {
+      try {
+        cleanup()
+      } catch (cleanupErr) {
+        log.error('process', 'Cleanup before exit failed', cleanupErr)
+      }
+    }
     // Let stdio flush, then go; the supervisor restarts us.
     setTimeout(() => process.exit(1), 250)
   })

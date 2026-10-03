@@ -21,6 +21,7 @@ import { stripAnsi } from './adapters/strip-ansi.js'
 import { AcpSessionDriver } from './acp/driver.js'
 import type { TurnNotifier } from './push.js'
 import { log } from './logger.js'
+import { ISOLATED_CHILD } from './child-options.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -912,6 +913,7 @@ export class SessionManager implements ISessionManager {
       env: { ...process.env },
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: false,
+      ...ISOLATED_CHILD,
     })
 
     ctx.childProcess = child
@@ -1215,6 +1217,17 @@ export class SessionManager implements ISessionManager {
     return this.sessions.get(sessionId)?.session
   }
 
+  /**
+   * Last-resort, synchronous: stop every CLI process and ACP agent. Used when
+   * the server is about to die, so agents don't keep running untracked.
+   */
+  killAllProcesses(): void {
+    for (const ctx of this.sessions.values()) {
+      try { ctx.childProcess?.kill() } catch { /* already dead */ }
+      try { ctx.acpDriver?.dispose() } catch { /* already disposed */ }
+    }
+  }
+
   /** Counts for health monitoring and crash reports. */
   getStats(): Record<string, number> {
     let liveSessions = 0, busyTurns = 0, cliProcesses = 0, acpAgents = 0, queuedInputs = 0, chatClients = 0
@@ -1408,6 +1421,7 @@ export class SessionManager implements ISessionManager {
         env: { ...process.env },
         stdio: ['ignore', 'pipe', 'pipe'],
         shell: false,
+        ...ISOLATED_CHILD,
       })
 
       // A hung list command must not stall the session's input queue.

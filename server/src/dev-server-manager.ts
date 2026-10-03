@@ -12,6 +12,7 @@ import {
 } from './tailscale.js'
 import { PortConflictError, CODEPIPE_TAILSCALE_PORT, isLocalPortListening } from './ports.js'
 import path from 'path'
+import { ISOLATED_CHILD } from './child-options.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -104,6 +105,7 @@ export class DevServerManager {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: true,
+      ...ISOLATED_CHILD,
     })
 
     const entry: DevServerProcess = {
@@ -271,6 +273,7 @@ export class DevServerManager {
       if (process.platform === 'win32') {
         spawn('taskkill', ['/pid', String(pid), '/f', '/t'], {
           stdio: 'ignore',
+          ...ISOLATED_CHILD,
         })
       } else {
         entry.process.kill('SIGTERM')
@@ -292,6 +295,7 @@ export class DevServerManager {
           encoding: 'utf-8',
           timeout: 3000,
           stdio: ['pipe', 'pipe', 'pipe'],
+          ...ISOLATED_CHILD,
         })
         const pids = new Set<string>()
         for (const line of output.trim().split('\n')) {
@@ -306,7 +310,7 @@ export class DevServerManager {
           if (pid && pid !== '0') pids.add(pid)
         }
         for (const pid of pids) {
-          spawn('taskkill', ['/pid', pid, '/f', '/t'], { stdio: 'ignore' })
+          spawn('taskkill', ['/pid', pid, '/f', '/t'], { stdio: 'ignore', ...ISOLATED_CHILD })
         }
       }
     } catch {

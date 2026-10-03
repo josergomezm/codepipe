@@ -20,6 +20,7 @@ import { translateSessionUpdate, isEndOfTurnResult, parseAcpModels } from './pro
 import type { JsonRpcRequest } from './jsonrpc.js'
 import { SPEC_ACP_PROFILE, type AcpProfile } from './profile.js'
 import { log } from '../logger.js'
+import { ISOLATED_CHILD } from '../child-options.js'
 
 // ── Minimal child-process surface (so tests can fake it) ──────────────────
 
@@ -40,6 +41,7 @@ const defaultSpawn: AcpSpawnFn = (command, args, cwd) =>
     env: { ...process.env },
     stdio: ['pipe', 'pipe', 'pipe'],
     shell: false,
+    ...ISOLATED_CHILD,
   }) as unknown as AcpChildLike
 
 export interface AcpDriverCallbacks {

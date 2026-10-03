@@ -1,5 +1,6 @@
 import { execSync, spawn } from 'child_process'
 import { log } from './logger.js'
+import { ISOLATED_CHILD } from './child-options.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,6 +41,7 @@ export function getTailscaleHostname(): string | null {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'pipe'],
+      ...ISOLATED_CHILD,
     })
     // Parse: For domain, use "ks-mini.tail0293ef.ts.net".
     const match = /use "([^"]+)"/.exec(output)
@@ -92,6 +94,7 @@ export function getServeStatus(): TailscaleServeStatus {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],
+      ...ISOLATED_CHILD,
     })
 
     const status = JSON.parse(output) as TailscaleServeJson
@@ -160,6 +163,7 @@ export async function createServeMapping(
 
     const child = spawn('tailscale', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
+      ...ISOLATED_CHILD,
     })
 
     let stdout = ''
@@ -198,6 +202,7 @@ export async function removeServeMapping(tailscalePort: number): Promise<boolean
 
     const child = spawn('tailscale', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
+      ...ISOLATED_CHILD,
     })
 
     let stderr = ''

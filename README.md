@@ -25,7 +25,9 @@ Open http://127.0.0.1:5552, pick a project directory and a provider, and start c
 
 ## Keeping it running
 
-For everyday use, start the backend with **`npm run serve`**. It runs the server under a small supervisor (`server/scripts/supervise.mjs`) that restarts it after any crash, backing off if it crashes repeatedly. Use `npm run dev` only while working on CodePipe itself. It reloads whenever a source file changes, including when an agent in one of your chats edits CodePipe, which restarts the server mid-reply; and if the server crashes under `dev`, it stays down until a file changes.
+For everyday use, start the backend with **`npm run serve`**. It runs the server under a small supervisor (`server/scripts/supervise.mjs`) that restarts it after a crash, backing off if it crashes repeatedly. Press Ctrl+C in its window to stop: the server shuts down gracefully (saving messages, archiving chats) and the supervisor waits for it. Use `npm run dev` only while working on CodePipe itself. It reloads whenever a source file changes, including when an agent in one of your chats edits CodePipe, which restarts the server mid-reply; and if the server crashes under `dev`, it stays down until a file changes.
+
+> **Why the server used to stop "by itself" on Windows:** a console Ctrl+C goes to every process attached to the same console window. CLIs used to share the server's console, so when one of them — or a shell or tool it ran — sent Ctrl+C to interrupt its own work, the server received it too and shut down mid-turn (every such shutdown in the logs happened during a Kiro turn). Every process the server starts now gets its own hidden console (`server/src/child-options.ts`), so their Ctrl+C can't reach the server. `child-options.test.ts` reproduces this in a real console; run it from a normal terminal, since some environments (Git Bash, some CI) ignore console Ctrl+C and skip it.
 
 When something goes wrong, the **Diagnostics** page (sidebar → Workspace) shows:
 
