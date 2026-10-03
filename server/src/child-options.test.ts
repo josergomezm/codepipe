@@ -46,9 +46,46 @@ describe.runIf(process.platform === 'win32')('child process console isolation (W
   }, 60_000)
 })
 
-describe('every child process the server starts uses ISOLATED_CHILD', () => {
-  const CALL = /\b(spawn|spawnSync|execFile|execFileSync|execSync|exec|fork)\(/g
+/** Child-process calls, including promisified wrappers (execFileAsync). */
+const CALL = /\b(spawn|spawnSync|execFile|execFileSync|execFileAsync|execSync|exec|execAsync|fork)\(/g
 
+/**
+ * Index just past the `)` that closes the call whose `(` is at `open`,
+ * skipping strings, template literals and comments. -1 if unbalanced.
+ */
+export function closingParen(src: string, open: number): number {
+  let depth = 0
+  for (let i = open; i < src.length; i++) {
+    const c = src[i]
+    if (c === '/' && src[i + 1] === '/') { i = src.indexOf('\n', i); if (i < 0) return -1; continue }
+    if (c === '/' && src[i + 1] === '*') { i = src.indexOf('*/', i + 2) + 1; if (i <= 0) return -1; continue }
+    if (c === "'" || c === '"' || c === '`') {
+      for (i++; i < src.length && src[i] !== c; i++) if (src[i] === '\\') i++
+      continue
+    }
+    if (c === '(') depth++
+    else if (c === ')' && --depth === 0) return i + 1
+  }
+  return -1
+}
+
+/** "file:line" for every child-process call in `src` whose own arguments lack ISOLATED_CHILD. */
+export function unisolatedCalls(src: string, file = 'src'): string[] {
+  const offenders: string[] = []
+  for (const m of src.matchAll(CALL)) {
+    const before = src.slice(Math.max(0, m.index - 30), m.index)
+    // Not child processes: RegExp#exec, node-pty's pty.spawn (its own console), declarations.
+    if (/\.$/.test(before) && !/child_process\.$/.test(before)) continue
+    if (/(import|function|promisify)\s*[({]?\s*$/.test(before)) continue
+    const open = m.index + m[0].length - 1
+    const end = closingParen(src, open)
+    const args = end < 0 ? src.slice(open) : src.slice(open, end)
+    if (!/ISOLATED_CHILD/.test(args)) offenders.push(`${file}:${src.slice(0, m.index).split('\n').length}`)
+  }
+  return offenders
+}
+
+describe('every child process the server starts uses ISOLATED_CHILD', () => {
   function sourceFiles(dir: string): string[] {
     return readdirSync(dir).flatMap((name) => {
       const full = path.join(dir, name)
@@ -58,21 +95,21 @@ describe('every child process the server starts uses ISOLATED_CHILD', () => {
   }
 
   it('has no spawn call without it', () => {
-    const offenders: string[] = []
-    for (const file of sourceFiles(here)) {
-      const src = readFileSync(file, 'utf8')
-      for (const m of src.matchAll(CALL)) {
-        const before = src.slice(Math.max(0, m.index - 30), m.index)
-        // Not child processes: RegExp#exec, node-pty (has its own console), imports.
-        if (/\.$/.test(before) && !/child_process\.$/.test(before)) continue
-        if (/(import|function|promisify)\s*[({]?\s*$/.test(before)) continue
-        // The call's own text: up to its closing paren, generously bounded.
-        const call = src.slice(m.index, m.index + 600)
-        if (!/ISOLATED_CHILD/.test(call.slice(0, call.indexOf('\n})') > 0 ? call.indexOf('\n})') + 3 : 600))) {
-          offenders.push(`${path.relative(here, file)}:${src.slice(0, m.index).split('\n').length}`)
-        }
-      }
-    }
+    const offenders = sourceFiles(here).flatMap((file) => unisolatedCalls(readFileSync(file, 'utf8'), path.relative(here, file)))
     expect(offenders).toEqual([])
+  })
+
+  it("judges each call by its own arguments, not a neighbour's", () => {
+    const src = [
+      "spawn('taskkill', ['/pid', pid, '/f', '/t'], { stdio: 'ignore' })",
+      "spawn('taskkill', ['/pid', pid], { stdio: 'ignore', ...ISOLATED_CHILD })",
+      'const out = execSync(`netstat -aon | findstr ")"`, {',
+      "  encoding: 'utf-8', // a ) in a comment",
+      '  ...ISOLATED_CHILD,',
+      '})',
+      "const { stdout } = await execFileAsync('agy', ['models'], { timeout: 1 })",
+      '/x/.exec(text); pty.spawn(shell, [], {})',
+    ].join('\n')
+    expect(unisolatedCalls(src)).toEqual(['src:1', 'src:7'])
   })
 })

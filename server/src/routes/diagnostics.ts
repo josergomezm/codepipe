@@ -4,6 +4,7 @@ import path from 'path'
 
 import { CRASH_DIR, DATA_DIR, log, recentLogLines } from '../logger.js'
 import { recentHealthSamples, sampleHealth } from '../health.js'
+import { SUPERVISED } from '../env.js'
 
 /** Written by scripts/supervise.mjs — one JSON object per line. */
 export const RESTARTS_FILE = path.join(DATA_DIR, 'restarts.jsonl')
@@ -70,7 +71,7 @@ export function createDiagnosticsRoutes(getCounts: () => Record<string, number>)
           node: process.version,
           platform: `${process.platform} ${process.arch}`,
           startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
-          supervised: process.env['CODEPIPE_SUPERVISED'] === '1',
+          supervised: SUPERVISED,
         },
         current: sampleHealth(getCounts(), false),
         samples: recentHealthSamples(),

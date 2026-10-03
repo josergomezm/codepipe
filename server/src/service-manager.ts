@@ -227,6 +227,14 @@ export class ServiceManager {
     return { status: 'stopped', ports: {}, logs: [] }
   }
 
+  /**
+   * Last-resort, synchronous: kill every service's process tree right now
+   * (see DevServerManager.killAllNow).
+   */
+  killAllNow(): void {
+    for (const entry of this.processes.values()) this.killProcess(entry)
+  }
+
   private killProcess(entry: ServiceProcess): void {
     if (entry.exited) return
     const pid = entry.process.pid

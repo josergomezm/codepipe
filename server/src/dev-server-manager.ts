@@ -259,6 +259,15 @@ export class DevServerManager {
   }
 
   /**
+   * Last-resort, synchronous: kill every dev server's process tree right now.
+   * For a crashing server — they run in their own consoles, so nothing else
+   * would stop them, and they'd keep holding their ports after a restart.
+   */
+  killAllNow(): void {
+    for (const entry of this.processes.values()) this.killProcess(entry)
+  }
+
+  /**
    * Kill a process and its tree.
    */
   private killProcess(entry: DevServerProcess): void {

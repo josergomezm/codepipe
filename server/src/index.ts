@@ -1,7 +1,7 @@
 // These two must stay the first imports, in this order: .env is loaded before
 // any module reads its settings, then the crash handlers are installed before
 // any other module's top-level code can throw.
-import './env.js'
+import { SUPERVISED } from './env.js'
 import './crash-guard.js'
 import express from 'express'
 import { createServer } from 'http'
@@ -130,10 +130,13 @@ function healthCounts(): Record<string, number> {
   }
 }
 setCrashContext(() => healthCounts())
-// On a fatal crash, don't leave agents and shells running untracked.
+// On a fatal crash, don't leave anything we started running untracked:
+// agents, shells, dev servers and services all run in their own consoles.
 onFatal(() => {
   sessionManager.killAllProcesses()
   terminalManager.killAll('server crashed')
+  devServerManager.killAllNow()
+  serviceManager.killAllNow()
 })
 
 // Only listen when running directly (not imported by tests)
@@ -149,10 +152,14 @@ if (isMainModule) {
 
   standupService.start()
   startHealthMonitor(healthCounts)
-  log.info('server', `Started (pid ${process.pid}, node ${process.version}${process.env['CODEPIPE_SUPERVISED'] === '1' ? ', supervised' : ''})`)
+  log.info('server', `Started (pid ${process.pid}, node ${process.version}${SUPERVISED ? ', supervised' : ''})`)
 
   // Graceful shutdown
+  let shuttingDown = false
   async function gracefulShutdown(signal: string): Promise<void> {
+    // e.g. Ctrl+C and then closing the window: shut down once.
+    if (shuttingDown) return
+    shuttingDown = true
     log.info('server', `Received ${signal}. Shutting down gracefully...`)
 
     try {
@@ -178,6 +185,11 @@ if (isMainModule) {
 
   process.on('SIGINT', () => gracefulShutdown('SIGINT'))
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+  // Windows: SIGHUP is the console window being closed (or logoff), SIGBREAK
+  // is Ctrl+Break. Without handlers the process is killed with no chance to
+  // save the reply being streamed or archive chats.
+  process.on('SIGHUP', () => gracefulShutdown('SIGHUP'))
+  if (process.platform === 'win32') process.on('SIGBREAK', () => gracefulShutdown('SIGBREAK'))
 }
 
 // ---------------------------------------------------------------------------

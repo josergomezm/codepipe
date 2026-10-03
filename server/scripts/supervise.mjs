@@ -148,11 +148,13 @@ function stop(signal) {
   stopping = true
   if (!child) process.exit(0)
   note('INFO', `Received ${signal} — waiting for the server to shut down…`)
-  // A console Ctrl+C reaches the server too (it shares this console), and it
-  // shuts down gracefully by itself — saving messages, archiving chats. On
-  // Windows child.kill() is an immediate hard kill, so don't cut that short.
-  // Elsewhere (or for SIGTERM), forward the signal; Node handles it gracefully.
-  if (!(process.platform === 'win32' && signal === 'SIGINT')) {
+  // Console events — Ctrl+C, Ctrl+Break, closing the window — reach the
+  // server too (it shares this console), and it shuts down gracefully by
+  // itself: saving messages, archiving chats. On Windows child.kill() is an
+  // immediate hard kill, so don't cut that short. Elsewhere (or for SIGTERM),
+  // forward the signal; Node handles it gracefully.
+  const consoleEvent = ['SIGINT', 'SIGHUP', 'SIGBREAK'].includes(signal)
+  if (!(process.platform === 'win32' && consoleEvent)) {
     try { child.kill(signal) } catch { /* already gone */ }
   }
   setTimeout(() => {
@@ -165,5 +167,7 @@ function stop(signal) {
 
 process.on('SIGINT', () => stop('SIGINT'))
 process.on('SIGTERM', () => stop('SIGTERM'))
+process.on('SIGHUP', () => stop('SIGHUP'))
+if (process.platform === 'win32') process.on('SIGBREAK', () => stop('SIGBREAK'))
 
 start()
