@@ -44,6 +44,8 @@ Everything is also on disk under `server/data/`:
 | `restarts.jsonl` | One line per supervisor restart: time, exit code, uptime, and the matching report. |
 
 When a CLI process fails mid-reply, the chat says so (with the CLI's own last error line) and the log records its exit code, run time and the tail of its stderr.
+
+If a CLI goes **silent for 15 minutes** mid-reply, the chat gets a notice listing what's still running — in particular processes the reply started that outlived the process that launched them. A test run's leftover emulator or dev server is the usual culprit: it keeps the CLI's command from ever finishing, so the CLI waits forever. **Stop** (and Restart CLI) end the CLI together with everything running under it; leftovers that have already detached are listed in the notice so you can end them yourself.
 Terminal shells are logged the same way (start with pid, every client attach and detach, and exit with code, uptime and who ended it). If a shell can't start (the project folder is gone, or `CODEPIPE_SHELL` is wrong), the Terminal tab shows the reason and a **Try again** button instead of retrying silently.
 
 ## How It Works
@@ -97,6 +99,7 @@ The server reads these environment variables:
 | `LOG_MAX_BYTES`   | `10485760`    | Rotate `server.log` at this size (5 old files kept). |
 | `HEALTH_INTERVAL_MS` | `600000`   | How often a health sample is logged. |
 | `HEALTH_RSS_WARN_MB` | `1500`     | Log a warning when memory use passes this. |
+| `CLI_STUCK_NOTICE_MINUTES` | `15` | Minutes a CLI may be silent mid-reply before the chat is told it may be stuck. |
 | `CODEPIPE_CWD`    | `server/`     | (`npm run serve` only) Folder the server runs in, which is where its `data/` lives. |
 
 `GET /api/health` reports server status plus, for each registered provider, the resolved binary and whether it appears to be installed — useful for catching a missing CLI before creating a session.

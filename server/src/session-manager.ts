@@ -22,6 +22,7 @@ import { AcpSessionDriver } from './acp/driver.js'
 import type { TurnNotifier } from './push.js'
 import { log } from './logger.js'
 import { ISOLATED_CHILD } from './child-options.js'
+import { killProcessTree, listTurnProcesses, wasStoppedByUs } from './process-tree.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -136,6 +137,13 @@ const STORAGE_DEBOUNCE_MS = 500
 
 /** Longest we hold a session's queue waiting on `--list-sessions` (Kiro). */
 const LIST_SESSIONS_TIMEOUT_MS = 20_000
+
+/**
+ * How long a one-shot CLI may go without any output before the chat is told
+ * it may be stuck. Long test runs print as they go; 15 silent minutes is not
+ * normal. Override with CLI_STUCK_NOTICE_MINUTES.
+ */
+const CLI_STUCK_AFTER_MS = Number(process.env['CLI_STUCK_NOTICE_MINUTES'] ?? 15) * 60_000
 
 /** How much of a CLI's stderr to keep for failure reports. */
 const STDERR_TAIL_CHARS = 4000
@@ -588,7 +596,7 @@ export class SessionManager implements ISessionManager {
     if (ctx.adapter.transport === 'acp') {
       ctx.acpDriver?.cancel()
     } else if (ctx.childProcess) {
-      try { ctx.childProcess.kill() } catch { /* already dead */ }
+      killProcessTree(ctx.childProcess)
       ctx.childProcess = null
     }
 
@@ -623,7 +631,7 @@ export class SessionManager implements ISessionManager {
         ctx.acpDriver = null
       }
     } else if (ctx.childProcess) {
-      try { ctx.childProcess.kill() } catch { /* already dead */ }
+      killProcessTree(ctx.childProcess)
       ctx.childProcess = null
     }
 
@@ -892,7 +900,7 @@ export class SessionManager implements ISessionManager {
 
     // Kill any still-running child process from a previous message
     if (ctx.childProcess) {
-      try { ctx.childProcess.kill() } catch { /* already dead */ }
+      killProcessTree(ctx.childProcess)
       ctx.childProcess = null
     }
 
@@ -924,6 +932,17 @@ export class SessionManager implements ISessionManager {
     // Last few KB of stderr, reported if the CLI dies — that's where CLIs
     // print why (auth expired, crash trace, bad flag…).
     let stderrTail = ''
+    // Stuck-turn watchdog: a CLI waiting on something that never ends (e.g. a
+    // test run's leftover emulator holding its command's output open) goes
+    // silent indefinitely. Tell the user once, with what's still running.
+    let lastOutputAt = Date.now()
+    let stuckNoticeSent = false
+    const watchdog = setInterval(() => {
+      if (stuckNoticeSent || Date.now() - lastOutputAt < CLI_STUCK_AFTER_MS) return
+      stuckNoticeSent = true
+      void this.reportStuckTurn(sessionId, ctx, child, startedAt)
+    }, Math.min(60_000, Math.max(250, CLI_STUCK_AFTER_MS / 4)))
+    watchdog.unref()
 
     // Signal typing status
     this.broadcast(sessionId, { type: 'status', data: 'typing' })
@@ -932,6 +951,7 @@ export class SessionManager implements ISessionManager {
     let stdoutBuffer = ''
 
     child.stdout?.on('data', (data: Buffer) => {
+      lastOutputAt = Date.now()
       // Strip ANSI escape codes (CLI still emits colors in non-interactive mode)
       const clean = stripAnsi(data.toString())
       stdoutBuffer += clean
@@ -949,6 +969,7 @@ export class SessionManager implements ISessionManager {
     child.stderr?.on('data', (data: Buffer) => {
       const text = data.toString()
       stderrTail = (stderrTail + text).slice(-STDERR_TAIL_CHARS)
+      lastOutputAt = Date.now()
 
       // Parse stderr for credits (Kiro CLI sends credits to stderr)
       if (adapter.onStderr) {
@@ -971,6 +992,7 @@ export class SessionManager implements ISessionManager {
     })
 
     child.on('close', (exitCode, signal) => {
+      clearInterval(watchdog)
       // Process any remaining buffered content
       if (stdoutBuffer.trim().length > 0) {
         this.processNonInteractiveLine(sessionId, ctx, stdoutBuffer)
@@ -987,8 +1009,8 @@ export class SessionManager implements ISessionManager {
       this.broadcast(sessionId, { type: 'status', data: 'idle' })
 
       const seconds = Math.round((Date.now() - startedAt) / 1000)
-      // `killed` means we ended it (Stop, restart, replaced) — not a failure.
-      if ((exitCode !== 0 || signal) && !child.killed) {
+      // Ended by us (Stop, restart, replaced) is not a failure.
+      if ((exitCode !== 0 || signal) && !wasStoppedByUs(child)) {
         const name = PROVIDER_DISPLAY_NAMES[adapter.provider] ?? adapter.provider
         log.warn('cli', `${name} CLI failed for session ${sessionId}`, {
           exitCode,
@@ -1026,6 +1048,7 @@ export class SessionManager implements ISessionManager {
     })
 
     child.on('error', (err) => {
+      clearInterval(watchdog)
       log.error('session', `CLI process error for session ${sessionId}`, err)
       ctx.childProcess = null
 
@@ -1066,6 +1089,42 @@ export class SessionManager implements ISessionManager {
     if (events.length === 0) return
 
     this.processAdapterEvents(sessionId, events)
+  }
+
+  /**
+   * A CLI turn has been silent for CLI_STUCK_AFTER_MS. Post a notice naming
+   * what's still running — in particular processes the turn started that
+   * outlived their parent (leftover emulators, dev servers) — and log it.
+   */
+  private async reportStuckTurn(sessionId: string, ctx: SessionContext, child: ChildProcess, startedAt: number): Promise<void> {
+    if (ctx.childProcess !== child || child.pid === undefined) return
+    const name = PROVIDER_DISPLAY_NAMES[ctx.adapter.provider] ?? ctx.adapter.provider
+    const minutes = Math.round((Date.now() - startedAt) / 60_000)
+    let procs: Awaited<ReturnType<typeof listTurnProcesses>> = []
+    try {
+      procs = await listTurnProcesses(child.pid, startedAt)
+    } catch (err) {
+      log.warn('cli', `Couldn't list processes for a stuck turn in session ${sessionId}`, err)
+    }
+    if (ctx.childProcess !== child) return // finished while we looked
+    const orphans = procs.filter((p) => p.relation === 'orphaned')
+    const shown = (orphans.length ? orphans : procs).slice(0, 6)
+    const describe = (p: (typeof procs)[number]) => `${p.name} (pid ${p.pid})${p.commandLine ? ': ' + p.commandLine.slice(0, 90) : ''}`
+    log.warn('cli', `${name} CLI has been silent for ${Math.round(CLI_STUCK_AFTER_MS / 60_000)} min in session ${sessionId}`, {
+      runningMinutes: minutes,
+      processes: procs.map(describe),
+    })
+    const lines = [
+      `⚠️ ${name} hasn't produced any output for ${Math.round(CLI_STUCK_AFTER_MS / 60_000)} minutes (this reply started ${minutes} min ago). It may be stuck waiting on a command that never finishes.`,
+    ]
+    if (orphans.length) {
+      lines.push('', "Started during this reply and still running after the process that launched them exited — often a test run's leftover emulator or dev server, which can keep the CLI waiting:")
+      lines.push(...shown.map((p) => `• ${describe(p)}`))
+    } else if (shown.length) {
+      lines.push('', 'Still running under the CLI:', ...shown.map((p) => `• ${describe(p)}`))
+    }
+    lines.push('', 'If nothing should still be running, tap Stop — it ends the CLI and everything under it.')
+    this.emitSystemMessage(sessionId, ctx, lines.join('\n'))
   }
 
   /** Throttled per-session notice when the adapter produced events we couldn't validate. */
@@ -1223,7 +1282,7 @@ export class SessionManager implements ISessionManager {
    */
   killAllProcesses(): void {
     for (const ctx of this.sessions.values()) {
-      try { ctx.childProcess?.kill() } catch { /* already dead */ }
+      if (ctx.childProcess) killProcessTree(ctx.childProcess)
       try { ctx.acpDriver?.dispose() } catch { /* already disposed */ }
     }
   }
@@ -1256,7 +1315,7 @@ export class SessionManager implements ISessionManager {
     if (ctx) {
       // Kill the child process / ACP agent if still running
       if (ctx.childProcess) {
-        try { ctx.childProcess.kill() } catch { /* already dead */ }
+        killProcessTree(ctx.childProcess)
       }
       if (ctx.acpDriver) {
         try { ctx.acpDriver.dispose() } catch { /* already disposed */ }
@@ -1307,7 +1366,7 @@ export class SessionManager implements ISessionManager {
 
       if (ctx.session.status === 'live') {
         if (ctx.childProcess) {
-          try { ctx.childProcess.kill() } catch { /* already dead */ }
+          killProcessTree(ctx.childProcess)
         }
         if (ctx.acpDriver) {
           try { ctx.acpDriver.dispose() } catch { /* already disposed */ }
