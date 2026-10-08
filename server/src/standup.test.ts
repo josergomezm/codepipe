@@ -167,6 +167,37 @@ describe('parseReviewerOutput', () => {
     expect(out.take).toBe('I looked at the code and this is fine.')
     expect(out.concerns).toBeUndefined()
   })
+
+  it('finds an unfenced JSON object after prose (fence stripped, bare "json" label)', () => {
+    const out = parseReviewerOutput([
+      'I have enough grounding. {braces} in prose are fine.',
+      'json',
+      '{',
+      '  "take": "The adapter is the fragile part: no {status} polling.",',
+      '  "concerns": ["Tokens expire", "Not idempotent"],',
+      '  "effort": "1-2d"',
+      '}',
+      'Trailing chatter.',
+    ].join('\n'))
+    expect(out.take).toBe('The adapter is the fragile part: no {status} polling.')
+    expect(out.concerns).toEqual(['Tokens expire', 'Not idempotent'])
+    expect(out.effort).toBe('1-2d')
+  })
+
+  it('is not thrown off by an unclosed brace in the prose', () => {
+    const out = parseReviewerOutput('The config looks like { "a": 1 and so on.\n{"take": "Real take."}')
+    expect(out.take).toBe('Real take.')
+  })
+
+  it('salvages complete fields from a truncated JSON object', () => {
+    // What got stored when the whole reply was kept and cut at 2000 chars.
+    const out = parseReviewerOutput(
+      'Prose first.\njson\n{\n  "take": "Code is done; the \\"real\\" work is ops.",\n  "concerns": [\n    "No connect script",\n    "Tokens in .env, not Secret Man',
+    )
+    expect(out.take).toBe('Code is done; the "real" work is ops.')
+    expect(out.concerns).toEqual(['No connect script'])
+    expect(out.effort).toBeUndefined()
+  })
 })
 
 describe('hashTodos', () => {

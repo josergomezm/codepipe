@@ -211,9 +211,15 @@ export function buildReviewerPrompt(
 }
 
 /**
- * Parse a reviewer session's output. Lenient by design: a fenced or bare
- * JSON object is preferred; anything else becomes the take verbatim, so a
- * reviewer that ignored the format still contributes.
+ * Parse a reviewer session's output. Lenient by design, in order:
+ *   1. the last fenced ```json block;
+ *   2. the last balanced JSON object anywhere in the text — some CLIs strip
+ *      the fence when rendering, leaving prose, a bare `json` line, then
+ *      the object;
+ *   3. fields salvaged from a broken/truncated object (complete `take`,
+ *      `concerns` entries, `effort` string literals);
+ *   4. the raw text as the take, so a reviewer that ignored the format
+ *      still contributes.
  */
 export function parseReviewerOutput(content: string): ReviewerOutput {
   const fenceRe = /```(?:json)?\s*\n([\s\S]*?)```/g
@@ -221,16 +227,98 @@ export function parseReviewerOutput(content: string): ReviewerOutput {
   for (let m = fenceRe.exec(content); m !== null; m = fenceRe.exec(content)) {
     lastFence = m[1]
   }
-  for (const candidate of [lastFence, content.trim()]) {
-    if (!candidate) continue
+  if (lastFence) {
+    const fenced = validReviewerOutput(lastFence)
+    if (fenced) return fenced
+  }
+
+  // Try an object at every `{` (a stray brace in the prose must not hide
+  // the real one), keeping the last that validates. Reviewer replies are a
+  // few KB, so the quadratic worst case doesn't matter.
+  let found: ReviewerOutput | null = null
+  for (let i = content.indexOf('{'); i !== -1; i = content.indexOf('{', i + 1)) {
+    const candidate = balancedObjectAt(content, i)
+    if (candidate) found = validReviewerOutput(candidate) ?? found
+  }
+  if (found) return found
+
+  return salvageReviewerFields(content) ?? { take: content.trim().slice(0, 2000) || '(no output)' }
+}
+
+function validReviewerOutput(raw: string): ReviewerOutput | null {
+  try {
+    const result = ReviewerOutputSchema.safeParse(JSON.parse(raw))
+    return result.success ? result.data : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The balanced `{…}` span starting at `start`, or null if it never closes
+ * (truncated output). String-aware, so braces inside JSON strings don't
+ * end it early.
+ */
+function balancedObjectAt(text: string, start: number): string | null {
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+    } else if (ch === '"') inString = true
+    else if (ch === '{') depth++
+    else if (ch === '}' && --depth === 0) return text.slice(start, i + 1)
+  }
+  return null
+}
+
+/** A complete JSON string literal, e.g. `"a \"quoted\" word"`. */
+const JSON_STRING = /"(?:[^"\\]|\\.)*"/
+
+/**
+ * Recover the fields a broken or truncated reviewer object still holds in
+ * full. Null when there is no complete `take` — then the raw text is the
+ * better fallback.
+ */
+function salvageReviewerFields(text: string): ReviewerOutput | null {
+  const field = (name: string): string | undefined => {
+    const m = new RegExp(`"${name}"\\s*:\\s*(${JSON_STRING.source})`).exec(text)
+    if (!m) return undefined
     try {
-      const result = ReviewerOutputSchema.safeParse(JSON.parse(candidate))
-      if (result.success) return result.data
+      return JSON.parse(m[1]) as string
     } catch {
-      // Not JSON — fall through
+      return undefined
     }
   }
-  return { take: content.trim().slice(0, 2000) || '(no output)' }
+  const take = field('take')?.trim()
+  if (!take) return null
+
+  // Complete string entries of `concerns`, up to its `]` or the cut-off.
+  const concerns: string[] = []
+  const list = /"concerns"\s*:\s*\[/.exec(text)
+  if (list) {
+    const entryRe = new RegExp(`\\s*,?\\s*(${JSON_STRING.source})`, 'y')
+    entryRe.lastIndex = list.index + list[0].length
+    for (let m = entryRe.exec(text); m !== null; m = entryRe.exec(text)) {
+      try {
+        const entry = (JSON.parse(m[1]) as string).trim()
+        if (entry) concerns.push(entry)
+      } catch {
+        break
+      }
+    }
+  }
+  const effort = field('effort')?.trim()
+
+  return {
+    take,
+    ...(concerns.length ? { concerns } : {}),
+    ...(effort ? { effort } : {}),
+  }
 }
 
 /**
