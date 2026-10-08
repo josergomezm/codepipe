@@ -27,6 +27,7 @@ import {
   matchById,
   normalizeActionText,
   trackedActions,
+  MAX_OPEN_ACTIONS,
 } from './standup-protocol.js'
 import type { ChatMessage, Persona, Session } from './schemas.js'
 import { log } from './logger.js'
@@ -105,14 +106,37 @@ export class PersonaRouter {
         })
       }
 
+      // Ideas the lead verified already shipped (built outside CodePipe's
+      // implement flow) move to Done, and their open prerequisites go with
+      // them. Visible in the thread with the evidence, so a wrong call is
+      // easy to spot and reopen.
+      const completedRefs = new Set<string>()
+      for (const done of parsed.output.completed_todos ?? []) {
+        const todo = matchTodo(todos.filter((t) => t.status !== 'done'), done.todoId)
+        if (!todo) {
+          log.warn('standup', `completed_todos references unknown/done todo "${done.todoId}" — skipping`)
+          continue
+        }
+        completedRefs.add(todo.id)
+        await this.storage.updateTodo(todo.id, { status: 'done' })
+        this.sessionManager.appendSystemMessage(
+          session.id,
+          `Moved "${todo.text}" to Done — the team found it already implemented${done.evidence ? ` (${done.evidence})` : ''}.`,
+        )
+      }
+
       // Close tracked items the team reports as settled (answered in the
-      // thread, or made moot). Only team-raised ones: the user's own manual
-      // items are theirs to close. No agenda entry — the team already knows.
-      if (parsed.output.resolved_actions?.length) {
+      // thread, or made moot) — and prerequisites of ideas that just
+      // shipped. Only team-raised ones: the user's own manual items are
+      // theirs to close. No agenda entry — the team already knows.
+      if (parsed.output.resolved_actions?.length || completedRefs.size > 0) {
         const open = (await this.storage.listActionItems(session.projectId)).filter(
           (a) => a.status === 'open' && a.personaId,
         )
-        for (const ref of parsed.output.resolved_actions) {
+        for (const item of open.filter((a) => a.todoId && completedRefs.has(a.todoId))) {
+          await this.storage.updateActionItem(item.id, { status: 'done' })
+        }
+        for (const ref of parsed.output.resolved_actions ?? []) {
           const item = matchById(open, ref)
           if (!item) {
             log.warn('standup', `resolved_actions references unknown/closed item "${ref}" — skipping`)
@@ -127,29 +151,56 @@ export class PersonaRouter {
       // against open items AND recently resolved ones, so a fresh standup
       // can't re-raise what the user just did. The key includes the gated
       // idea: the same text may legitimately gate two different ideas.
+      //
+      // The queue is capped per project (team-raised items): past the cap
+      // new items are discarded and the thread says so — the team was told
+      // the limit, so this only bites when it ignores it.
       if (parsed.output.user_actions?.length) {
         const tracked = trackedActions(await this.storage.listActionItems(session.projectId))
         const dedupKey = (text: string, todoId: string | undefined) =>
           `${todoId ?? ''}:${normalizeActionText(text)}`
         const openKeys = new Set(tracked.map((a) => dedupKey(a.text, a.todoId)))
+        let openCount = tracked.filter((a) => a.status === 'open' && a.personaId).length
+        let overCap = 0
         for (const action of parsed.output.user_actions) {
           const byPersona = action.persona ? matchPersona(personas, action.persona) : null
           const gatedTodo = action.todoId ? matchTodo(todos, action.todoId) : null
           const key = dedupKey(action.text, gatedTodo?.id)
           if (openKeys.has(key)) continue
+          if (openCount >= MAX_OPEN_ACTIONS) {
+            overCap++
+            continue
+          }
           openKeys.add(key)
+          openCount++
+          // Trim to the schema's caps rather than dropping the whole item.
+          const options = action.options
+            ?.slice(0, 6)
+            .map((o) => ({
+              label: o.label.slice(0, 200),
+              ...(o.detail ? { detail: o.detail.slice(0, 1000) } : {}),
+              ...(o.recommended ? { recommended: true } : {}),
+            }))
           await this.storage.addActionItem({
             projectId: session.projectId,
             text: action.text,
             ...(gatedTodo ? { todoId: gatedTodo.id } : {}),
             ...(action.notes ? { notes: action.notes } : {}),
             ...(action.kind ? { kind: action.kind } : {}),
-            // Trim to the schema's caps rather than dropping the whole item.
             ...(action.steps?.length
               ? { steps: action.steps.slice(0, 12).map((s) => s.slice(0, 1000)) }
               : {}),
+            ...(options?.length ? { options } : {}),
+            ...(action.blocking === false ? { blocking: false } : {}),
             ...(byPersona ? { personaId: byPersona.id } : {}),
           })
+        }
+        if (overCap > 0) {
+          log.warn('standup', `Discarded ${overCap} action item(s) over the ${MAX_OPEN_ACTIONS}-item cap for project ${session.projectId}`)
+          this.sessionManager.appendSystemMessage(
+            session.id,
+            `The team raised ${overCap} more action item(s), but ${MAX_OPEN_ACTIONS} are already waiting on you — they were not added. Answering or declining waiting items makes room.`,
+          )
         }
       }
 

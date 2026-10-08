@@ -245,15 +245,34 @@ describe('buildStandupPrompt', () => {
   it('shows the team what is already tracked, and what the user answered', () => {
     const project = { id: 'p', name: 'codepipe', path: '/x' } as Project
     const base = { projectId: 'p', createdAt: 1, updatedAt: 1 }
-    const prompt = buildStandupPrompt(project, [makePersona()], [], undefined, undefined, [
-      { ...base, id: '22222222-2222-4222-8222-222222222222', text: 'Pick an auth provider', kind: 'decision', status: 'open' },
-      { ...base, id: '33333333-3333-4333-8333-333333333333', text: 'Pick a DB', kind: 'decision', status: 'done', resolution: 'Postgres' },
-    ])
+    const prompt = buildStandupPrompt(project, [makePersona()], [], {
+      actions: [
+        { ...base, id: '22222222-2222-4222-8222-222222222222', text: 'Pick an auth provider', kind: 'decision', status: 'open' },
+        { ...base, id: '44444444-4444-4444-8444-444444444444', text: 'Note the CDN quota', status: 'open', blocking: false },
+        { ...base, id: '33333333-3333-4333-8333-333333333333', text: 'Pick a DB', kind: 'decision', status: 'done', resolution: 'Postgres' },
+        { ...base, id: '55555555-5555-4555-8555-555555555555', text: 'Buy a domain', status: 'dismissed', resolution: 'Using a subdomain' },
+      ],
+    })
     expect(prompt).toContain('do NOT raise these again')
+    expect(prompt).toContain('2 of at most 4')
     expect(prompt).toContain('[22222222-2222-4222-8222-222222222222] (decision) Pick an auth provider')
+    expect(prompt).toContain('(task, non-blocking) Note the CDN quota')
     expect(prompt).toContain("The user's answer: Postgres")
+    expect(prompt).toContain('Declined by the user')
+    expect(prompt).toContain('Their reason: Using a subdomain')
     // Resolved items are context, not something to reference by id.
     expect(prompt).not.toContain('33333333-3333-4333-8333-333333333333')
+  })
+
+  it('asks for tappable options, and lists planned ideas to check for shipped work', () => {
+    const project = { id: 'p', name: 'codepipe', path: '/x' } as Project
+    const planned = makeTodo({ status: 'proposed', text: 'Global error toasts' })
+    const prompt = buildStandupPrompt(project, [makePersona()], [], { planned: [planned] })
+    expect(prompt).toContain('"options"')
+    expect(prompt).toContain('"recommended": true')
+    expect(prompt).toContain('At most 4 items may wait')
+    expect(prompt).toContain(`[${planned.id}] (proposed) Global error toasts`)
+    expect(prompt).toContain('completed_todos')
   })
 })
 
@@ -922,6 +941,80 @@ describe('runTurn and StandupService', () => {
     expect(items.find((a) => a.id === manual.id)?.status).toBe('open')
     // Closed by the team → no agenda echo back to the team.
     expect((await storage.getStandupState(project.id))?.agenda ?? []).toHaveLength(0)
+  })
+
+  it('records options/blocking, caps the queue, and closes ideas that already shipped', async () => {
+    const lead = await storage.addPersona({
+      name: 'Maya', role: 'Lead', personality: '', provider: 'kiro', isLead: true,
+    })
+    // An idea that was built by hand — the lead will find it in git.
+    const shipped = await storage.addTodo({ projectId: project.id, text: 'Global error toasts' })
+    await storage.updateTodo(shipped.id, { status: 'proposed' })
+    const prereq = await storage.addActionItem({
+      projectId: project.id, text: 'Pick toast position', kind: 'decision', todoId: shipped.id, personaId: lead.id,
+    })
+    // Three more already waiting → one slot left under the cap of 4.
+    for (const text of ['Q1', 'Q2', 'Q3']) {
+      await storage.addActionItem({ projectId: project.id, text, kind: 'decision', personaId: lead.id })
+    }
+
+    const run = await standup.runStandup(project.id, { force: true })
+    await completeTurn(['Done.', '```json', JSON.stringify({
+      messages: [{ persona: 'Maya', text: 'Toasts already shipped.' }],
+      completed_todos: [{ todoId: shipped.id, evidence: 'fc8e0a7' }],
+      user_actions: [
+        {
+          persona: 'Maya', text: 'Which region?', kind: 'decision', blocking: false,
+          options: [{ label: 'US', detail: 'Lowest latency', recommended: true }, { label: 'EU' }],
+        },
+        { persona: 'Maya', text: 'One too many', kind: 'decision' },
+      ],
+    }), '```'])
+    await waitFor(async () => {
+      const [t] = (await storage.listTodos(project.id)).filter((x) => x.id === shipped.id)
+      if (t.status !== 'done') throw new Error('not routed yet')
+    })
+
+    const prompt = sessionManager.getSession(run.sessionId!)!.messages.find((m) => m.role === 'user')
+    expect(prompt?.content).toContain(`[${shipped.id}] (proposed) Global error toasts`)
+
+    const items = await storage.listActionItems(project.id)
+    // The shipped idea's prerequisite closed with it — freeing the slot.
+    expect(items.find((a) => a.id === prereq.id)?.status).toBe('done')
+    const region = items.find((a) => a.text === 'Which region?')!
+    expect(region.blocking).toBe(false)
+    expect(region.options).toEqual([
+      { label: 'US', detail: 'Lowest latency', recommended: true },
+      { label: 'EU' },
+    ])
+    // Over the cap: discarded, and the thread says so.
+    expect(items.some((a) => a.text === 'One too many')).toBe(false)
+    const system = sessionManager.getSession(run.sessionId!)!.messages.filter((m) => m.role === 'system')
+    expect(system.some((m) => m.content.includes('already implemented (fc8e0a7)'))).toBe(true)
+    expect(system.some((m) => m.content.includes('were not added'))).toBe(true)
+  })
+
+  it('relays declines and option answers to the next standup', async () => {
+    const lead = await storage.addPersona({
+      name: 'Maya', role: 'Lead', personality: '', provider: 'kiro', isLead: true,
+    })
+    const declined = await storage.addActionItem({ projectId: project.id, text: 'Buy a domain', personaId: lead.id })
+    await standup.notifyActionResolved(
+      await storage.updateActionItem(declined.id, { status: 'dismissed', resolution: 'Using a subdomain' }),
+    )
+    const picked = await storage.addActionItem({
+      projectId: project.id, text: 'Which region?', kind: 'decision', personaId: lead.id,
+      options: [{ label: 'US', recommended: true }, { label: 'EU' }],
+    })
+    await standup.notifyActionResolved(
+      await storage.updateActionItem(picked.id, { status: 'done', resolution: 'EU' }),
+    )
+
+    const agenda = (await storage.getStandupState(project.id))!.agenda!
+    expect(agenda[0]).toContain('declined "Buy a domain"')
+    expect(agenda[0]).toContain('Using a subdomain')
+    expect(agenda[1]).toContain('answered "Which region?": EU')
+    expect(agenda[1]).toContain('US (your recommendation); EU')
   })
 
   it('skips when there are no personas or no todos', async () => {

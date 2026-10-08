@@ -24,7 +24,7 @@ import {
   type Todo,
 } from './schemas.js'
 
-export const PROTOCOL_VERSION = 4
+export const PROTOCOL_VERSION = 5
 
 export interface ParsedStandupTail {
   output: StandupOutput
@@ -115,14 +115,24 @@ export function trackedActions(items: ActionItem[], now = Date.now()): ActionIte
   )
 }
 
+/**
+ * Most items a project may have waiting on the user at once. A short queue
+ * gets answered; a long one gets avoided. Stated in the prompt, and enforced
+ * when routing (new items past the cap are not recorded).
+ */
+export const MAX_OPEN_ACTIONS = 4
+
 function formatTrackedActions(actions: ActionItem[]): string {
   const open = actions.filter((a) => a.status === 'open')
   const resolved = actions.filter((a) => a.status === 'done')
+  const declined = actions.filter((a) => a.status === 'dismissed')
   const sections: string[] = []
   if (open.length > 0) {
     sections.push(
-      'Already waiting on the user (tracked — do NOT raise these again in `user_actions`):\n' +
-        open.map((a) => `- [${a.id}] (${a.kind ?? 'task'}) ${a.text}`).join('\n'),
+      `Already waiting on the user — ${open.length} of at most ${MAX_OPEN_ACTIONS} (tracked — do NOT raise these again in \`user_actions\`):\n` +
+        open
+          .map((a) => `- [${a.id}] (${a.kind ?? 'task'}${a.blocking === false ? ', non-blocking' : ''}) ${a.text}`)
+          .join('\n'),
     )
   }
   if (resolved.length > 0) {
@@ -133,7 +143,25 @@ function formatTrackedActions(actions: ActionItem[]): string {
           .join('\n'),
     )
   }
+  if (declined.length > 0) {
+    sections.push(
+      'Declined by the user (won\'t do — never raise these again):\n' +
+        declined
+          .map((a) => `- ${a.text}${a.resolution ? `\n  Their reason: ${a.resolution}` : ''}`)
+          .join('\n'),
+    )
+  }
   return sections.length > 0 ? sections.join('\n\n') + '\n' : ''
+}
+
+/** Ideas already planned — the lead checks whether any shipped outside CodePipe. */
+function formatPlannedTodos(planned: Todo[]): string {
+  if (planned.length === 0) return ''
+  return (
+    'Ideas already planned (proposed/approved — not for review today). If one is ALREADY implemented in the codebase (check `git log` and the code), report it in `completed_todos`:\n' +
+    planned.map((t) => `- [${t.id}] (${t.status}) ${t.text}`).join('\n') +
+    '\n'
+  )
 }
 
 /** Canonical form of an action item's text, for duplicate detection. */
@@ -289,10 +317,18 @@ export function buildStandupPrompt(
   project: Project,
   personas: Persona[],
   todos: Todo[],
-  memo?: string,
-  agenda?: string[],
-  actions: ActionItem[] = [],
+  context: {
+    /** The team's handoff note from the previous standup. */
+    memo?: string
+    /** Events since the last standup. */
+    agenda?: string[]
+    /** Tracked action items (see trackedActions). */
+    actions?: ActionItem[]
+    /** Proposed/approved ideas, checked for having already shipped. */
+    planned?: Todo[]
+  } = {},
 ): string {
+  const { memo, agenda, actions = [], planned = [] } = context
   const roster = personas
     .map(
       (p) =>
@@ -324,6 +360,7 @@ export function buildStandupPrompt(
       ? `Since the last standup:\n${agenda.map((a) => `- ${a}`).join('\n')}\n`
       : '',
     formatTrackedActions(actions),
+    formatPlannedTodos(planned),
     `Today's open ideas/todos from the user (with the team's independent takes where reviewed):`,
     '',
     todoList,
@@ -356,13 +393,19 @@ export function buildStandupPrompt(
           {
             persona: '<who raised it>',
             text: '<a task or decision only the user can handle>',
-            notes: '<optional: why it is needed>',
+            notes: '<optional: short context — why it is needed>',
             kind: 'decision | task',
+            options: [
+              { label: '<for decisions: a short answer the user can tap>', detail: '<one line: what it means>', recommended: true },
+              { label: '<another answer>', detail: '<one line>' },
+            ],
             steps: ['<for tasks: concrete numbered steps to complete it>'],
+            blocking: true,
             todoId: '<the [id] of the idea this gates, when it is a prerequisite of one>',
           },
         ],
         resolved_actions: ['<[id] of a tracked user action that no longer blocks anything>'],
+        completed_todos: [{ todoId: '<[id] of a planned idea that is already implemented>', evidence: '<commit hash or file that proves it>' }],
         memo: '<handoff note to your next standup: open questions, decisions made, what to revisit — a few sentences>',
       },
       null,
@@ -373,8 +416,9 @@ export function buildStandupPrompt(
     'Rules for the JSON block:',
     '- `messages` come from YOU, the lead, only — usually exactly one short summary, personal like a colleague texting. Do NOT fabricate messages from other team members: they already spoke through their independent takes, which the user sees on the board. If a reviewer\'s take contains a question the user must answer, turn it into a `user_actions` entry with kind `decision`, credited to that reviewer via `persona`.',
     '- `proposals` maps your recommendations onto the todo ids above. Only include todos you actually formed a recommendation for. `approach` is the human-readable plan; `brief` is the real deliverable of this standup: the EXACT prompt a coding agent will be handed to implement the proposal. Write the brief with everything the agent needs and nothing it doesn\'t — the goal, the specific files and docs to read first (by path, e.g. `docs/pos.md`, `src/foo.ts`), hard constraints and things NOT to touch, and a definition of done (tests to run, behavior to verify). Ground it in what you actually found in the codebase. The brief must STAND ALONE: never reference the team, the takes, this conversation, or who proposed what — the executing agent knows none of that and needs none of it.',
-    '- `user_actions` are tasks ONLY the user can do and that block progress. Set `kind`: use `decision` when the user must choose or clarify something (phrase `text` as the question, with the options and your recommendation in `notes`); use `task` for external setup — accounts, secrets, purchases — and then include `steps`: a concrete numbered walkthrough (console URLs, exact commands, which file to put the value in). When an action gates a specific idea (an API key its build needs), set `todoId` to that idea\'s [id] so it shows as a prerequisite on the idea\'s card. Include them sparingly — only genuine blockers — and omit the array when there are none. Only NEW blockers belong here: anything already listed as waiting on the user is tracked, and anything recently resolved is settled — build on the user\'s answer instead of re-asking.',
+    '- `user_actions` are tasks ONLY the user can do and that block progress. Set `kind`: use `decision` when the user must choose or clarify something — phrase `text` as the question and give 2–4 `options` (short tappable `label`, one-line `detail`), marking your recommendation with `recommended: true`, so the user can answer in one tap; keep `notes` to brief context, not a restatement of the options. Use `task` for external setup — accounts, secrets, purchases — and then include `steps`: a concrete numbered walkthrough (console URLs, exact commands, which file to put the value in). When an action gates a specific idea (an API key its build needs), set `todoId` to that idea\'s [id] so it shows as a prerequisite on the idea\'s card. Set `blocking: false` when it is worth knowing but blocks nothing. Include them sparingly and omit the array when there are none. At most ' + MAX_OPEN_ACTIONS + ' items may wait on the user at once — new ones past that are discarded — so at the limit, raise something only if it matters more than a waiting item, and drop that item via `resolved_actions`. Only NEW blockers belong here: anything already listed as waiting on the user is tracked, and anything recently resolved is settled — build on the user\'s answer instead of re-asking.',
     '- `resolved_actions` lists the [id]s of items waiting on the user that no longer block anything — the user settled it in this conversation, or the plan changed so it is moot. Omit it when there are none.',
+    '- `completed_todos` lists planned ideas you VERIFIED are already implemented (built outside this flow) — with `evidence` the user can check, like a commit hash. They move to Done. Only report what you confirmed in the code; omit it otherwise.',
     '- `memo` is your memory: the next standup starts fresh and receives ONLY this note plus the board. Record decisions made, open questions, and anything you would otherwise forget. Keep it under a paragraph.',
     '- The user may reply in this session today. In EVERY reply (including answers to their follow-ups), end with the same ```json block — usually a single message from whichever team member is answering, plus an updated `memo` if something worth remembering changed.',
   ]

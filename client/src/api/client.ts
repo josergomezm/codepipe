@@ -179,8 +179,16 @@ export interface TodoTake {
   createdAt: number
 }
 
-export type ActionItemStatus = 'open' | 'done'
+/** 'dismissed' = the user declined it (won't do). */
+export type ActionItemStatus = 'open' | 'done' | 'dismissed'
 export type ActionItemKind = 'decision' | 'task'
+
+/** One answer the team offers for a decision — a one-tap button. */
+export interface ActionItemOption {
+  label: string
+  detail?: string
+  recommended?: boolean
+}
 
 export interface ActionItem {
   id: string
@@ -191,10 +199,16 @@ export interface ActionItem {
   kind?: ActionItemKind
   /** Step-by-step guide to complete it (task-kind items). */
   steps?: string[]
+  /** The answers the team offers (decision items). */
+  options?: ActionItemOption[]
+  /** False when it's useful to know but blocks nothing. Absent = blocking. */
+  blocking?: boolean
+  /** Hidden from the list (and the badge) until this time. */
+  snoozedUntil?: number
   /** The idea this item gates (a prerequisite of that idea). */
   todoId?: string
   status: ActionItemStatus
-  /** The user's answer when resolving it (decision items) — relayed to the team. */
+  /** The user's answer (or, when dismissed, their reason) — relayed to the team. */
   resolution?: string
   /** Persona who raised it (absent for manually added items). */
   personaId?: string
@@ -567,7 +581,14 @@ export function createActionItem(projectId: string, text: string, notes?: string
 
 export function updateActionItem(
   id: string,
-  data: { text?: string; notes?: string; status?: ActionItemStatus; resolution?: string },
+  data: {
+    text?: string
+    notes?: string
+    status?: ActionItemStatus
+    resolution?: string
+    /** null un-snoozes. */
+    snoozedUntil?: number | null
+  },
 ): Promise<ActionItem> {
   return request<ActionItem>(`/api/actions/${id}`, {
     method: 'PATCH',

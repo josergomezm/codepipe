@@ -158,7 +158,21 @@ export const useTeamStore = defineStore('team', () => {
 
   // ----- Action items -----
 
-  const openActionCount = computed(() => actions.value.filter((a) => a.status === 'open').length)
+  /** Open and not snoozed — what's actually in front of you. */
+  function isWaiting(a: ActionItem, now = Date.now()): boolean {
+    return a.status === 'open' && !(a.snoozedUntil && a.snoozedUntil > now)
+  }
+
+  /** The sidebar badge: only waiting items that block something. */
+  const openActionCount = computed(
+    () => actions.value.filter((a) => isWaiting(a) && a.blocking !== false).length,
+  )
+
+  /**
+   * Items closed in this browser session. They stay visible where they were
+   * (with "queued for the next standup") instead of vanishing on click.
+   */
+  const recentlyClosedIds = ref(new Set<string>())
 
   async function fetchActions() {
     try {
@@ -179,27 +193,45 @@ export const useTeamStore = defineStore('team', () => {
     }
   }
 
-  async function setActionStatus(id: string, status: ActionItemStatus) {
+  async function updateAction(
+    id: string,
+    data: Parameters<typeof api.updateActionItem>[1],
+    failure: string,
+  ): Promise<boolean> {
     try {
-      const updated = await api.updateActionItem(id, { status })
+      const updated = await api.updateActionItem(id, data)
       const idx = actions.value.findIndex((a) => a.id === id)
       if (idx >= 0) actions.value[idx] = updated
+      if (updated.status !== 'open') recentlyClosedIds.value.add(id)
       error.value = null
+      return true
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to update action item'
+      error.value = e instanceof Error ? e.message : failure
+      return false
     }
   }
 
+  function setActionStatus(id: string, status: ActionItemStatus) {
+    return updateAction(id, { status }, 'Failed to update action item')
+  }
+
   /** Answer a decision: closes it and relays the answer to the team. */
-  async function resolveAction(id: string, resolution: string) {
-    try {
-      const updated = await api.updateActionItem(id, { status: 'done', resolution })
-      const idx = actions.value.findIndex((a) => a.id === id)
-      if (idx >= 0) actions.value[idx] = updated
-      error.value = null
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to answer action item'
-    }
+  function resolveAction(id: string, resolution: string) {
+    return updateAction(id, { status: 'done', resolution }, 'Failed to answer action item')
+  }
+
+  /** Won't do: closes it, and the team is told not to raise it again. */
+  function dismissAction(id: string, reason?: string) {
+    return updateAction(
+      id,
+      { status: 'dismissed', ...(reason ? { resolution: reason } : {}) },
+      'Failed to decline action item',
+    )
+  }
+
+  /** Hide until a time (null brings it back now). */
+  function snoozeAction(id: string, until: number | null) {
+    return updateAction(id, { snoozedUntil: until }, 'Failed to snooze action item')
   }
 
   async function deleteAction(id: string) {
@@ -242,6 +274,8 @@ export const useTeamStore = defineStore('team', () => {
     todos,
     actions,
     openActionCount,
+    recentlyClosedIds,
+    isWaiting,
     error,
     standupRunning,
     todosForProject,
@@ -250,6 +284,8 @@ export const useTeamStore = defineStore('team', () => {
     addAction,
     setActionStatus,
     resolveAction,
+    dismissAction,
+    snoozeAction,
     deleteAction,
     fetchPersonas,
     createPersona,

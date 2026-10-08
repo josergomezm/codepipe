@@ -182,7 +182,11 @@ export const TodoSchema = z.object({
 
 // --- Action items (things only the user can do, surfaced by the team) ---
 
-export const ActionItemStatusSchema = z.enum(['open', 'done'])
+/**
+ * 'done' = resolved (answered or completed); 'dismissed' = the user declined
+ * it ("won't do") — the team is told, and must not raise it again.
+ */
+export const ActionItemStatusSchema = z.enum(['open', 'done', 'dismissed'])
 
 /**
  * 'decision' = the user must decide something (resolved by answering it —
@@ -192,6 +196,13 @@ export const ActionItemStatusSchema = z.enum(['open', 'done'])
  */
 export const ActionItemKindSchema = z.enum(['decision', 'task'])
 
+/** One answer the team offers for a decision — rendered as a one-tap button. */
+export const ActionItemOptionSchema = z.object({
+  label: z.string().min(1).max(200),
+  detail: z.string().max(1000).optional(),
+  recommended: z.boolean().optional(),
+})
+
 export const ActionItemSchema = z.object({
   id: z.string().uuid(),
   projectId: z.string().uuid(),
@@ -200,10 +211,19 @@ export const ActionItemSchema = z.object({
   kind: ActionItemKindSchema.optional(),
   /** Step-by-step guide to complete it (task-kind items). */
   steps: z.array(z.string().min(1).max(1000)).max(12).optional(),
+  /** The answers the team offers (decision items). */
+  options: z.array(ActionItemOptionSchema).max(6).optional(),
+  /** False when it's useful to know but blocks nothing. Absent = blocking. */
+  blocking: z.boolean().optional(),
+  /** Hidden from the list (and the badge) until this time. */
+  snoozedUntil: z.number().int().positive().optional(),
   /** The idea this item gates or informs (a prerequisite of that idea). */
   todoId: z.string().uuid().optional(),
   status: ActionItemStatusSchema,
-  /** The user's answer when resolving it (decision items) — relayed to the team. */
+  /**
+   * The user's answer when resolving it (decision items), or their reason
+   * when dismissing it — relayed to the team.
+   */
   resolution: z.string().max(4000).optional(),
   /** Persona who raised it (absent for manually added items). */
   personaId: z.string().uuid().optional(),
@@ -282,8 +302,27 @@ export const StandupUserActionSchema = z.object({
   notes: z.string().optional(),
   kind: ActionItemKindSchema.optional(),
   steps: z.array(z.string().min(1)).optional(),
+  /** Decision answers, each a one-tap button for the user. */
+  options: z
+    .array(
+      z.object({
+        label: z.string().min(1),
+        detail: z.string().optional(),
+        recommended: z.boolean().optional(),
+      }),
+    )
+    .optional(),
+  /** False for nice-to-know items that block nothing. */
+  blocking: z.boolean().optional(),
   /** The [id] of the idea this action gates, when it is a prerequisite. */
   todoId: z.string().optional(),
+})
+
+/** An idea the lead found already shipped (e.g. built outside CodePipe). */
+export const StandupCompletedTodoSchema = z.object({
+  todoId: z.string().min(1),
+  /** How the lead knows — a commit hash, a file. Shown to the user. */
+  evidence: z.string().optional(),
 })
 
 export const StandupOutputSchema = z.object({
@@ -295,6 +334,8 @@ export const StandupOutputSchema = z.object({
    * the user settled them in the thread, or the plan changed.
    */
   resolved_actions: z.array(z.string()).optional(),
+  /** Planned ideas the lead verified are already implemented. */
+  completed_todos: z.array(StandupCompletedTodoSchema).optional(),
   /** The team's handoff note to their next standup (see StandupState.memo). */
   memo: z.string().optional(),
 })
@@ -389,6 +430,8 @@ export const UpdateActionItemRequestSchema = z.object({
   notes: z.string().max(10000).optional(),
   status: ActionItemStatusSchema.optional(),
   resolution: z.string().max(4000).optional(),
+  /** null un-snoozes. */
+  snoozedUntil: z.number().int().positive().nullable().optional(),
 })
 
 // --- Inferred Types ---

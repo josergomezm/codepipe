@@ -5,6 +5,7 @@ import { useTeamStore } from '@/stores/team'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import PersonaAvatar from '@/components/PersonaAvatar.vue'
+import ActionItemCard from '@/components/ActionItemCard.vue'
 import * as api from '@/api/client'
 import type { Todo, TodoStatus, StandupState } from '@/api/client'
 
@@ -343,34 +344,15 @@ function close() {
               <!-- Prerequisites: things to do before building this idea -->
               <div v-if="prereqs(todo).length" class="mb-2 flex flex-col gap-1">
                 <span class="text-[10px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-500">
-                  Before building{{ openPrereqCount(todo) ? ` · ${openPrereqCount(todo)} open` : ' · all done' }}
+                  Waiting on you{{ openPrereqCount(todo) ? ` · ${openPrereqCount(todo)} open` : ' · all done' }}
                 </span>
-                <div
+                <ActionItemCard
                   v-for="item in prereqs(todo)"
                   :key="item.id"
-                  class="flex items-start gap-2 rounded-lg border border-amber-200/60 px-2.5 py-1.5 dark:border-amber-900/40"
-                >
-                  <input
-                    type="checkbox"
-                    :checked="item.status === 'done'"
-                    class="mt-0.5 rounded"
-                    @change="teamStore.setActionStatus(item.id, item.status === 'done' ? 'open' : 'done')"
-                  />
-                  <div class="min-w-0 flex-1">
-                    <p
-                      class="text-xs"
-                      :class="item.status === 'done'
-                        ? 'text-gray-400 line-through dark:text-gray-500'
-                        : 'text-gray-700 dark:text-gray-300'"
-                    >{{ item.text }}</p>
-                    <ol v-if="item.steps?.length && item.status !== 'done'" class="mt-1 flex flex-col gap-0.5">
-                      <li v-for="(step, i) in item.steps" :key="i" class="flex items-start gap-1.5 text-[11px] text-gray-500 dark:text-gray-400">
-                        <span class="mt-px flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-gray-100 text-[8px] font-semibold text-gray-500 dark:bg-gray-800 dark:text-gray-400">{{ i + 1 }}</span>
-                        <span class="whitespace-pre-wrap">{{ step }}</span>
-                      </li>
-                    </ol>
-                  </div>
-                </div>
+                  :item="item"
+                  :show-idea="false"
+                  @navigate="emit('close')"
+                />
               </div>
 
               <div class="flex flex-wrap gap-1.5">

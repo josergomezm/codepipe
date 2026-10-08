@@ -1,26 +1,24 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
 import { useTeamStore } from '@/stores/team'
 import { useProjectsStore } from '@/stores/projects'
-import { useSessionsStore } from '@/stores/sessions'
 import { useUiStore } from '@/stores/ui'
-import PersonaAvatar from '@/components/PersonaAvatar.vue'
-import * as api from '@/api/client'
+import ActionItemCard from '@/components/ActionItemCard.vue'
 import type { ActionItem } from '@/api/client'
 
 const teamStore = useTeamStore()
 const projectStore = useProjectsStore()
-const sessionStore = useSessionsStore()
 const ui = useUiStore()
-const router = useRouter()
-const replyError = ref<string | null>(null)
 
 const newText = ref('')
 const newNotes = ref('')
+const showAdd = ref(false)
 const showNotes = ref(false)
 const newProjectId = ref('')
 const showDone = ref(false)
+const showSnoozed = ref(false)
+/** Projects whose nice-to-know items are expanded. */
+const expandedExtras = ref(new Set<string>())
 /** '' = all projects */
 const filterProjectId = ref('')
 
@@ -39,34 +37,61 @@ const visibleActions = computed(() =>
     : teamStore.actions,
 )
 
-const grouped = computed(() => {
-  const groups = new Map<string, ActionItem[]>()
-  for (const item of visibleActions.value) {
-    if (item.status === 'done' && !showDone.value) continue
-    const list = groups.get(item.projectId) ?? []
-    list.push(item)
-    groups.set(item.projectId, list)
+/** Decisions first (usually one tap), then oldest first. */
+function byUrgency(a: ActionItem, b: ActionItem): number {
+  const kind = (x: ActionItem) => (x.kind === 'decision' ? 0 : 1)
+  return kind(a) - kind(b) || a.createdAt - b.createdAt
+}
+
+interface ProjectGroup {
+  projectId: string
+  blocking: ActionItem[]
+  extras: ActionItem[]
+  /** Closed during this visit, or all closed ones when "show completed" is on. */
+  closed: ActionItem[]
+}
+
+const groups = computed<ProjectGroup[]>(() => {
+  const map = new Map<string, ProjectGroup>()
+  const group = (projectId: string) => {
+    let g = map.get(projectId)
+    if (!g) {
+      g = { projectId, blocking: [], extras: [], closed: [] }
+      map.set(projectId, g)
+    }
+    return g
   }
-  return groups
+  for (const item of visibleActions.value) {
+    if (teamStore.isWaiting(item)) {
+      group(item.projectId)[item.blocking === false ? 'extras' : 'blocking'].push(item)
+    } else if (item.status !== 'open' && (showDone.value || teamStore.recentlyClosedIds.has(item.id))) {
+      group(item.projectId).closed.push(item)
+    }
+  }
+  for (const g of map.values()) {
+    g.blocking.sort(byUrgency)
+    g.extras.sort(byUrgency)
+    g.closed.sort((a, b) => b.updatedAt - a.updatedAt)
+  }
+  // Projects with the most blocking items first.
+  return [...map.values()].sort((a, b) => b.blocking.length - a.blocking.length)
 })
 
-const doneCount = computed(() => visibleActions.value.filter((a) => a.status === 'done').length)
-
-/** The idea an item gates, when linked and still on the board. */
-function linkedIdea(item: ActionItem) {
-  return item.todoId ? teamStore.todos.find((t) => t.id === item.todoId) ?? null : null
-}
-
-function openBoard(projectId: string) {
-  router.push({ path: '/board', query: { project: projectId } })
-}
+const snoozedItems = computed(() =>
+  visibleActions.value.filter((a) => a.status === 'open' && !teamStore.isWaiting(a)),
+)
+const closedCount = computed(() => visibleActions.value.filter((a) => a.status !== 'open').length)
+const waitingCount = computed(() => visibleActions.value.filter((a) => teamStore.isWaiting(a)).length)
 
 function projectName(projectId: string): string {
   return projectStore.projects.find((p) => p.id === projectId)?.name ?? 'Removed project'
 }
 
-function raiser(item: ActionItem) {
-  return item.personaId ? teamStore.personasById.get(item.personaId) ?? null : null
+function toggleExtras(projectId: string) {
+  const next = new Set(expandedExtras.value)
+  if (next.has(projectId)) next.delete(projectId)
+  else next.add(projectId)
+  expandedExtras.value = next
 }
 
 async function add() {
@@ -75,60 +100,7 @@ async function add() {
   newText.value = ''
   newNotes.value = ''
   showNotes.value = false
-}
-
-function formatDate(ts: number): string {
-  return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-}
-
-/** One-click answer for decisions that came with a recommendation. */
-const GO_WITH_RECOMMENDATION = 'Go with your recommendation.'
-
-/** In-progress answers, per decision item. */
-const answers = ref<Record<string, string>>({})
-
-/**
- * Answer a decision in place: closes the item and queues the answer (with
- * the options the team offered) for the next standup — no trip to the chat.
- */
-async function answer(item: ActionItem, text: string | undefined) {
-  const resolution = text?.trim()
-  if (!resolution) return
-  await teamStore.resolveAction(item.id, resolution)
-  if (!teamStore.error) delete answers.value[item.id]
-}
-
-/** Prefix of the draft this view writes — recognizable so a stale one can be replaced. */
-const DRAFT_PREFIX = 'About "'
-
-/**
- * For decisions that need a back-and-forth: jump into the project's team
- * thread with a reply drafted about this item. The team closes the item
- * itself (resolved_actions) once the conversation settles it.
- */
-async function discussInThread(item: ActionItem) {
-  replyError.value = null
-  try {
-    const state = await api.fetchStandupState(item.projectId)
-    if (!state.teamSessionId) {
-      replyError.value = 'No team thread for this project yet — run a standup first.'
-      return
-    }
-    // ChatInput isn't mounted on this view and loads the draft when it
-    // mounts, so writing it here is always picked up. Only a draft you were
-    // actually writing is kept; an unsent prefill from this button (perhaps
-    // for a different item) is replaced.
-    const draftKey = `codepipe:draft:${state.teamSessionId}`
-    const existing = localStorage.getItem(draftKey)
-    if (!existing?.trim() || existing.startsWith(DRAFT_PREFIX)) {
-      localStorage.setItem(draftKey, `${DRAFT_PREFIX}${item.text}"\n\n`)
-    }
-    await sessionStore.fetchSessions()
-    await sessionStore.selectSession(state.teamSessionId)
-    router.push('/')
-  } catch {
-    replyError.value = 'Could not open the team thread.'
-  }
+  showAdd.value = false
 }
 </script>
 
@@ -146,11 +118,15 @@ async function discussInThread(item: ActionItem) {
       </button>
       <div class="min-w-0">
         <span class="block text-sm font-medium text-gray-700 dark:text-gray-300">Action items</span>
-        <span class="block text-xs text-gray-400 dark:text-gray-500">
-          Things only you can do — completions reach your team at the next standup
+        <span class="hidden text-xs text-gray-400 sm:block dark:text-gray-500">
+          Things only you can do — answers reach your team at the next standup
         </span>
       </div>
       <div class="flex-1" />
+      <button
+        class="shrink-0 rounded-lg px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+        @click="showAdd = !showAdd"
+      >+ Add</button>
       <select
         v-model="filterProjectId"
         class="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-blue-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
@@ -163,8 +139,8 @@ async function discussInThread(item: ActionItem) {
     <!-- Content -->
     <div class="min-h-0 flex-1 overflow-y-auto">
       <div class="mx-auto flex max-w-2xl flex-col gap-5 px-4 py-6">
-        <!-- Manual add -->
-        <div class="flex flex-col gap-1.5">
+        <!-- Manual add (most items come from the team, so it stays tucked away) -->
+        <div v-if="showAdd" class="flex flex-col gap-1.5 rounded-lg border border-dashed border-gray-300 p-3 dark:border-gray-700">
           <div class="flex gap-1.5">
             <select
               v-model="newProjectId"
@@ -199,137 +175,61 @@ async function discussInThread(item: ActionItem) {
           />
         </div>
 
-        <div v-if="teamStore.error || replyError" class="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-900/20 dark:text-red-400">
-          {{ teamStore.error || replyError }}
+        <div v-if="teamStore.error" class="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-900/20 dark:text-red-400">
+          {{ teamStore.error }}
         </div>
 
-        <div v-if="grouped.size === 0" class="py-10 text-center text-sm text-gray-400 dark:text-gray-500">
-          Nothing blocking. Your team raises items here when only you can unblock something — secrets, accounts, decisions.
+        <div v-if="groups.length === 0" class="py-10 text-center text-sm text-gray-400 dark:text-gray-500">
+          <template v-if="waitingCount === 0 && snoozedItems.length === 0">
+            Nothing waiting on you. Your team raises items here when only you can unblock something — secrets, accounts, decisions.
+          </template>
+          <template v-else>Nothing to show here right now.</template>
         </div>
 
         <!-- Grouped by project -->
-        <div v-for="[projectId, items] in grouped" :key="projectId" class="flex flex-col gap-1.5">
-          <h3 class="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
-            {{ projectName(projectId) }}
+        <div v-for="g in groups" :key="g.projectId" class="flex flex-col gap-1.5">
+          <h3 class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+            {{ projectName(g.projectId) }}
+            <span
+              v-if="g.blocking.length"
+              class="rounded-full bg-amber-100 px-1.5 text-[10px] font-medium normal-case tracking-normal text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+            >{{ g.blocking.length }} waiting on you</span>
           </h3>
-          <div
-            v-for="item in items"
-            :key="item.id"
-            class="group flex items-start gap-3 rounded-lg border border-gray-200 px-4 py-3 dark:border-gray-700"
-          >
-            <input
-              type="checkbox"
-              :checked="item.status === 'done'"
-              class="mt-0.5 rounded"
-              @change="teamStore.setActionStatus(item.id, item.status === 'done' ? 'open' : 'done')"
-            />
-            <div class="min-w-0 flex-1">
-              <div class="flex items-start gap-2">
-                <p
-                  class="min-w-0 flex-1 text-sm"
-                  :class="item.status === 'done'
-                    ? 'text-gray-400 line-through dark:text-gray-500'
-                    : 'text-gray-800 dark:text-gray-200'"
-                >{{ item.text }}</p>
-                <span
-                  v-if="item.kind"
-                  class="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium"
-                  :class="item.kind === 'decision'
-                    ? 'bg-purple-50 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300'
-                    : 'bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300'"
-                >{{ item.kind === 'decision' ? 'decision' : 'setup' }}</span>
-              </div>
-              <p v-if="item.notes" class="mt-1 whitespace-pre-wrap text-xs text-gray-400 dark:text-gray-500">{{ item.notes }}</p>
 
-              <!-- The idea this item gates, with its board location -->
-              <button
-                v-if="linkedIdea(item)"
-                class="mt-1 flex max-w-full items-center gap-1.5 rounded bg-purple-50 px-2 py-1 text-left hover:bg-purple-100 dark:bg-purple-900/20 dark:hover:bg-purple-900/40"
-                :title="'Open the board'"
-                @click="openBoard(item.projectId)"
-              >
-                <span class="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-purple-500 dark:text-purple-400">for idea</span>
-                <span class="min-w-0 truncate text-xs text-purple-800 dark:text-purple-300">{{ linkedIdea(item)!.text }}</span>
-                <span class="shrink-0 rounded-full bg-white/70 px-1.5 text-[10px] font-medium text-purple-700 dark:bg-purple-950/60 dark:text-purple-300">
-                  {{ linkedIdea(item)!.status === 'under_review' ? 'in review' : linkedIdea(item)!.status }}
-                </span>
-              </button>
+          <ActionItemCard v-for="item in g.blocking" :key="item.id" :item="item" />
 
-              <!-- Step-by-step guide (task items) -->
-              <ol
-                v-if="item.steps?.length && item.status !== 'done'"
-                class="mt-2 flex flex-col gap-1"
-              >
-                <li
-                  v-for="(step, i) in item.steps"
-                  :key="i"
-                  class="flex items-start gap-2 text-xs text-gray-600 dark:text-gray-400"
-                >
-                  <span class="mt-px flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-gray-100 text-[9px] font-semibold text-gray-500 dark:bg-gray-800 dark:text-gray-400">{{ i + 1 }}</span>
-                  <span class="whitespace-pre-wrap">{{ step }}</span>
-                </li>
-              </ol>
-
-              <!-- Decisions resolve by answering, right here -->
-              <div v-if="item.kind === 'decision' && item.status !== 'done'" class="mt-2 flex flex-col gap-1.5">
-                <textarea
-                  v-model="answers[item.id]"
-                  rows="2"
-                  placeholder="Your answer…"
-                  class="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-900 placeholder:text-gray-400 focus:border-purple-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
-                  @keydown.enter.ctrl.prevent="answer(item, answers[item.id])"
-                  @keydown.enter.meta.prevent="answer(item, answers[item.id])"
-                />
-                <div class="flex flex-wrap items-center gap-1.5">
-                  <button
-                    :disabled="!answers[item.id]?.trim()"
-                    class="rounded bg-purple-600 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-purple-700 disabled:opacity-50"
-                    @click="answer(item, answers[item.id])"
-                  >Answer</button>
-                  <button
-                    v-if="item.notes"
-                    class="rounded border border-purple-200 px-2.5 py-1 text-xs font-medium text-purple-700 transition hover:bg-purple-50 dark:border-purple-800 dark:text-purple-300 dark:hover:bg-purple-900/30"
-                    title="Answer with the team's recommendation (see the notes above)"
-                    @click="answer(item, GO_WITH_RECOMMENDATION)"
-                  >Go with recommendation</button>
-                  <button
-                    class="px-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                    @click="discussInThread(item)"
-                  >Discuss in thread</button>
-                </div>
-              </div>
-
-              <p v-if="item.resolution" class="mt-1 whitespace-pre-wrap text-xs text-purple-700 dark:text-purple-300">
-                <span class="font-medium">You answered:</span> {{ item.resolution }}
-              </p>
-
-              <div class="mt-1.5 flex items-center gap-2 text-[10px] text-gray-400 dark:text-gray-500">
-                <template v-if="raiser(item)">
-                  <PersonaAvatar :persona="raiser(item)" size="sm" />
-                  <span>raised by {{ raiser(item)!.name }}</span>
-                  <span>·</span>
-                </template>
-                <span>{{ formatDate(item.createdAt) }}</span>
-              </div>
-            </div>
+          <template v-if="g.extras.length">
             <button
-              class="shrink-0 rounded p-1 text-gray-300 opacity-100 transition hover:bg-red-50 hover:text-red-600 md:opacity-0 md:group-hover:opacity-100 dark:text-gray-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
-              title="Delete"
-              @click="teamStore.deleteAction(item.id)"
+              class="self-start text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+              @click="toggleExtras(g.projectId)"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-3.5 w-3.5">
-                <path fill-rule="evenodd" d="M5 3.25V4H2.75a.75.75 0 0 0 0 1.5h.3l.815 8.15A1.5 1.5 0 0 0 5.357 15h5.285a1.5 1.5 0 0 0 1.493-1.35l.815-8.15h.3a.75.75 0 0 0 0-1.5H11v-.75A2.25 2.25 0 0 0 8.75 1h-1.5A2.25 2.25 0 0 0 5 3.25Zm2.25-.75a.75.75 0 0 0-.75.75V4h3v-.75a.75.75 0 0 0-.75-.75h-1.5Z" clip-rule="evenodd" />
-              </svg>
+              {{ expandedExtras.has(g.projectId) ? 'Hide' : 'Show' }} {{ g.extras.length }} nice-to-know
             </button>
-          </div>
+            <template v-if="expandedExtras.has(g.projectId)">
+              <ActionItemCard v-for="item in g.extras" :key="item.id" :item="item" />
+            </template>
+          </template>
+
+          <ActionItemCard v-for="item in g.closed" :key="item.id" :item="item" />
+        </div>
+
+        <!-- Snoozed -->
+        <div v-if="snoozedItems.length" class="flex flex-col gap-1.5">
+          <button
+            class="self-center text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+            @click="showSnoozed = !showSnoozed"
+          >{{ showSnoozed ? 'Hide' : 'Show' }} {{ snoozedItems.length }} snoozed</button>
+          <template v-if="showSnoozed">
+            <ActionItemCard v-for="item in snoozedItems" :key="item.id" :item="item" />
+          </template>
         </div>
 
         <button
-          v-if="doneCount > 0"
+          v-if="closedCount > 0"
           class="self-center text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
           @click="showDone = !showDone"
         >
-          {{ showDone ? 'Hide' : 'Show' }} {{ doneCount }} completed
+          {{ showDone ? 'Hide' : 'Show' }} {{ closedCount }} completed
         </button>
       </div>
     </div>

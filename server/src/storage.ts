@@ -57,6 +57,8 @@ export interface IStorageLayer {
     notes?: string
     kind?: ActionItem['kind']
     steps?: string[]
+    options?: ActionItem['options']
+    blocking?: boolean
     todoId?: string
     personaId?: string
   }): Promise<ActionItem>
@@ -405,6 +407,8 @@ export class StorageLayer implements IStorageLayer {
     notes?: string
     kind?: ActionItem['kind']
     steps?: string[]
+    options?: ActionItem['options']
+    blocking?: boolean
     todoId?: string
     personaId?: string
   }): Promise<ActionItem> {
@@ -418,6 +422,8 @@ export class StorageLayer implements IStorageLayer {
         ...(data.notes ? { notes: data.notes } : {}),
         ...(data.kind ? { kind: data.kind } : {}),
         ...(data.steps?.length ? { steps: data.steps } : {}),
+        ...(data.options?.length ? { options: data.options } : {}),
+        ...(data.blocking === false ? { blocking: false } : {}),
         ...(data.todoId ? { todoId: data.todoId } : {}),
         ...(data.personaId ? { personaId: data.personaId } : {}),
         status: 'open',

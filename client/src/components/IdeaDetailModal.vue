@@ -5,6 +5,7 @@ import { useTeamStore } from '@/stores/team'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import PersonaAvatar from '@/components/PersonaAvatar.vue'
+import ActionItemCard from '@/components/ActionItemCard.vue'
 import type { TodoStatus } from '@/api/client'
 
 const props = defineProps<{ todoId: string | null }>()
@@ -152,7 +153,7 @@ async function remove() {
 
         <!-- Body -->
         <div class="flex flex-col gap-4 overflow-y-auto px-5 py-4">
-          <div v-if="teamStore.error || busyMessage" class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-400">
+          <div v-if="teamStore.error || busyMessage" class="order-first rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-400">
             {{ teamStore.error || busyMessage }}
           </div>
 
@@ -197,38 +198,19 @@ async function remove() {
             </div>
           </div>
 
-          <!-- Prerequisites -->
-          <div v-if="prereqs.length" class="flex flex-col gap-1">
+          <!-- Prerequisites: answerable right here, and on top while any are
+               open — that's usually why the card was opened -->
+          <div v-if="prereqs.length" class="flex flex-col gap-1.5" :class="{ 'order-first': openPrereqCount > 0 }">
             <h3 class="text-xs font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-500">
-              Before building{{ openPrereqCount ? ` · ${openPrereqCount} open` : ' · all done' }}
+              Waiting on you{{ openPrereqCount ? ` · ${openPrereqCount} open` : ' · all done' }}
             </h3>
-            <div
+            <ActionItemCard
               v-for="item in prereqs"
               :key="item.id"
-              class="flex items-start gap-2 rounded-lg border border-amber-200/60 px-2.5 py-1.5 dark:border-amber-900/40"
-            >
-              <input
-                type="checkbox"
-                :checked="item.status === 'done'"
-                class="mt-0.5 rounded"
-                @change="teamStore.setActionStatus(item.id, item.status === 'done' ? 'open' : 'done')"
-              />
-              <div class="min-w-0 flex-1">
-                <p
-                  class="text-xs"
-                  :class="item.status === 'done'
-                    ? 'text-gray-400 line-through dark:text-gray-500'
-                    : 'text-gray-700 dark:text-gray-300'"
-                >{{ item.text }}</p>
-                <p v-if="item.notes" class="mt-0.5 whitespace-pre-wrap text-[11px] text-gray-400 dark:text-gray-500">{{ item.notes }}</p>
-                <ol v-if="item.steps?.length && item.status !== 'done'" class="mt-1 flex flex-col gap-0.5">
-                  <li v-for="(step, i) in item.steps" :key="i" class="flex items-start gap-1.5 text-[11px] text-gray-500 dark:text-gray-400">
-                    <span class="mt-px flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-gray-100 text-[8px] font-semibold text-gray-500 dark:bg-gray-800 dark:text-gray-400">{{ i + 1 }}</span>
-                    <span class="whitespace-pre-wrap">{{ step }}</span>
-                  </li>
-                </ol>
-              </div>
-            </div>
+              :item="item"
+              :show-idea="false"
+              @navigate="emit('close')"
+            />
           </div>
 
           <!-- Refine -->

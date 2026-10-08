@@ -210,7 +210,7 @@ function openBoard(projectId: string) {
               />
               <p
                 class="text-xs"
-                :class="action.status === 'done'
+                :class="action.status !== 'open'
                   ? 'text-gray-400 line-through dark:text-gray-500'
                   : 'text-gray-600 dark:text-gray-400'"
               >
@@ -232,7 +232,7 @@ function openBoard(projectId: string) {
             />
             <p
               class="min-w-0 flex-1 text-xs"
-              :class="action.status === 'done'
+              :class="action.status !== 'open'
                 ? 'text-gray-400 line-through dark:text-gray-500'
                 : 'text-gray-600 dark:text-gray-400'"
             >{{ action.text }}</p>

@@ -52,7 +52,8 @@ export function createActionRoutes(storage: IStorageLayer, standup?: StandupServ
     }
   })
 
-  // PATCH /api/actions/:id — edit text/notes or flip open/done
+  // PATCH /api/actions/:id — edit text/notes, resolve (done + answer),
+  // dismiss (won't do + reason), reopen, or snooze/un-snooze
   router.patch('/:id', async (req, res) => {
     const parsed = UpdateActionItemRequestSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -62,11 +63,17 @@ export function createActionRoutes(storage: IStorageLayer, standup?: StandupServ
 
     try {
       const before = (await storage.listActionItems()).find((a) => a.id === req.params.id)
-      const item = await storage.updateActionItem(req.params.id, parsed.data)
+      // null un-snoozes: an undefined key is dropped when the file is written.
+      const { snoozedUntil, ...rest } = parsed.data
+      const item = await storage.updateActionItem(req.params.id, {
+        ...rest,
+        ...(snoozedUntil !== undefined ? { snoozedUntil: snoozedUntil ?? undefined } : {}),
+      })
       res.json(item)
 
-      // Completing a team-raised item is news the team should react to.
-      if (standup && item.personaId && before?.status === 'open' && item.status === 'done') {
+      // Closing a team-raised item (answered, done, or declined) is news the
+      // team should react to.
+      if (standup && item.personaId && before?.status === 'open' && item.status !== 'open') {
         standup.notifyActionResolved(item).catch((err) => {
           log.warn('api', `Action-resolved notification failed: ${err instanceof Error ? err.message : String(err)}`)
         })

@@ -261,9 +261,13 @@ async function runStandup() {
                 v-else-if="canBuild(todo) && openPrereqs(todo).length > 0"
                 class="mt-1.5 flex items-center gap-1"
               >
-                <span class="rounded bg-amber-50 px-1.5 py-1 text-[10px] font-medium text-amber-700 dark:bg-amber-900/20 dark:text-amber-400">
-                  {{ openPrereqs(todo).length }} prereq{{ openPrereqs(todo).length === 1 ? '' : 's' }} open
-                </span>
+                <button
+                  class="rounded bg-amber-50 px-1.5 py-1 text-[10px] font-medium text-amber-700 transition hover:bg-amber-100 dark:bg-amber-900/20 dark:text-amber-400 dark:hover:bg-amber-900/40"
+                  title="Open to answer"
+                  @click.stop="detailTodoId = todo.id"
+                >
+                  {{ openPrereqs(todo).length }} waiting on you
+                </button>
                 <button
                   class="flex-1 rounded px-1.5 py-1 text-[10px] font-medium text-white transition"
                   :class="confirmBuildId === todo.id ? 'bg-amber-600 hover:bg-amber-700' : 'bg-green-600 hover:bg-green-700'"
@@ -276,6 +280,15 @@ async function runStandup() {
                 :title="`${proposer(todo)?.name ?? 'The team'} implements it in a live work session`"
                 @click.stop="build(todo)"
               >{{ todo.status === 'proposed' ? 'Approve & build' : 'Build' }}</button>
+              <!-- Not buildable yet, but the team is waiting on you for it -->
+              <button
+                v-else-if="todo.status !== 'done' && openPrereqs(todo).length > 0"
+                class="mt-1.5 w-full rounded bg-amber-50 px-1.5 py-1 text-left text-[10px] font-medium text-amber-700 transition hover:bg-amber-100 dark:bg-amber-900/20 dark:text-amber-400 dark:hover:bg-amber-900/40"
+                title="Open to answer"
+                @click.stop="detailTodoId = todo.id"
+              >
+                {{ openPrereqs(todo).length }} {{ openPrereqs(todo).every((a) => a.kind === 'decision') ? 'question' : 'item' }}{{ openPrereqs(todo).length === 1 ? '' : 's' }} waiting on you →
+              </button>
 
               <div class="mt-1.5 flex items-center justify-between">
                 <button

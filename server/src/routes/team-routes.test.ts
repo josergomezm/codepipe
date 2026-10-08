@@ -202,6 +202,27 @@ describe('action item routes', () => {
     expect(res.body.resolution).toBe('Postgres')
     expect(resolvedNotifications).toEqual([item.id])
   })
+
+  it('declining notifies the team; snoozing does not, and null un-snoozes', async () => {
+    const persona = await storage.addPersona({
+      name: 'Maya', role: 'Lead', personality: '', provider: 'kiro', isLead: true,
+    })
+    const item = await storage.addActionItem({ projectId: project.id, text: 'Buy a domain', personaId: persona.id })
+
+    const until = Date.now() + 86_400_000
+    const snoozed = await request(app).patch(`/api/actions/${item.id}`).send({ snoozedUntil: until }).expect(200)
+    expect(snoozed.body.snoozedUntil).toBe(until)
+    const cleared = await request(app).patch(`/api/actions/${item.id}`).send({ snoozedUntil: null }).expect(200)
+    expect(cleared.body.snoozedUntil).toBeUndefined()
+    expect((await storage.listActionItems(project.id))[0].snoozedUntil).toBeUndefined()
+    expect(resolvedNotifications).toHaveLength(0)
+
+    await request(app)
+      .patch(`/api/actions/${item.id}`)
+      .send({ status: 'dismissed', resolution: 'Using a subdomain' })
+      .expect(200)
+    expect(resolvedNotifications).toEqual([item.id])
+  })
 })
 
 describe('persona routes', () => {

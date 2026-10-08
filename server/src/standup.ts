@@ -286,7 +286,12 @@ export class StandupService {
         todos.some((original) => original.id === t.id),
       )
       const actions = trackedActions(await this.storage.listActionItems(project.id))
-      const prompt = buildStandupPrompt(project, personas, reviewed, memo, agenda, actions)
+      // Planned ideas without a build session: the ones that can silently
+      // ship outside CodePipe and sit on the board forever.
+      const planned = (await this.storage.listTodos(project.id)).filter(
+        (t) => (t.status === 'proposed' || t.status === 'approved') && !t.workSessionId,
+      )
+      const prompt = buildStandupPrompt(project, personas, reviewed, { memo, agenda, actions, planned })
       await this.sessionManager.runTurn(sessionId, prompt, {
         timeoutMs: STANDUP_TIMEOUT_MS,
         cancelOnTimeout: true,
@@ -368,16 +373,25 @@ export class StandupService {
    * instead of spending a CLI turn per checkbox. An answered decision
    * carries the answer, plus the options the team offered so a terse reply
    * ("go with your recommendation") still makes sense to a fresh standup.
+   * A dismissal carries the user's reason.
    */
   async notifyActionResolved(item: ActionItem): Promise<void> {
     const resolution = item.resolution?.trim()
+    if (item.status === 'dismissed') {
+      await this.queueAgenda(
+        item.projectId,
+        `The user declined "${item.text}" (won't do)${resolution ? `: ${resolution}` : ''} — don't raise it again.`,
+      )
+      return
+    }
     if (!resolution) {
       await this.queueAgenda(item.projectId, `The user completed the action item: "${item.text}"`)
       return
     }
-    const context = item.notes?.trim()
-      ? `\n  (What you had offered: ${item.notes.trim().slice(0, 1500)})`
-      : ''
+    const offered = item.options?.length
+      ? item.options.map((o) => `${o.label}${o.recommended ? ' (your recommendation)' : ''}`).join('; ')
+      : item.notes?.trim()
+    const context = offered ? `\n  (What you had offered: ${offered})` : ''
     await this.queueAgenda(
       item.projectId,
       `The user answered "${item.text}": ${resolution}${context}`,
