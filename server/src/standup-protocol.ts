@@ -16,6 +16,7 @@
 import {
   StandupOutputSchema,
   ReviewerOutputSchema,
+  type ActionItem,
   type Persona,
   type Project,
   type ReviewerOutput,
@@ -23,7 +24,7 @@ import {
   type Todo,
 } from './schemas.js'
 
-export const PROTOCOL_VERSION = 3
+export const PROTOCOL_VERSION = 4
 
 export interface ParsedStandupTail {
   output: StandupOutput
@@ -85,13 +86,54 @@ export function matchPersona(personas: Persona[], ref: string): Persona | null {
   )
 }
 
+/** Resolve an id reference (full id, or an unambiguous id prefix). */
+export function matchById<T extends { id: string }>(items: T[], ref: string): T | null {
+  const needle = ref.trim().toLowerCase()
+  if (!needle) return null
+  const exact = items.find((t) => t.id.toLowerCase() === needle)
+  if (exact) return exact
+  const prefixed = items.filter((t) => t.id.toLowerCase().startsWith(needle))
+  return prefixed.length === 1 ? prefixed[0] : null
+}
+
 /** Resolve a todo reference (full id, or an unambiguous id prefix). */
 export function matchTodo(todos: Todo[], ref: string): Todo | null {
-  const needle = ref.trim().toLowerCase()
-  const exact = todos.find((t) => t.id.toLowerCase() === needle)
-  if (exact) return exact
-  const prefixed = todos.filter((t) => t.id.toLowerCase().startsWith(needle))
-  return prefixed.length === 1 ? prefixed[0] : null
+  return matchById(todos, ref)
+}
+
+/** How long a resolved action item stays in the team's view (and dedup set). */
+export const RESOLVED_ACTION_WINDOW_MS = 14 * 24 * 60 * 60 * 1000
+
+/**
+ * The action items the team should know about: everything still open, plus
+ * recently resolved ones (with the user's answer) — so a fresh standup
+ * neither re-raises what is already tracked nor re-asks what was answered.
+ */
+export function trackedActions(items: ActionItem[], now = Date.now()): ActionItem[] {
+  return items.filter(
+    (a) => a.status === 'open' || now - a.updatedAt <= RESOLVED_ACTION_WINDOW_MS,
+  )
+}
+
+function formatTrackedActions(actions: ActionItem[]): string {
+  const open = actions.filter((a) => a.status === 'open')
+  const resolved = actions.filter((a) => a.status === 'done')
+  const sections: string[] = []
+  if (open.length > 0) {
+    sections.push(
+      'Already waiting on the user (tracked — do NOT raise these again in `user_actions`):\n' +
+        open.map((a) => `- [${a.id}] (${a.kind ?? 'task'}) ${a.text}`).join('\n'),
+    )
+  }
+  if (resolved.length > 0) {
+    sections.push(
+      'Recently resolved by the user (do not ask again):\n' +
+        resolved
+          .map((a) => `- ${a.text}${a.resolution ? `\n  The user's answer: ${a.resolution}` : ''}`)
+          .join('\n'),
+    )
+  }
+  return sections.length > 0 ? sections.join('\n\n') + '\n' : ''
 }
 
 /** Canonical form of an action item's text, for duplicate detection. */
@@ -249,6 +291,7 @@ export function buildStandupPrompt(
   todos: Todo[],
   memo?: string,
   agenda?: string[],
+  actions: ActionItem[] = [],
 ): string {
   const roster = personas
     .map(
@@ -280,6 +323,7 @@ export function buildStandupPrompt(
     agenda?.length
       ? `Since the last standup:\n${agenda.map((a) => `- ${a}`).join('\n')}\n`
       : '',
+    formatTrackedActions(actions),
     `Today's open ideas/todos from the user (with the team's independent takes where reviewed):`,
     '',
     todoList,
@@ -318,6 +362,7 @@ export function buildStandupPrompt(
             todoId: '<the [id] of the idea this gates, when it is a prerequisite of one>',
           },
         ],
+        resolved_actions: ['<[id] of a tracked user action that no longer blocks anything>'],
         memo: '<handoff note to your next standup: open questions, decisions made, what to revisit — a few sentences>',
       },
       null,
@@ -328,7 +373,8 @@ export function buildStandupPrompt(
     'Rules for the JSON block:',
     '- `messages` come from YOU, the lead, only — usually exactly one short summary, personal like a colleague texting. Do NOT fabricate messages from other team members: they already spoke through their independent takes, which the user sees on the board. If a reviewer\'s take contains a question the user must answer, turn it into a `user_actions` entry with kind `decision`, credited to that reviewer via `persona`.',
     '- `proposals` maps your recommendations onto the todo ids above. Only include todos you actually formed a recommendation for. `approach` is the human-readable plan; `brief` is the real deliverable of this standup: the EXACT prompt a coding agent will be handed to implement the proposal. Write the brief with everything the agent needs and nothing it doesn\'t — the goal, the specific files and docs to read first (by path, e.g. `docs/pos.md`, `src/foo.ts`), hard constraints and things NOT to touch, and a definition of done (tests to run, behavior to verify). Ground it in what you actually found in the codebase. The brief must STAND ALONE: never reference the team, the takes, this conversation, or who proposed what — the executing agent knows none of that and needs none of it.',
-    '- `user_actions` are tasks ONLY the user can do and that block progress. Set `kind`: use `decision` when the user must choose or clarify something (phrase `text` as the question, with the options and your recommendation in `notes`); use `task` for external setup — accounts, secrets, purchases — and then include `steps`: a concrete numbered walkthrough (console URLs, exact commands, which file to put the value in). When an action gates a specific idea (an API key its build needs), set `todoId` to that idea\'s [id] so it shows as a prerequisite on the idea\'s card. Include them sparingly — only genuine blockers — and omit the array when there are none.',
+    '- `user_actions` are tasks ONLY the user can do and that block progress. Set `kind`: use `decision` when the user must choose or clarify something (phrase `text` as the question, with the options and your recommendation in `notes`); use `task` for external setup — accounts, secrets, purchases — and then include `steps`: a concrete numbered walkthrough (console URLs, exact commands, which file to put the value in). When an action gates a specific idea (an API key its build needs), set `todoId` to that idea\'s [id] so it shows as a prerequisite on the idea\'s card. Include them sparingly — only genuine blockers — and omit the array when there are none. Only NEW blockers belong here: anything already listed as waiting on the user is tracked, and anything recently resolved is settled — build on the user\'s answer instead of re-asking.',
+    '- `resolved_actions` lists the [id]s of items waiting on the user that no longer block anything — the user settled it in this conversation, or the plan changed so it is moot. Omit it when there are none.',
     '- `memo` is your memory: the next standup starts fresh and receives ONLY this note plus the board. Record decisions made, open questions, and anything you would otherwise forget. Keep it under a paragraph.',
     '- The user may reply in this session today. In EVERY reply (including answers to their follow-ups), end with the same ```json block — usually a single message from whichever team member is answering, plus an updated `memo` if something worth remembering changed.',
   ]

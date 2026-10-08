@@ -187,6 +187,21 @@ describe('action item routes', () => {
     await request(app).patch(`/api/actions/${item.id}`).send({ status: 'done' }).expect(200)
     expect(resolvedNotifications).toHaveLength(1)
   })
+
+  it('stores the answer when a decision is resolved with one', async () => {
+    const persona = await storage.addPersona({
+      name: 'Maya', role: 'Lead', personality: '', provider: 'kiro', isLead: true,
+    })
+    const item = await storage.addActionItem({
+      projectId: project.id, text: 'Which DB?', kind: 'decision', personaId: persona.id,
+    })
+    const res = await request(app)
+      .patch(`/api/actions/${item.id}`)
+      .send({ status: 'done', resolution: 'Postgres' })
+      .expect(200)
+    expect(res.body.resolution).toBe('Postgres')
+    expect(resolvedNotifications).toEqual([item.id])
+  })
 })
 
 describe('persona routes', () => {

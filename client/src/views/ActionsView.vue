@@ -81,12 +81,32 @@ function formatDate(ts: number): string {
   return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
+/** One-click answer for decisions that came with a recommendation. */
+const GO_WITH_RECOMMENDATION = 'Go with your recommendation.'
+
+/** In-progress answers, per decision item. */
+const answers = ref<Record<string, string>>({})
+
 /**
- * Jump into the project's team thread with a reply drafted about this item —
- * the fastest path from "decision needed" to "team knows". The draft lands in
- * the chat input's per-session draft (never clobbering one you already have).
+ * Answer a decision in place: closes the item and queues the answer (with
+ * the options the team offered) for the next standup — no trip to the chat.
  */
-async function replyToTeam(item: ActionItem) {
+async function answer(item: ActionItem, text: string | undefined) {
+  const resolution = text?.trim()
+  if (!resolution) return
+  await teamStore.resolveAction(item.id, resolution)
+  if (!teamStore.error) delete answers.value[item.id]
+}
+
+/** Prefix of the draft this view writes — recognizable so a stale one can be replaced. */
+const DRAFT_PREFIX = 'About "'
+
+/**
+ * For decisions that need a back-and-forth: jump into the project's team
+ * thread with a reply drafted about this item. The team closes the item
+ * itself (resolved_actions) once the conversation settles it.
+ */
+async function discussInThread(item: ActionItem) {
   replyError.value = null
   try {
     const state = await api.fetchStandupState(item.projectId)
@@ -94,11 +114,14 @@ async function replyToTeam(item: ActionItem) {
       replyError.value = 'No team thread for this project yet — run a standup first.'
       return
     }
-    // ChatInput restores drafts on session SWITCH — if the thread is already
-    // active the input is right there, so don't write behind its back.
+    // ChatInput isn't mounted on this view and loads the draft when it
+    // mounts, so writing it here is always picked up. Only a draft you were
+    // actually writing is kept; an unsent prefill from this button (perhaps
+    // for a different item) is replaced.
     const draftKey = `codepipe:draft:${state.teamSessionId}`
-    if (sessionStore.activeSessionId !== state.teamSessionId && !localStorage.getItem(draftKey)) {
-      localStorage.setItem(draftKey, `About "${item.text}"\n\nMy decision: `)
+    const existing = localStorage.getItem(draftKey)
+    if (!existing?.trim() || existing.startsWith(DRAFT_PREFIX)) {
+      localStorage.setItem(draftKey, `${DRAFT_PREFIX}${item.text}"\n\n`)
     }
     await sessionStore.fetchSessions()
     await sessionStore.selectSession(state.teamSessionId)
@@ -247,12 +270,38 @@ async function replyToTeam(item: ActionItem) {
                 </li>
               </ol>
 
-              <!-- Immediate action: decisions resolve by telling the team -->
-              <button
-                v-if="item.kind === 'decision' && item.status !== 'done'"
-                class="mt-2 rounded bg-purple-600 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-purple-700"
-                @click="replyToTeam(item)"
-              >Reply to team</button>
+              <!-- Decisions resolve by answering, right here -->
+              <div v-if="item.kind === 'decision' && item.status !== 'done'" class="mt-2 flex flex-col gap-1.5">
+                <textarea
+                  v-model="answers[item.id]"
+                  rows="2"
+                  placeholder="Your answer…"
+                  class="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-900 placeholder:text-gray-400 focus:border-purple-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                  @keydown.enter.ctrl.prevent="answer(item, answers[item.id])"
+                  @keydown.enter.meta.prevent="answer(item, answers[item.id])"
+                />
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <button
+                    :disabled="!answers[item.id]?.trim()"
+                    class="rounded bg-purple-600 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-purple-700 disabled:opacity-50"
+                    @click="answer(item, answers[item.id])"
+                  >Answer</button>
+                  <button
+                    v-if="item.notes"
+                    class="rounded border border-purple-200 px-2.5 py-1 text-xs font-medium text-purple-700 transition hover:bg-purple-50 dark:border-purple-800 dark:text-purple-300 dark:hover:bg-purple-900/30"
+                    title="Answer with the team's recommendation (see the notes above)"
+                    @click="answer(item, GO_WITH_RECOMMENDATION)"
+                  >Go with recommendation</button>
+                  <button
+                    class="px-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                    @click="discussInThread(item)"
+                  >Discuss in thread</button>
+                </div>
+              </div>
+
+              <p v-if="item.resolution" class="mt-1 whitespace-pre-wrap text-xs text-purple-700 dark:text-purple-300">
+                <span class="font-medium">You answered:</span> {{ item.resolution }}
+              </p>
 
               <div class="mt-1.5 flex items-center gap-2 text-[10px] text-gray-400 dark:text-gray-500">
                 <template v-if="raiser(item)">

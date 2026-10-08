@@ -190,6 +190,18 @@ export const useTeamStore = defineStore('team', () => {
     }
   }
 
+  /** Answer a decision: closes it and relays the answer to the team. */
+  async function resolveAction(id: string, resolution: string) {
+    try {
+      const updated = await api.updateActionItem(id, { status: 'done', resolution })
+      const idx = actions.value.findIndex((a) => a.id === id)
+      if (idx >= 0) actions.value[idx] = updated
+      error.value = null
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to answer action item'
+    }
+  }
+
   async function deleteAction(id: string) {
     try {
       await api.deleteActionItem(id)
@@ -237,6 +249,7 @@ export const useTeamStore = defineStore('team', () => {
     fetchActions,
     addAction,
     setActionStatus,
+    resolveAction,
     deleteAction,
     fetchPersonas,
     createPersona,

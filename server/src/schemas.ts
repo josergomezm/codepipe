@@ -185,9 +185,10 @@ export const TodoSchema = z.object({
 export const ActionItemStatusSchema = z.enum(['open', 'done'])
 
 /**
- * 'decision' = the user must decide something (resolved by replying to the
- * team); 'task' = external setup only the user can do (resolved by following
- * the steps). Absent on older/manual items — treated as a plain task.
+ * 'decision' = the user must decide something (resolved by answering it —
+ * the answer is stored as the item's `resolution`); 'task' = external setup
+ * only the user can do (resolved by following the steps). Absent on
+ * older/manual items — treated as a plain task.
  */
 export const ActionItemKindSchema = z.enum(['decision', 'task'])
 
@@ -202,6 +203,8 @@ export const ActionItemSchema = z.object({
   /** The idea this item gates or informs (a prerequisite of that idea). */
   todoId: z.string().uuid().optional(),
   status: ActionItemStatusSchema,
+  /** The user's answer when resolving it (decision items) — relayed to the team. */
+  resolution: z.string().max(4000).optional(),
   /** Persona who raised it (absent for manually added items). */
   personaId: z.string().uuid().optional(),
   createdAt: z.number().int().positive(),
@@ -287,6 +290,11 @@ export const StandupOutputSchema = z.object({
   messages: z.array(StandupMessageSchema),
   proposals: z.array(StandupProposalSchema).optional(),
   user_actions: z.array(StandupUserActionSchema).optional(),
+  /**
+   * [id]s of already-tracked action items that no longer block anything —
+   * the user settled them in the thread, or the plan changed.
+   */
+  resolved_actions: z.array(z.string()).optional(),
   /** The team's handoff note to their next standup (see StandupState.memo). */
   memo: z.string().optional(),
 })
@@ -380,6 +388,7 @@ export const UpdateActionItemRequestSchema = z.object({
   text: z.string().min(1).max(2000).optional(),
   notes: z.string().max(10000).optional(),
   status: ActionItemStatusSchema.optional(),
+  resolution: z.string().max(4000).optional(),
 })
 
 // --- Inferred Types ---

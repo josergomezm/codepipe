@@ -187,13 +187,15 @@ export interface ActionItem {
   projectId: string
   text: string
   notes?: string
-  /** 'decision' = reply to the team; 'task' = follow the steps. */
+  /** 'decision' = answer it; 'task' = follow the steps. */
   kind?: ActionItemKind
   /** Step-by-step guide to complete it (task-kind items). */
   steps?: string[]
   /** The idea this item gates (a prerequisite of that idea). */
   todoId?: string
   status: ActionItemStatus
+  /** The user's answer when resolving it (decision items) — relayed to the team. */
+  resolution?: string
   /** Persona who raised it (absent for manually added items). */
   personaId?: string
   createdAt: number
@@ -565,7 +567,7 @@ export function createActionItem(projectId: string, text: string, notes?: string
 
 export function updateActionItem(
   id: string,
-  data: { text?: string; notes?: string; status?: ActionItemStatus },
+  data: { text?: string; notes?: string; status?: ActionItemStatus; resolution?: string },
 ): Promise<ActionItem> {
   return request<ActionItem>(`/api/actions/${id}`, {
     method: 'PATCH',

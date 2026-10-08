@@ -42,7 +42,7 @@ vi.mock('child_process', async (importOriginal) => {
 import { StorageLayer } from './storage.js'
 import { SessionManager } from './session-manager.js'
 import { StandupService, hashTodos, isSameLocalDay, isStandupDue } from './standup.js'
-import { parseStandupTail, parseReviewerOutput, matchPersona, matchTodo, buildStandupPrompt, buildImplementPrompt } from './standup-protocol.js'
+import { parseStandupTail, parseReviewerOutput, matchPersona, matchTodo, buildStandupPrompt, buildImplementPrompt, trackedActions, RESOLVED_ACTION_WINDOW_MS } from './standup-protocol.js'
 import { registerAdapter, clearAdapters } from './adapters/registry.js'
 import type { ICLIAdapter } from './adapters/types.js'
 import type { Persona, Project, Todo } from './schemas.js'
@@ -239,6 +239,34 @@ describe('buildStandupPrompt', () => {
     // The contract asks for execution briefs and typed user actions.
     expect(prompt).toContain('brief')
     expect(prompt).toContain('decision | task')
+    expect(prompt).toContain('resolved_actions')
+  })
+
+  it('shows the team what is already tracked, and what the user answered', () => {
+    const project = { id: 'p', name: 'codepipe', path: '/x' } as Project
+    const base = { projectId: 'p', createdAt: 1, updatedAt: 1 }
+    const prompt = buildStandupPrompt(project, [makePersona()], [], undefined, undefined, [
+      { ...base, id: '22222222-2222-4222-8222-222222222222', text: 'Pick an auth provider', kind: 'decision', status: 'open' },
+      { ...base, id: '33333333-3333-4333-8333-333333333333', text: 'Pick a DB', kind: 'decision', status: 'done', resolution: 'Postgres' },
+    ])
+    expect(prompt).toContain('do NOT raise these again')
+    expect(prompt).toContain('[22222222-2222-4222-8222-222222222222] (decision) Pick an auth provider')
+    expect(prompt).toContain("The user's answer: Postgres")
+    // Resolved items are context, not something to reference by id.
+    expect(prompt).not.toContain('33333333-3333-4333-8333-333333333333')
+  })
+})
+
+describe('trackedActions', () => {
+  it('keeps open items and recently resolved ones, drops old resolved ones', () => {
+    const now = Date.now()
+    const base = { projectId: 'p', text: 'x', createdAt: 1 }
+    const items = [
+      { ...base, id: 'a', status: 'open' as const, updatedAt: now - 90 * 86_400_000 },
+      { ...base, id: 'b', status: 'done' as const, updatedAt: now - 86_400_000 },
+      { ...base, id: 'c', status: 'done' as const, updatedAt: now - RESOLVED_ACTION_WINDOW_MS - 1 },
+    ]
+    expect(trackedActions(items, now).map((a) => a.id)).toEqual(['a', 'b'])
   })
 })
 
@@ -838,6 +866,62 @@ describe('runTurn and StandupService', () => {
     const prompt = sessionManager.getSession(run.sessionId!)!.messages.find((m) => m.role === 'user')
     expect(prompt?.content).toContain('Since the last standup')
     expect(prompt?.content).toContain('Create the Stripe account')
+  })
+
+  it('relays a decision answer with the options the team offered', async () => {
+    const lead = await storage.addPersona({
+      name: 'Maya', role: 'Lead', personality: '', provider: 'kiro', isLead: true,
+    })
+    const item = await storage.addActionItem({
+      projectId: project.id, text: 'Which auth provider?', kind: 'decision',
+      notes: 'Options: Clerk or Auth0. We recommend Clerk.', personaId: lead.id,
+    })
+    const done = await storage.updateActionItem(item.id, {
+      status: 'done', resolution: 'Go with your recommendation.',
+    })
+    await standup.notifyActionResolved(done)
+
+    const [entry] = (await storage.getStandupState(project.id))!.agenda!
+    expect(entry).toContain('The user answered "Which auth provider?": Go with your recommendation.')
+    expect(entry).toContain('We recommend Clerk')
+  })
+
+  it('tells the standup what is tracked, closes settled items, and never re-raises', async () => {
+    const lead = await storage.addPersona({
+      name: 'Maya', role: 'Lead', personality: '', provider: 'kiro', isLead: true,
+    })
+    const pending = await storage.addActionItem({
+      projectId: project.id, text: 'Pick an auth provider', kind: 'decision', personaId: lead.id,
+    })
+    const manual = await storage.addActionItem({ projectId: project.id, text: 'Renew the domain' })
+    const answered = await storage.addActionItem({
+      projectId: project.id, text: 'Pick a database', kind: 'decision', personaId: lead.id,
+    })
+    await storage.updateActionItem(answered.id, { status: 'done', resolution: 'Postgres' })
+
+    const run = await standup.runStandup(project.id, { force: true })
+    expect(run.ran).toBe(true)
+    await completeTurn(['Sorted.', '```json', JSON.stringify({
+      messages: [{ persona: 'Maya', text: 'Auth is settled, Clerk it is.' }],
+      // A re-raise of the just-answered item (same text) must not duplicate,
+      // and the manual item is the user's — the team can't close it.
+      user_actions: [{ persona: 'Maya', text: 'Pick a  DATABASE', kind: 'decision' }],
+      resolved_actions: [pending.id.slice(0, 8), manual.id, 'no-such-id'],
+    }), '```'])
+    await waitFor(async () => {
+      const item = (await storage.listActionItems(project.id)).find((a) => a.id === pending.id)
+      if (item?.status !== 'done') throw new Error('not routed yet')
+    })
+
+    const prompt = sessionManager.getSession(run.sessionId!)!.messages.find((m) => m.role === 'user')
+    expect(prompt?.content).toContain(`[${pending.id}] (decision) Pick an auth provider`)
+    expect(prompt?.content).toContain("The user's answer: Postgres")
+
+    const items = await storage.listActionItems(project.id)
+    expect(items).toHaveLength(3)
+    expect(items.find((a) => a.id === manual.id)?.status).toBe('open')
+    // Closed by the team → no agenda echo back to the team.
+    expect((await storage.getStandupState(project.id))?.agenda ?? []).toHaveLength(0)
   })
 
   it('skips when there are no personas or no todos', async () => {

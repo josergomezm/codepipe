@@ -31,6 +31,7 @@ import {
   buildImplementPrompt,
   buildRefinePrompt,
   parseReviewerOutput,
+  trackedActions,
 } from './standup-protocol.js'
 import type { ActionItem, Persona, Project, Todo, TodoTake } from './schemas.js'
 import { log } from './logger.js'
@@ -284,7 +285,8 @@ export class StandupService {
       const reviewed = (await this.storage.listTodos(project.id)).filter((t) =>
         todos.some((original) => original.id === t.id),
       )
-      const prompt = buildStandupPrompt(project, personas, reviewed, memo, agenda)
+      const actions = trackedActions(await this.storage.listActionItems(project.id))
+      const prompt = buildStandupPrompt(project, personas, reviewed, memo, agenda, actions)
       await this.sessionManager.runTurn(sessionId, prompt, {
         timeoutMs: STANDUP_TIMEOUT_MS,
         cancelOnTimeout: true,
@@ -363,12 +365,22 @@ export class StandupService {
   /**
    * The user resolved a team-raised action item. Queued for the next
    * standup's agenda — the team acknowledges it there, standup-style,
-   * instead of spending a CLI turn per checkbox.
+   * instead of spending a CLI turn per checkbox. An answered decision
+   * carries the answer, plus the options the team offered so a terse reply
+   * ("go with your recommendation") still makes sense to a fresh standup.
    */
   async notifyActionResolved(item: ActionItem): Promise<void> {
+    const resolution = item.resolution?.trim()
+    if (!resolution) {
+      await this.queueAgenda(item.projectId, `The user completed the action item: "${item.text}"`)
+      return
+    }
+    const context = item.notes?.trim()
+      ? `\n  (What you had offered: ${item.notes.trim().slice(0, 1500)})`
+      : ''
     await this.queueAgenda(
       item.projectId,
-      `The user completed the action item: "${item.text}"`,
+      `The user answered "${item.text}": ${resolution}${context}`,
     )
   }
 

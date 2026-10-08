@@ -4,7 +4,8 @@
  * Given the final assistant message of a team-session turn, this parses the
  * protocol tail (see standup-protocol.ts) and applies its effects — tagging
  * the deliberation, posting persona-attributed messages, applying proposals
- * to todos, recording user action items (deduplicated), and sending pushes
+ * to todos, recording user action items (deduplicated) and closing the ones
+ * the team reports as settled, and sending pushes
  * under each persona's name and avatar.
  *
  * Failure is a first-class state, not an exception path: when the tail
@@ -23,7 +24,9 @@ import {
   parseStandupTail,
   matchPersona,
   matchTodo,
+  matchById,
   normalizeActionText,
+  trackedActions,
 } from './standup-protocol.js'
 import type { ChatMessage, Persona, Session } from './schemas.js'
 import { log } from './logger.js'
@@ -102,17 +105,33 @@ export class PersonaRouter {
         })
       }
 
-      // Record action items — things only the user can do. Dedup against
-      // open items so recurring standups don't pile up duplicates. The key
-      // includes the gated idea: the same text may legitimately gate two
-      // different ideas.
+      // Close tracked items the team reports as settled (answered in the
+      // thread, or made moot). Only team-raised ones: the user's own manual
+      // items are theirs to close. No agenda entry — the team already knows.
+      if (parsed.output.resolved_actions?.length) {
+        const open = (await this.storage.listActionItems(session.projectId)).filter(
+          (a) => a.status === 'open' && a.personaId,
+        )
+        for (const ref of parsed.output.resolved_actions) {
+          const item = matchById(open, ref)
+          if (!item) {
+            log.warn('standup', `resolved_actions references unknown/closed item "${ref}" — skipping`)
+            continue
+          }
+          await this.storage.updateActionItem(item.id, { status: 'done' })
+        }
+      }
+
+      // Record action items — things only the user can do. The prompt shows
+      // the team what is already tracked, and this dedup is the backstop:
+      // against open items AND recently resolved ones, so a fresh standup
+      // can't re-raise what the user just did. The key includes the gated
+      // idea: the same text may legitimately gate two different ideas.
       if (parsed.output.user_actions?.length) {
-        const openItems = await this.storage.listActionItems(session.projectId)
+        const tracked = trackedActions(await this.storage.listActionItems(session.projectId))
         const dedupKey = (text: string, todoId: string | undefined) =>
           `${todoId ?? ''}:${normalizeActionText(text)}`
-        const openKeys = new Set(
-          openItems.filter((a) => a.status === 'open').map((a) => dedupKey(a.text, a.todoId)),
-        )
+        const openKeys = new Set(tracked.map((a) => dedupKey(a.text, a.todoId)))
         for (const action of parsed.output.user_actions) {
           const byPersona = action.persona ? matchPersona(personas, action.persona) : null
           const gatedTodo = action.todoId ? matchTodo(todos, action.todoId) : null
