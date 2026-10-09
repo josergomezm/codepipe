@@ -23,8 +23,9 @@ import {
   type StandupOutput,
   type Todo,
 } from './schemas.js'
+import { localDay } from './dates.js'
 
-export const PROTOCOL_VERSION = 5
+export const PROTOCOL_VERSION = 6
 
 export interface ParsedStandupTail {
   output: StandupOutput
@@ -122,7 +123,14 @@ export function trackedActions(items: ActionItem[], now = Date.now()): ActionIte
  */
 export const MAX_OPEN_ACTIONS = 4
 
-function formatTrackedActions(actions: ActionItem[]): string {
+/** ", due 2026-10-14 (overdue)" — the deadline as the team should weigh it. */
+function formatDue(item: ActionItem, today: string): string {
+  if (!item.dueDate) return ''
+  const when = item.dueDate < today ? ' (overdue)' : item.dueDate === today ? ' (today)' : ''
+  return `, due ${item.dueDate}${when}`
+}
+
+function formatTrackedActions(actions: ActionItem[], today: string): string {
   const open = actions.filter((a) => a.status === 'open')
   const resolved = actions.filter((a) => a.status === 'done')
   const declined = actions.filter((a) => a.status === 'dismissed')
@@ -131,7 +139,10 @@ function formatTrackedActions(actions: ActionItem[]): string {
     sections.push(
       `Already waiting on the user — ${open.length} of at most ${MAX_OPEN_ACTIONS} (tracked — do NOT raise these again in \`user_actions\`):\n` +
         open
-          .map((a) => `- [${a.id}] (${a.kind ?? 'task'}${a.blocking === false ? ', non-blocking' : ''}) ${a.text}`)
+          .map(
+            (a) =>
+              `- [${a.id}] (${a.kind ?? 'task'}${a.blocking === false ? ', non-blocking' : ''}${formatDue(a, today)}) ${a.text}`,
+          )
           .join('\n'),
     )
   }
@@ -414,9 +425,11 @@ export function buildStandupPrompt(
     actions?: ActionItem[]
     /** Proposed/approved ideas, checked for having already shipped. */
     planned?: Todo[]
+    /** Today's date (YYYY-MM-DD), for weighing deadlines. Defaults to the local day. */
+    today?: string
   } = {},
 ): string {
-  const { memo, agenda, actions = [], planned = [] } = context
+  const { memo, agenda, actions = [], planned = [], today = localDay(new Date()) } = context
   const roster = personas
     .map(
       (p) =>
@@ -439,7 +452,7 @@ export function buildStandupPrompt(
       : '(none — review the project itself and suggest improvements)'
 
   return [
-    `You are running today's standup for the project "${project.name}" as its AI team. The team members are:`,
+    `You are running today's standup (${today}) for the project "${project.name}" as its AI team. The team members are:`,
     '',
     roster,
     '',
@@ -447,7 +460,7 @@ export function buildStandupPrompt(
     agenda?.length
       ? `Since the last standup:\n${agenda.map((a) => `- ${a}`).join('\n')}\n`
       : '',
-    formatTrackedActions(actions),
+    formatTrackedActions(actions, today),
     formatPlannedTodos(planned),
     `Today's open ideas/todos from the user (with the team's independent takes where reviewed):`,
     '',
@@ -489,6 +502,7 @@ export function buildStandupPrompt(
             ],
             steps: ['<for tasks: concrete numbered steps to complete it>'],
             blocking: true,
+            dueDate: '<optional YYYY-MM-DD: only a real external deadline>',
             todoId: '<the [id] of the idea this gates, when it is a prerequisite of one>',
           },
         ],
@@ -504,7 +518,7 @@ export function buildStandupPrompt(
     'Rules for the JSON block:',
     '- `messages` come from YOU, the lead, only — usually exactly one short summary, personal like a colleague texting. Do NOT fabricate messages from other team members: they already spoke through their independent takes, which the user sees on the board. If a reviewer\'s take contains a question the user must answer, turn it into a `user_actions` entry with kind `decision`, credited to that reviewer via `persona`.',
     '- `proposals` maps your recommendations onto the todo ids above. Only include todos you actually formed a recommendation for. `approach` is the human-readable plan; `brief` is the real deliverable of this standup: the EXACT prompt a coding agent will be handed to implement the proposal. Write the brief with everything the agent needs and nothing it doesn\'t — the goal, the specific files and docs to read first (by path, e.g. `docs/pos.md`, `src/foo.ts`), hard constraints and things NOT to touch, and a definition of done (tests to run, behavior to verify). Ground it in what you actually found in the codebase. The brief must STAND ALONE: never reference the team, the takes, this conversation, or who proposed what — the executing agent knows none of that and needs none of it.',
-    '- `user_actions` are tasks ONLY the user can do and that block progress. Set `kind`: use `decision` when the user must choose or clarify something — phrase `text` as the question and give 2–4 `options` (short tappable `label`, one-line `detail`), marking your recommendation with `recommended: true`, so the user can answer in one tap; keep `notes` to brief context, not a restatement of the options. Use `task` for external setup — accounts, secrets, purchases — and then include `steps`: a concrete numbered walkthrough (console URLs, exact commands, which file to put the value in). When an action gates a specific idea (an API key its build needs), set `todoId` to that idea\'s [id] so it shows as a prerequisite on the idea\'s card. Set `blocking: false` when it is worth knowing but blocks nothing. Include them sparingly and omit the array when there are none. At most ' + MAX_OPEN_ACTIONS + ' items may wait on the user at once — new ones past that are discarded — so at the limit, raise something only if it matters more than a waiting item, and drop that item via `resolved_actions`. Only NEW blockers belong here: anything already listed as waiting on the user is tracked, and anything recently resolved is settled — build on the user\'s answer instead of re-asking.',
+    '- `user_actions` are tasks ONLY the user can do and that block progress. Set `kind`: use `decision` when the user must choose or clarify something — phrase `text` as the question and give 2–4 `options` (short tappable `label`, one-line `detail`), marking your recommendation with `recommended: true`, so the user can answer in one tap; keep `notes` to brief context, not a restatement of the options. Use `task` for external setup — accounts, secrets, purchases — and then include `steps`: a concrete numbered walkthrough (console URLs, exact commands, which file to put the value in). When an action gates a specific idea (an API key its build needs), set `todoId` to that idea\'s [id] so it shows as a prerequisite on the idea\'s card. Set `blocking: false` when it is worth knowing but blocks nothing. Set `dueDate` (YYYY-MM-DD) ONLY for a real external deadline you found in the code, docs or conversation — a certificate or key that expires, a filing or launch date the user named — never an invented target; omit it otherwise (the user sets their own deadlines, and the reminder they get must mean something). Deadlines on tracked items are the user\'s: weigh overdue ones when prioritizing, but do not re-raise an item to change its date. Include them sparingly and omit the array when there are none. At most ' + MAX_OPEN_ACTIONS + ' items may wait on the user at once — new ones past that are discarded — so at the limit, raise something only if it matters more than a waiting item, and drop that item via `resolved_actions`. Only NEW blockers belong here: anything already listed as waiting on the user is tracked, and anything recently resolved is settled — build on the user\'s answer instead of re-asking.',
     '- `resolved_actions` lists the [id]s of items waiting on the user that no longer block anything — the user settled it in this conversation, or the plan changed so it is moot. Omit it when there are none.',
     '- `completed_todos` lists planned ideas you VERIFIED are already implemented (built outside this flow) — with `evidence` the user can check, like a commit hash. They move to Done. Only report what you confirmed in the code; omit it otherwise.',
     '- `memo` is your memory: the next standup starts fresh and receives ONLY this note plus the board. Record decisions made, open questions, and anything you would otherwise forget. Keep it under a paragraph.',

@@ -192,6 +192,7 @@ export class PersonaRouter {
               : {}),
             ...(options?.length ? { options } : {}),
             ...(action.blocking === false ? { blocking: false } : {}),
+            ...(action.dueDate ? { dueDate: action.dueDate } : {}),
             ...(byPersona ? { personaId: byPersona.id } : {}),
           })
         }

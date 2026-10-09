@@ -15,6 +15,7 @@ import type { IStorageLayer } from './storage.js'
 import type { ActionItem } from './schemas.js'
 import type { PushPayload } from './push.js'
 import { log } from './logger.js'
+import { localDay } from './dates.js'
 
 /** How often to check whether the reminder is due. */
 const TICK_MS = 5 * 60_000
@@ -34,11 +35,6 @@ export interface DueReminderOptions {
   hour?: number
   /** Clock override (tests). */
   now?: () => Date
-}
-
-/** A Date's local calendar day, YYYY-MM-DD. */
-export function localDay(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 /** Open, unsnoozed items due on or before `today`, most overdue first. */

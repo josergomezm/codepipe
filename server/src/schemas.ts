@@ -329,6 +329,11 @@ export const StandupUserActionSchema = z.object({
     .optional(),
   /** False for nice-to-know items that block nothing. */
   blocking: z.boolean().optional(),
+  /**
+   * A real external deadline (YYYY-MM-DD). A malformed one is dropped, not
+   * fatal — it must not cost the rest of the team's output.
+   */
+  dueDate: DueDateSchema.optional().catch(undefined),
   /** The [id] of the idea this action gates, when it is a prerequisite. */
   todoId: z.string().optional(),
 })

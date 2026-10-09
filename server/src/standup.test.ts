@@ -148,6 +148,20 @@ describe('parseStandupTail', () => {
     expect(parsed!.stripped).toBe('Discussion.')
   })
 
+  it('drops a malformed dueDate instead of failing the whole tail', () => {
+    const output = {
+      ...validOutput,
+      user_actions: [
+        { text: 'Renew the cert', kind: 'task', dueDate: 'next Friday' },
+        { text: 'File taxes', kind: 'task', dueDate: null },
+        { text: 'Rotate keys', kind: 'task', dueDate: '2026-12-01' },
+      ],
+    }
+    const parsed = parseStandupTail(`\`\`\`json\n${JSON.stringify(output)}\n\`\`\``)
+    expect(parsed).not.toBeNull()
+    expect(parsed!.output.user_actions!.map((a) => a.dueDate)).toEqual([undefined, undefined, '2026-12-01'])
+  })
+
   it('returns null when there is no valid tail', () => {
     expect(parseStandupTail('Just prose, no JSON.')).toBeNull()
     expect(parseStandupTail('```json\n{"messages": "wrong shape"}\n```')).toBeNull()
@@ -280,12 +294,20 @@ describe('buildStandupPrompt', () => {
       actions: [
         { ...base, id: '22222222-2222-4222-8222-222222222222', text: 'Pick an auth provider', kind: 'decision', status: 'open' },
         { ...base, id: '44444444-4444-4444-8444-444444444444', text: 'Note the CDN quota', status: 'open', blocking: false },
+        { ...base, id: '66666666-6666-4666-8666-666666666666', text: 'Renew the cert', status: 'open', dueDate: '2026-10-01' },
+        { ...base, id: '77777777-7777-4777-8777-777777777777', text: 'File taxes', status: 'open', dueDate: '2026-10-09' },
+        { ...base, id: '88888888-8888-4888-8888-888888888888', text: 'Order cards', status: 'open', dueDate: '2026-10-20' },
         { ...base, id: '33333333-3333-4333-8333-333333333333', text: 'Pick a DB', kind: 'decision', status: 'done', resolution: 'Postgres' },
         { ...base, id: '55555555-5555-4555-8555-555555555555', text: 'Buy a domain', status: 'dismissed', resolution: 'Using a subdomain' },
       ],
+      today: '2026-10-09',
     })
     expect(prompt).toContain('do NOT raise these again')
-    expect(prompt).toContain('2 of at most 4')
+    expect(prompt).toContain('5 of at most 4')
+    expect(prompt).toContain("today's standup (2026-10-09)")
+    expect(prompt).toContain('(task, due 2026-10-01 (overdue)) Renew the cert')
+    expect(prompt).toContain('(task, due 2026-10-09 (today)) File taxes')
+    expect(prompt).toContain('(task, due 2026-10-20) Order cards')
     expect(prompt).toContain('[22222222-2222-4222-8222-222222222222] (decision) Pick an auth provider')
     expect(prompt).toContain('(task, non-blocking) Note the CDN quota')
     expect(prompt).toContain("The user's answer: Postgres")
@@ -704,7 +726,7 @@ describe('runTurn and StandupService', () => {
         { todoId: todo.id, summary: 'Backoff', approach: 'Exponential, cap 30s', effort: '2h', brief: 'Edit useSession.ts: add exponential backoff capped at 30s. Done when reconnects stop hammering.', persona: 'Aria' },
       ],
       user_actions: [
-        { persona: 'Aria', text: 'Add STRIPE_SECRET_KEY to the server env', notes: 'Needed for checkout', kind: 'task', steps: ['Open the Stripe dashboard → API keys', 'Copy the secret key', 'Add STRIPE_SECRET_KEY=<value> to server/.env'], todoId: todo.id },
+        { persona: 'Aria', text: 'Add STRIPE_SECRET_KEY to the server env', notes: 'Needed for checkout', kind: 'task', steps: ['Open the Stripe dashboard → API keys', 'Copy the secret key', 'Add STRIPE_SECRET_KEY=<value> to server/.env'], todoId: todo.id, dueDate: '2026-11-30' },
       ],
       memo: 'Backoff proposed; waiting on Stripe key from the user.',
     }
@@ -751,6 +773,7 @@ describe('runTurn and StandupService', () => {
     expect(actions).toHaveLength(1)
     expect(actions[0].kind).toBe('task')
     expect(actions[0].steps?.[2]).toContain('server/.env')
+    expect(actions[0].dueDate).toBe('2026-11-30')
     expect(actions[0].todoId).toBe(todo.id)
 
     // Forced re-run: no actionable todos left → no reviewer turns, straight
