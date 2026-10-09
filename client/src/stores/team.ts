@@ -234,6 +234,11 @@ export const useTeamStore = defineStore('team', () => {
     return updateAction(id, { snoozedUntil: until }, 'Failed to snooze action item')
   }
 
+  /** Set the deadline (YYYY-MM-DD), or clear it with null. */
+  function setActionDueDate(id: string, dueDate: string | null) {
+    return updateAction(id, { dueDate }, 'Failed to set the due date')
+  }
+
   async function deleteAction(id: string) {
     try {
       await api.deleteActionItem(id)
@@ -286,6 +291,7 @@ export const useTeamStore = defineStore('team', () => {
     resolveAction,
     dismissAction,
     snoozeAction,
+    setActionDueDate,
     deleteAction,
     fetchPersonas,
     createPersona,

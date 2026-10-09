@@ -10,7 +10,8 @@ import type { ActionItem } from '@/api/client'
 
 /**
  * One action item, answerable in place: tappable options for decisions,
- * a free-text answer, steps for tasks, and snooze / won't do / discuss.
+ * a free-text answer, steps for tasks, a due date (exportable to Google
+ * Calendar for tasks), and snooze / won't do / discuss.
  * Shared by the Actions page and the idea modal on the board.
  */
 const props = withDefaults(
@@ -38,6 +39,7 @@ const showOther = ref(false)
 const showNotes = ref(false)
 const showMenu = ref(false)
 const declining = ref(false)
+const editingDue = ref(false)
 const declineReason = ref('')
 const busy = ref(false)
 const localError = ref<string | null>(null)
@@ -57,6 +59,68 @@ const snoozed = computed(() => !!props.item.snoozedUntil && props.item.snoozedUn
 /** Closed during this visit — show where the answer went. */
 const justClosed = computed(() => !isOpen.value && teamStore.recentlyClosedIds.has(props.item.id))
 const longNotes = computed(() => (props.item.notes?.length ?? 0) > 160)
+
+/** Today as YYYY-MM-DD in local time — what a due date is compared against. */
+function localToday(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+const dueState = computed<'overdue' | 'today' | 'upcoming' | null>(() => {
+  const due = props.item.dueDate
+  if (!due || !isOpen.value) return null
+  const today = localToday()
+  return due < today ? 'overdue' : due === today ? 'today' : 'upcoming'
+})
+
+/** A due date read as a local calendar day (not UTC midnight). */
+function formatDueDate(due: string): string {
+  const [y, m, d] = due.split('-').map(Number)
+  const date = new Date(y, m - 1, d)
+  return date.toLocaleDateString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    ...(y !== new Date().getFullYear() ? { year: 'numeric' } : {}),
+  })
+}
+
+/**
+ * Google Calendar's "create event" template, prefilled as an all-day event
+ * on the due date. One-way: the event doesn't follow later edits here.
+ * Decisions aren't exported — they're answered here, not scheduled.
+ */
+const calendarUrl = computed(() => {
+  const due = props.item.dueDate
+  if (!due || !isOpen.value || isDecision.value) return null
+  const [y, m, d] = due.split('-').map(Number)
+  // All-day events take an exclusive end date: the day after.
+  const end = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10)
+  const details = [
+    props.item.notes,
+    props.item.steps?.length ? props.item.steps.map((step, i) => `${i + 1}. ${step}`).join('\n') : undefined,
+    project.value ? `From CodePipe — ${project.value.name}` : 'From CodePipe',
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+  const params = new URLSearchParams({
+    action: 'TEMPLATE',
+    text: props.item.text,
+    dates: `${due.replaceAll('-', '')}/${end.replaceAll('-', '')}`,
+    // Keep the URL well under browser/Google limits.
+    details: details.length > 1500 ? `${details.slice(0, 1500)}…` : details,
+  })
+  return `https://calendar.google.com/calendar/render?${params}`
+})
+
+async function setDue(value: string | null) {
+  if (value === '') value = null
+  if (value === (props.item.dueDate ?? null)) {
+    editingDue.value = false
+    return
+  }
+  if (await teamStore.setActionDueDate(props.item.id, value)) editingDue.value = false
+}
 
 /** Where an answer goes: the next standup, when one is scheduled. */
 const nextStandupLabel = computed(() => {
@@ -218,6 +282,7 @@ function openBoard() {
               <button class="px-3 py-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-700" @click="snooze(1)">Snooze until tomorrow</button>
               <button class="px-3 py-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-700" @click="snooze(7)">Snooze a week</button>
             </template>
+            <button class="px-3 py-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-700" @click="editingDue = true; showMenu = false">{{ item.dueDate ? 'Change due date…' : 'Set due date…' }}</button>
             <button class="px-3 py-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-700" @click="declining = true; showMenu = false">Won't do…</button>
             <button v-if="raiser" class="px-3 py-1.5 text-left hover:bg-gray-50 dark:hover:bg-gray-700" @click="discussInThread">Discuss in thread</button>
             <button
@@ -316,6 +381,23 @@ function openBoard() {
         </li>
       </ol>
 
+      <!-- Due date -->
+      <div v-if="editingDue && isOpen" class="mt-2 flex flex-wrap items-center gap-1.5">
+        <input
+          type="date"
+          :value="item.dueDate ?? ''"
+          :min="item.dueDate && item.dueDate < localToday() ? undefined : localToday()"
+          class="rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-900 focus:border-purple-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:[color-scheme:dark]"
+          @change="setDue(($event.target as HTMLInputElement).value)"
+        />
+        <button
+          v-if="item.dueDate"
+          class="rounded px-2 py-1 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+          @click="setDue(null)"
+        >Clear</button>
+        <button class="rounded px-2 py-1 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300" @click="editingDue = false">Done</button>
+      </div>
+
       <!-- Won't do -->
       <div v-if="declining" class="mt-2 flex flex-col gap-1.5">
         <textarea
@@ -367,6 +449,32 @@ function openBoard() {
           <span>·</span>
         </template>
         <span :title="new Date(item.createdAt).toLocaleString()">{{ age(item.createdAt) }}</span>
+        <template v-if="item.dueDate && isOpen">
+          <span>·</span>
+          <button
+            class="rounded-full px-1.5 py-px font-medium"
+            :class="{
+              'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300': dueState === 'overdue',
+              'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300': dueState === 'today',
+              'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300': dueState === 'upcoming',
+            }"
+            title="Change due date"
+            @click="editingDue = !editingDue"
+          >{{ dueState === 'overdue' ? 'overdue · ' : dueState === 'today' ? 'due today · ' : 'due ' }}{{ formatDueDate(item.dueDate) }}</button>
+          <a
+            v-if="calendarUrl"
+            :href="calendarUrl"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="flex items-center gap-0.5 hover:text-gray-600 hover:underline dark:hover:text-gray-300"
+            title="Opens a prefilled all-day event in Google Calendar — later changes here won't sync"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-3 w-3">
+              <path fill-rule="evenodd" d="M4 1.75a.75.75 0 0 1 1.5 0V3h5V1.75a.75.75 0 0 1 1.5 0V3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2V1.75ZM3.5 7v5a.5.5 0 0 0 .5.5h8a.5.5 0 0 0 .5-.5V7h-9Z" clip-rule="evenodd" />
+            </svg>
+            Add to Google Calendar
+          </a>
+        </template>
         <template v-if="snoozed && isOpen">
           <span>·</span>
           <span>snoozed until {{ formatDay(item.snoozedUntil!) }}</span>

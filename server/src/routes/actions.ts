@@ -53,7 +53,7 @@ export function createActionRoutes(storage: IStorageLayer, standup?: StandupServ
   })
 
   // PATCH /api/actions/:id — edit text/notes, resolve (done + answer),
-  // dismiss (won't do + reason), reopen, or snooze/un-snooze
+  // dismiss (won't do + reason), reopen, snooze/un-snooze, or set/clear the deadline
   router.patch('/:id', async (req, res) => {
     const parsed = UpdateActionItemRequestSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -63,11 +63,13 @@ export function createActionRoutes(storage: IStorageLayer, standup?: StandupServ
 
     try {
       const before = (await storage.listActionItems()).find((a) => a.id === req.params.id)
-      // null un-snoozes: an undefined key is dropped when the file is written.
-      const { snoozedUntil, ...rest } = parsed.data
+      // null un-snoozes / clears the deadline: an undefined key is dropped
+      // when the file is written.
+      const { snoozedUntil, dueDate, ...rest } = parsed.data
       const item = await storage.updateActionItem(req.params.id, {
         ...rest,
         ...(snoozedUntil !== undefined ? { snoozedUntil: snoozedUntil ?? undefined } : {}),
+        ...(dueDate !== undefined ? { dueDate: dueDate ?? undefined } : {}),
       })
       res.json(item)
 

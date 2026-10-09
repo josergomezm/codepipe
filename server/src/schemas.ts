@@ -203,6 +203,16 @@ export const ActionItemOptionSchema = z.object({
   recommended: z.boolean().optional(),
 })
 
+/** A calendar date, YYYY-MM-DD. */
+export const DueDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  // Round-trips only for real dates (rejects 2026-02-30).
+  .refine((d) => {
+    const t = Date.parse(`${d}T00:00:00Z`)
+    return !Number.isNaN(t) && new Date(t).toISOString().startsWith(d)
+  }, 'Invalid date')
+
 export const ActionItemSchema = z.object({
   id: z.string().uuid(),
   projectId: z.string().uuid(),
@@ -217,6 +227,11 @@ export const ActionItemSchema = z.object({
   blocking: z.boolean().optional(),
   /** Hidden from the list (and the badge) until this time. */
   snoozedUntil: z.number().int().positive().optional(),
+  /**
+   * Deadline as a calendar date (YYYY-MM-DD) — a day, not an instant, so it
+   * never drifts across timezones and exports as an all-day event.
+   */
+  dueDate: DueDateSchema.optional(),
   /** The idea this item gates or informs (a prerequisite of that idea). */
   todoId: z.string().uuid().optional(),
   status: ActionItemStatusSchema,
@@ -432,6 +447,8 @@ export const UpdateActionItemRequestSchema = z.object({
   resolution: z.string().max(4000).optional(),
   /** null un-snoozes. */
   snoozedUntil: z.number().int().positive().nullable().optional(),
+  /** null clears the deadline. */
+  dueDate: DueDateSchema.nullable().optional(),
 })
 
 // --- Inferred Types ---

@@ -205,6 +205,8 @@ export interface ActionItem {
   blocking?: boolean
   /** Hidden from the list (and the badge) until this time. */
   snoozedUntil?: number
+  /** Deadline as a calendar date, YYYY-MM-DD. */
+  dueDate?: string
   /** The idea this item gates (a prerequisite of that idea). */
   todoId?: string
   status: ActionItemStatus
@@ -588,6 +590,8 @@ export function updateActionItem(
     resolution?: string
     /** null un-snoozes. */
     snoozedUntil?: number | null
+    /** YYYY-MM-DD; null clears the deadline. */
+    dueDate?: string | null
   },
 ): Promise<ActionItem> {
   return request<ActionItem>(`/api/actions/${id}`, {

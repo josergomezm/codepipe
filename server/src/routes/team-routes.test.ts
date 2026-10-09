@@ -203,6 +203,19 @@ describe('action item routes', () => {
     expect(resolvedNotifications).toEqual([item.id])
   })
 
+  it('sets, validates and clears a due date', async () => {
+    const item = await storage.addActionItem({ projectId: project.id, text: 'Renew the cert', kind: 'task' })
+
+    const set = await request(app).patch(`/api/actions/${item.id}`).send({ dueDate: '2026-11-03' }).expect(200)
+    expect(set.body.dueDate).toBe('2026-11-03')
+    await request(app).patch(`/api/actions/${item.id}`).send({ dueDate: '2026-02-30' }).expect(400)
+    await request(app).patch(`/api/actions/${item.id}`).send({ dueDate: '11/03/2026' }).expect(400)
+
+    const cleared = await request(app).patch(`/api/actions/${item.id}`).send({ dueDate: null }).expect(200)
+    expect(cleared.body.dueDate).toBeUndefined()
+    expect((await storage.listActionItems(project.id))[0].dueDate).toBeUndefined()
+  })
+
   it('declining notifies the team; snoozing does not, and null un-snoozes', async () => {
     const persona = await storage.addPersona({
       name: 'Maya', role: 'Lead', personality: '', provider: 'kiro', isLead: true,
