@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useTeamStore } from '@/stores/team'
 import { useProjectsStore } from '@/stores/projects'
 import { useUiStore } from '@/stores/ui'
 import ActionItemCard from '@/components/ActionItemCard.vue'
+import * as api from '@/api/client'
 import type { ActionItem } from '@/api/client'
 
 const teamStore = useTeamStore()
@@ -12,6 +13,8 @@ const ui = useUiStore()
 
 const newText = ref('')
 const newNotes = ref('')
+/** YYYY-MM-DD, or '' for none. */
+const newDueDate = ref('')
 const showAdd = ref(false)
 const showNotes = ref(false)
 const newProjectId = ref('')
@@ -26,10 +29,17 @@ onMounted(() => {
   teamStore.fetchActions()
   teamStore.fetchPersonas()
   teamStore.fetchTodos()
-  if (projectStore.projects.length > 0 && !newProjectId.value) {
-    newProjectId.value = projectStore.projects[0].id
-  }
 })
+
+// Default the add form's project — also when projects load after mount
+// (opening /actions directly).
+watch(
+  () => projectStore.projects,
+  (projects) => {
+    if (!projects.some((p) => p.id === newProjectId.value)) newProjectId.value = projects[0]?.id ?? ''
+  },
+  { immediate: true },
+)
 
 const visibleActions = computed(() =>
   filterProjectId.value
@@ -81,6 +91,10 @@ const snoozedItems = computed(() =>
   visibleActions.value.filter((a) => a.status === 'open' && !teamStore.isWaiting(a)),
 )
 const closedCount = computed(() => visibleActions.value.filter((a) => a.status !== 'open').length)
+/** Open tasks with a deadline in view — what "Export to calendar" would include. */
+const exportableCount = computed(
+  () => visibleActions.value.filter((a) => a.status === 'open' && a.dueDate && a.kind !== 'decision').length,
+)
 const waitingCount = computed(() => visibleActions.value.filter((a) => teamStore.isWaiting(a)).length)
 
 function projectName(projectId: string): string {
@@ -96,9 +110,15 @@ function toggleExtras(projectId: string) {
 
 async function add() {
   if (!newText.value.trim() || !newProjectId.value) return
-  await teamStore.addAction(newProjectId.value, newText.value.trim(), newNotes.value.trim() || undefined)
+  await teamStore.addAction(
+    newProjectId.value,
+    newText.value.trim(),
+    newNotes.value.trim() || undefined,
+    newDueDate.value || undefined,
+  )
   newText.value = ''
   newNotes.value = ''
+  newDueDate.value = ''
   showNotes.value = false
   showAdd.value = false
 }
@@ -123,6 +143,13 @@ async function add() {
         </span>
       </div>
       <div class="flex-1" />
+      <a
+        v-if="exportableCount > 0"
+        :href="api.actionItemsCalendarUrl(filterProjectId || undefined)"
+        download="codepipe-tasks.ics"
+        class="shrink-0 rounded-lg px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+        :title="`Download ${exportableCount} task(s) with due dates as an .ics file — import it in Google Calendar (Settings → Import). Re-importing updates events instead of duplicating them.`"
+      >Export to calendar</a>
       <button
         class="shrink-0 rounded-lg px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
         @click="showAdd = !showAdd"
@@ -161,13 +188,23 @@ async function add() {
               @click="add"
             >Add</button>
           </div>
-          <button
-            v-if="!showNotes"
-            class="self-start text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-            @click="showNotes = true"
-          >+ add context</button>
+          <div class="flex items-center gap-3">
+            <button
+              v-if="!showNotes"
+              class="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+              @click="showNotes = true"
+            >+ add context</button>
+            <label class="flex items-center gap-1.5 text-xs text-gray-400">
+              Due
+              <input
+                v-model="newDueDate"
+                type="date"
+                class="rounded border border-gray-200 bg-white px-1.5 py-0.5 text-xs text-gray-700 focus:border-blue-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:[color-scheme:dark]"
+              />
+            </label>
+          </div>
           <textarea
-            v-else
+            v-if="showNotes"
             v-model="newNotes"
             rows="2"
             placeholder="Optional context…"

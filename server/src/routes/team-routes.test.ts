@@ -216,6 +216,27 @@ describe('action item routes', () => {
     expect((await storage.listActionItems(project.id))[0].dueDate).toBeUndefined()
   })
 
+  it('accepts a due date when adding an item', async () => {
+    const res = await request(app)
+      .post('/api/actions')
+      .send({ projectId: project.id, text: 'Renew the cert', dueDate: '2026-11-03' })
+      .expect(201)
+    expect(res.body.dueDate).toBe('2026-11-03')
+    await request(app).post('/api/actions').send({ projectId: project.id, text: 'x', dueDate: 'soon' }).expect(400)
+  })
+
+  it('exports open tasks with deadlines as an .ics calendar', async () => {
+    const task = await storage.addActionItem({ projectId: project.id, text: 'Renew the cert', dueDate: '2026-11-03' })
+    await storage.addActionItem({ projectId: project.id, text: 'Pick a DB', kind: 'decision', dueDate: '2026-11-03' })
+    await storage.addActionItem({ projectId: project.id, text: 'No deadline' })
+
+    const res = await request(app).get(`/api/actions/calendar.ics?projectId=${project.id}`).expect(200)
+    expect(res.headers['content-type']).toContain('text/calendar')
+    expect(res.headers['content-disposition']).toContain('codepipe-tasks.ics')
+    expect(res.text).toContain(`UID:${task.id}@codepipe`)
+    expect(res.text.match(/BEGIN:VEVENT/g)).toHaveLength(1)
+  })
+
   it('declining notifies the team; snoozing does not, and null un-snoozes', async () => {
     const persona = await storage.addPersona({
       name: 'Maya', role: 'Lead', personality: '', provider: 'kiro', isLead: true,

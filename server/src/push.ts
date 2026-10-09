@@ -30,7 +30,10 @@ export interface PushSubscriptionJSON {
 export interface PushPayload {
   title: string
   body: string
-  sessionId: string
+  /** The session a tap opens (absent for notifications that open a page). */
+  sessionId?: string
+  /** App path a tap opens instead of a session, e.g. '/actions'. */
+  url?: string
   /** Notification tag — reusing the session ID collapses repeats per session. */
   tag: string
   /** Notification icon URL (e.g. a persona avatar). Falls back to the app icon. */

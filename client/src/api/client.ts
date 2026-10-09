@@ -573,12 +573,25 @@ export function fetchActionItems(projectId?: string): Promise<ActionItem[]> {
   return request<ActionItem[]>(url)
 }
 
-export function createActionItem(projectId: string, text: string, notes?: string): Promise<ActionItem> {
+export function createActionItem(
+  projectId: string,
+  text: string,
+  notes?: string,
+  /** YYYY-MM-DD */
+  dueDate?: string,
+): Promise<ActionItem> {
   return request<ActionItem>('/api/actions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ projectId, text, ...(notes ? { notes } : {}) }),
+    body: JSON.stringify({ projectId, text, ...(notes ? { notes } : {}), ...(dueDate ? { dueDate } : {}) }),
   })
+}
+
+/** Open tasks with deadlines as an importable .ics (stable UIDs — no duplicates on re-import). */
+export function actionItemsCalendarUrl(projectId?: string): string {
+  return projectId
+    ? `/api/actions/calendar.ics?projectId=${encodeURIComponent(projectId)}`
+    : '/api/actions/calendar.ics'
 }
 
 export function updateActionItem(

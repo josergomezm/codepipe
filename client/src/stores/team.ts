@@ -183,9 +183,9 @@ export const useTeamStore = defineStore('team', () => {
     }
   }
 
-  async function addAction(projectId: string, text: string, notes?: string) {
+  async function addAction(projectId: string, text: string, notes?: string, dueDate?: string) {
     try {
-      const item = await api.createActionItem(projectId, text, notes)
+      const item = await api.createActionItem(projectId, text, notes, dueDate)
       actions.value.unshift(item)
       error.value = null
     } catch (e) {

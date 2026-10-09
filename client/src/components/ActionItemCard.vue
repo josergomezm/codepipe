@@ -475,6 +475,14 @@ function openBoard() {
             Add to Google Calendar
           </a>
         </template>
+        <template v-else-if="isOpen && !isDecision && !editingDue">
+          <span>·</span>
+          <button
+            class="hover:text-gray-600 hover:underline dark:hover:text-gray-300"
+            title="Set a deadline — then add it to Google Calendar"
+            @click="editingDue = true"
+          >+ due date</button>
+        </template>
         <template v-if="snoozed && isOpen">
           <span>·</span>
           <span>snoozed until {{ formatDay(item.snoozedUntil!) }}</span>

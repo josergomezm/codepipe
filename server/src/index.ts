@@ -26,6 +26,7 @@ import { createBrowseRoutes } from './routes/browse.js'
 import { createUploadRoutes } from './routes/upload.js'
 import { createTodoRoutes } from './routes/todos.js'
 import { createActionRoutes } from './routes/actions.js'
+import { DueReminderService } from './due-reminders.js'
 import { createPersonaRoutes } from './routes/personas.js'
 import { createStandupRoutes } from './routes/standup.js'
 import { StandupService } from './standup.js'
@@ -59,6 +60,8 @@ const serviceManager = new ServiceManager()
 // The proactive team layer: daily standups over the per-project todo list,
 // routed through personas. Registers the team-turn hook on the session manager.
 const standupService = new StandupService(storage, sessionManager, pushService)
+// Daily push for action items due today or overdue.
+const dueReminders = new DueReminderService(storage, pushService, { dataDir: './data' })
 
 // ---------------------------------------------------------------------------
 // Register CLI adapters
@@ -151,6 +154,7 @@ if (isMainModule) {
   })
 
   standupService.start()
+  dueReminders.start()
   startHealthMonitor(healthCounts)
   log.info('server', `Started (pid ${process.pid}, node ${process.version}${SUPERVISED ? ', supervised' : ''})`)
 
@@ -164,6 +168,7 @@ if (isMainModule) {
 
     try {
       standupService.stop()
+      dueReminders.stop()
       await devServerManager.shutdownAll()
       await serviceManager.shutdownAll()
       terminalManager.killAll()

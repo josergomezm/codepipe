@@ -438,6 +438,7 @@ export const CreateActionItemRequestSchema = z.object({
   projectId: z.string().uuid(),
   text: z.string().min(1).max(2000),
   notes: z.string().max(10000).optional(),
+  dueDate: DueDateSchema.optional(),
 })
 
 export const UpdateActionItemRequestSchema = z.object({

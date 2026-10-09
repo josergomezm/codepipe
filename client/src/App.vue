@@ -61,6 +61,7 @@ onMounted(async () => {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', (event) => {
       if (event.data?.type === 'open-session') openSessionFromId(event.data.sessionId)
+      else if (event.data?.type === 'open-url' && typeof event.data.url === 'string') router.push(event.data.url)
     })
   }
 

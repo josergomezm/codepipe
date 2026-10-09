@@ -33,13 +33,15 @@ self.addEventListener('push', (event) => {
   const title = data.title || 'CodePipe'
   const body = data.body || 'New activity'
   const sessionId = data.sessionId || ''
+  // A page to open on tap instead of a session (e.g. '/actions').
+  const url = data.url || ''
 
   event.waitUntil(
     (async () => {
       // Suppress only if a window is focused AND viewing this exact session.
       const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
       const focused = windows.some((c) => c.focused)
-      if (focused && sessionId === activeSessionId) return
+      if (focused && sessionId && sessionId === activeSessionId) return
 
       await self.registration.showNotification(title, {
         body,
@@ -48,7 +50,7 @@ self.addEventListener('push', (event) => {
         // Persona avatar when the message comes from a team member.
         icon: data.icon || '/icon.svg',
         badge: '/icon.svg',
-        data: { sessionId },
+        data: { sessionId, url },
       })
     })(),
   )
@@ -56,15 +58,17 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
-  const sessionId = event.notification.data && event.notification.data.sessionId
-  const url = sessionId ? `/?session=${encodeURIComponent(sessionId)}` : '/'
+  const data = event.notification.data || {}
+  const sessionId = data.sessionId
+  const page = data.url && data.url.startsWith('/') && !data.url.startsWith('//') ? data.url : null
+  const url = page || (sessionId ? `/?session=${encodeURIComponent(sessionId)}` : '/')
 
   event.waitUntil(
     (async () => {
       const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
       for (const client of windows) {
         if ('focus' in client) {
-          client.postMessage({ type: 'open-session', sessionId })
+          client.postMessage(page ? { type: 'open-url', url: page } : { type: 'open-session', sessionId })
           return client.focus()
         }
       }

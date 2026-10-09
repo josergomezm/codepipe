@@ -4,6 +4,7 @@ import type { IStorageLayer } from '../storage.js'
 import type { StandupService } from '../standup.js'
 import { CreateActionItemRequestSchema, UpdateActionItemRequestSchema } from '../schemas.js'
 import { log } from '../logger.js'
+import { buildActionItemsCalendar } from '../action-calendar.js'
 
 /**
  * Create an Express Router for action items — tasks only the user can do
@@ -27,6 +28,22 @@ export function createActionRoutes(storage: IStorageLayer, standup?: StandupServ
     } catch (err) {
       log.error('api', 'Failed to list action items', err)
       res.status(500).json({ error: 'Failed to list action items' })
+    }
+  })
+
+  // GET /api/actions/calendar.ics?projectId=<id> — open tasks with deadlines
+  // as an importable calendar (stable UIDs: re-importing doesn't duplicate)
+  router.get('/calendar.ics', async (req, res) => {
+    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : undefined
+    try {
+      const [items, projects] = await Promise.all([storage.listActionItems(projectId), storage.listProjects()])
+      res
+        .type('text/calendar; charset=utf-8')
+        .attachment('codepipe-tasks.ics')
+        .send(buildActionItemsCalendar(items, projects))
+    } catch (err) {
+      log.error('api', 'Failed to export action items calendar', err)
+      res.status(500).json({ error: 'Failed to export calendar' })
     }
   })
 

@@ -59,6 +59,7 @@ export interface IStorageLayer {
     steps?: string[]
     options?: ActionItem['options']
     blocking?: boolean
+    dueDate?: string
     todoId?: string
     personaId?: string
   }): Promise<ActionItem>
@@ -409,6 +410,7 @@ export class StorageLayer implements IStorageLayer {
     steps?: string[]
     options?: ActionItem['options']
     blocking?: boolean
+    dueDate?: string
     todoId?: string
     personaId?: string
   }): Promise<ActionItem> {
@@ -424,6 +426,7 @@ export class StorageLayer implements IStorageLayer {
         ...(data.steps?.length ? { steps: data.steps } : {}),
         ...(data.options?.length ? { options: data.options } : {}),
         ...(data.blocking === false ? { blocking: false } : {}),
+        ...(data.dueDate ? { dueDate: data.dueDate } : {}),
         ...(data.todoId ? { todoId: data.todoId } : {}),
         ...(data.personaId ? { personaId: data.personaId } : {}),
         status: 'open',
