@@ -11,8 +11,9 @@
  *       each producing an independent `take` (stored on the todo, session
  *       deleted — the take is the artifact)
  *     → fan-in: one dated 'team' session where the lead synthesizes takes +
- *       agenda + memo into messages, proposals/briefs, user actions, and the
- *       next memo (this is the session the user watches and replies to)
+ *       agenda + memo, recording proposals/briefs, user actions and the next
+ *       memo through CodePipe's tools, then messages the user (this is the
+ *       session the user watches and replies to)
  *
  * Events between standups (resolved action items, shipped builds) queue on
  * the agenda and are acknowledged by the next run — one turn amortizes them
@@ -33,7 +34,7 @@ import {
   parseReviewerOutput,
   trackedActions,
 } from './standup-protocol.js'
-import type { ActionItem, Persona, Project, Todo, TodoTake } from './schemas.js'
+import { PROVIDER_DISPLAY_NAMES, type ActionItem, type Persona, type Project, type Todo, type TodoTake } from './schemas.js'
 import { log } from './logger.js'
 
 /** How often the scheduler checks whether a standup is due. */
@@ -107,6 +108,12 @@ export class StandupService {
   private timer: ReturnType<typeof setInterval> | null = null
   /** Projects with a standup currently in flight (re-entry guard). */
   private readonly running = new Set<string>()
+  /**
+   * Background work in flight — standup pipelines, refine and work turns,
+   * persona routing. Everything launched without being awaited goes through
+   * track(), so whenIdle() can wait for it (shutdown, tests).
+   */
+  private readonly inflight = new Set<Promise<void>>()
 
   constructor(storage: IStorageLayer, sessionManager: SessionManager, push?: PushService) {
     this.storage = storage
@@ -116,7 +123,50 @@ export class StandupService {
     // Register immediately (not in start()) so user replies in standup
     // sessions are persona-routed even when the scheduler isn't running.
     this.sessionManager.onTeamTurn = (session, last) => {
-      if (last) void this.router.routeTeamTurn(session, last)
+      if (last) this.track(this.router.routeTeamTurn(session, last))
+    }
+  }
+
+  /** Launch background work, remembered until it settles (never throws). */
+  private track(work: Promise<unknown>): void {
+    const settled: Promise<void> = work.then(
+      () => undefined,
+      () => undefined,
+    )
+    this.inflight.add(settled)
+    void settled.then(() => this.inflight.delete(settled))
+  }
+
+  /**
+   * Resolve once every background pipeline and turn started so far has
+   * settled — including work they start in turn. With `timeoutMs`, give up
+   * waiting after that long (a turn blocked on a CLI that never answers).
+   */
+  async whenIdle(timeoutMs?: number): Promise<void> {
+    const deadline = timeoutMs === undefined ? null : Date.now() + timeoutMs
+    while (this.inflight.size > 0) {
+      const pending = Promise.all([...this.inflight])
+      if (deadline === null) {
+        await pending
+        continue
+      }
+      const left = deadline - Date.now()
+      if (left <= 0) {
+        log.warn('standup', `Gave up waiting for ${this.inflight.size} background task(s) after ${timeoutMs}ms`)
+        return
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const timedOut = await Promise.race([
+        pending.then(() => false),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(true), left)
+        }),
+      ])
+      clearTimeout(timer)
+      if (timedOut) {
+        log.warn('standup', `Gave up waiting for ${this.inflight.size} background task(s) after ${timeoutMs}ms`)
+        return
+      }
     }
   }
 
@@ -126,7 +176,7 @@ export class StandupService {
 
   start(): void {
     this.timer = setInterval(() => {
-      void this.checkSchedule()
+      this.track(this.checkSchedule())
     }, SCHEDULER_TICK_MS)
     this.timer.unref?.()
     log.info('standup', 'Standup scheduler started')
@@ -160,9 +210,9 @@ export class StandupService {
       if (!isStandupDue(project.standup, state?.lastRunAt, now)) continue
 
       log.info('standup', `Scheduled standup due for project "${project.name}"`)
-      void this.runStandup(project.id, { force: false }).catch((err) => {
+      this.track(this.runStandup(project.id, { force: false }).catch((err) => {
         log.error('standup', `Scheduled standup failed for project ${project.id}`, err)
-      })
+      }))
     }
   }
 
@@ -217,6 +267,7 @@ export class StandupService {
         kind: 'team',
         title: `${project.name} standup · ${dayLabel(new Date())}`,
         ...(lead.model ? { model: lead.model } : {}),
+        personaId: lead.id,
       })
 
       // Persist state BEFORE the pipeline: lastRunAt/lastHash stop the
@@ -236,7 +287,7 @@ export class StandupService {
       }
 
       log.info('standup', `Standup dispatched for "${project.name}" (${todos.length} todo(s), ${agenda.length} agenda item(s), session ${session.id})`)
-      void this.executeStandupPipeline(project, personas, lead, todos, state.memo, agenda, session.id)
+      this.track(this.executeStandupPipeline(project, personas, lead, todos, state.memo, agenda, session.id))
 
       return { ran: true, sessionId: session.id }
     } catch (err) {
@@ -292,11 +343,25 @@ export class StandupService {
         (t) => (t.status === 'proposed' || t.status === 'approved') && !t.workSessionId,
       )
       const prompt = buildStandupPrompt(project, personas, reviewed, { memo, agenda, actions, planned })
-      await this.sessionManager.runTurn(sessionId, prompt, {
+      const startedAt = Date.now()
+      const reply = await this.sessionManager.runTurn(sessionId, prompt, {
         timeoutMs: STANDUP_TIMEOUT_MS,
         cancelOnTimeout: true,
         internalPrompt: true,
       })
+
+      // Every standup ends by saving the memo through CodePipe's tools. A
+      // run that finished without one almost certainly ran without the tools
+      // — so its proposals and action items went nowhere. Say so in the
+      // thread instead of failing silently.
+      const after = await this.storage.getStandupState(project.id)
+      if (reply && (!after?.memoSavedAt || after.memoSavedAt < startedAt)) {
+        log.warn('standup', `Standup for "${project.name}" ended without save_memo — tools likely unavailable to ${lead.provider}`)
+        this.sessionManager.appendSystemMessage(
+          sessionId,
+          `${lead.name} finished without saving the team's memo, so CodePipe's tools probably didn't load for ${PROVIDER_DISPLAY_NAMES[lead.provider]} — proposals and action items from this run may be missing. For Kiro (text mode) and Antigravity, run \`npm run agent-tool:install\` in server/ once, then run the standup again.`,
+        )
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       log.error('standup', `Standup pipeline failed for project ${project.id}: ${message}`)
@@ -324,6 +389,7 @@ export class StandupService {
         kind: 'review',
         title: `${reviewer.name} review`,
         ...(reviewer.model ? { model: reviewer.model } : {}),
+        personaId: reviewer.id,
       })
       sessionId = session.id
 
@@ -433,6 +499,7 @@ export class StandupService {
         kind: 'team',
         title: `${project.name} standup · ${dayLabel(new Date())}`,
         ...(lead.model ? { model: lead.model } : {}),
+        personaId: lead.id,
       })
       state.teamSessionId = session.id
       await this.storage.setStandupState(state)
@@ -441,19 +508,21 @@ export class StandupService {
     const sessionId = session.id
     const prompt = buildRefinePrompt(todo, personas, feedback)
     log.info('standup', `Proposal refinement dispatched for "${todo.text}" (session ${sessionId})`)
-    void this.sessionManager
-      .runTurn(sessionId, prompt, {
-        timeoutMs: STANDUP_TIMEOUT_MS,
-        cancelOnTimeout: true,
-        internalPrompt: true,
-      })
-      .catch((err) => {
-        log.warn('standup', `Refine turn failed: ${err instanceof Error ? err.message : String(err)}`)
-        this.sessionManager.appendSystemMessage(
-          sessionId,
-          `Proposal refinement failed: ${err instanceof Error ? err.message : String(err)}. Send your feedback again from the Ideas panel.`,
-        )
-      })
+    this.track(
+      this.sessionManager
+        .runTurn(sessionId, prompt, {
+          timeoutMs: STANDUP_TIMEOUT_MS,
+          cancelOnTimeout: true,
+          internalPrompt: true,
+        })
+        .catch((err) => {
+          log.warn('standup', `Refine turn failed: ${err instanceof Error ? err.message : String(err)}`)
+          this.sessionManager.appendSystemMessage(
+            sessionId,
+            `Proposal refinement failed: ${err instanceof Error ? err.message : String(err)}. Send your feedback again from the Ideas panel.`,
+          )
+        }),
+    )
 
     return { ran: true, sessionId }
   }
@@ -505,6 +574,7 @@ export class StandupService {
       kind: 'work',
       title: `${implementer.name}: ${title}`,
       ...(implementer.model ? { model: implementer.model } : {}),
+      personaId: implementer.id,
     })
 
     // Approving and linking are persisted BEFORE the turn, mirroring the
@@ -513,7 +583,7 @@ export class StandupService {
 
     const prompt = buildImplementPrompt(project, implementer, todo)
     log.info('standup', `Implementation dispatched for "${todo.text}" (${implementer.name} on ${implementer.provider}, session ${session.id})`)
-    void this.executeWorkTurn(todo.id, session.id, implementer, prompt)
+    this.track(this.executeWorkTurn(todo.id, session.id, implementer, prompt))
 
     return { ran: true, sessionId: session.id }
   }

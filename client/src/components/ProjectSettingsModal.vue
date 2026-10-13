@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, onUnmounted } from 'vue'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import { detectDevServer } from '@/api/client'
-import type { Project } from '@/api/client'
+import type { Project, ProviderSettingsOverrides } from '@/api/client'
+import ProviderOverridesPanel from '@/components/ProviderOverridesPanel.vue'
 
 type PackageManager = 'npm' | 'bun' | 'pnpm' | 'yarn'
 
@@ -50,6 +51,57 @@ async function saveStandup() {
   )
   standupSaving.value = false
 }
+
+// --- Provider launch overrides (over the global Providers page) ---
+const providerOverrides = ref<ProviderSettingsOverrides>({})
+const showProviderOverrides = ref(false)
+const providerSaving = ref<'saving' | 'saved' | 'error' | null>(null)
+const providerSaveError = ref<string | null>(null)
+let providerSaveTimer: ReturnType<typeof setTimeout> | null = null
+/** The edit waiting on the debounce: which project it belongs to, and its map. */
+let pendingProviderSave: { projectId: string; map: ProviderSettingsOverrides } | null = null
+
+const providerOverrideCount = computed(() =>
+  Object.values(providerOverrides.value).reduce((n, v) => n + Object.keys(v ?? {}).length, 0),
+)
+
+function onProviderOverridesChange(next: ProviderSettingsOverrides) {
+  if (!props.projectId) return
+  providerOverrides.value = next
+  pendingProviderSave = { projectId: props.projectId, map: next }
+  if (providerSaveTimer) clearTimeout(providerSaveTimer)
+  providerSaveTimer = setTimeout(flushProviderSave, 400)
+}
+
+/** Save the pending edit now (debounce elapsed, project switched, or modal gone). */
+function flushProviderSave() {
+  if (providerSaveTimer) clearTimeout(providerSaveTimer)
+  providerSaveTimer = null
+  const pending = pendingProviderSave
+  pendingProviderSave = null
+  if (pending) void saveProviderOverrides(pending.projectId, pending.map)
+}
+
+async function saveProviderOverrides(projectId: string, map: ProviderSettingsOverrides) {
+  // Status only concerns the project on screen.
+  const onScreen = () => props.projectId === projectId
+  if (onScreen()) providerSaving.value = 'saving'
+  try {
+    await store.updateProjectProviderSettings(projectId, Object.keys(map).length > 0 ? map : null)
+    if (!onScreen()) return
+    providerSaving.value = 'saved'
+    providerSaveError.value = null
+    setTimeout(() => {
+      if (providerSaving.value === 'saved') providerSaving.value = null
+    }, 1500)
+  } catch (e) {
+    if (!onScreen()) return
+    providerSaving.value = 'error'
+    providerSaveError.value = e instanceof Error ? e.message : 'Failed to save'
+  }
+}
+
+onUnmounted(flushProviderSave)
 
 function formatHour(h: number): string {
   const period = h < 12 ? 'AM' : 'PM'
@@ -103,6 +155,11 @@ watch(
     hasDevRemoteScript.value = false
     standupEnabled.value = project.value?.standup?.enabled ?? false
     standupHour.value = project.value?.standup?.hour ?? 9
+    // The previous project's last override edit may still be debouncing.
+    flushProviderSave()
+    providerOverrides.value = { ...(project.value?.providerSettings ?? {}) }
+    showProviderOverrides.value = false
+    providerSaving.value = null
 
     if (project.value?.devServer) {
       port.value = String(project.value.devServer.port)
@@ -471,6 +528,34 @@ function close() {
                 <option v-for="h in 24" :key="h - 1" :value="h - 1">{{ formatHour(h - 1) }}</option>
               </select>
               <span v-if="standupSaving" class="text-xs text-gray-400">Saving…</span>
+            </div>
+          </div>
+
+          <!-- Provider launch overrides -->
+          <div class="rounded-lg border border-gray-200 px-4 py-3 dark:border-gray-700">
+            <button class="flex w-full items-center justify-between gap-2 text-left" @click="showProviderOverrides = !showProviderOverrides">
+              <div>
+                <div class="text-sm font-medium text-gray-900 dark:text-gray-100">
+                  Provider launch overrides
+                  <span v-if="providerOverrideCount > 0" class="ml-1 text-[11px] font-normal text-blue-600 dark:text-blue-400">{{ providerOverrideCount }} set</span>
+                </div>
+                <p class="text-xs text-gray-400 dark:text-gray-500">
+                  Permission modes and flags for chats in this project, over the global Providers settings.
+                </p>
+              </div>
+              <span class="flex shrink-0 items-center gap-2">
+                <span class="text-xs" :class="providerSaving === 'error' ? 'text-red-600 dark:text-red-400' : 'text-gray-400'">
+                  <template v-if="providerSaving === 'saving'">Saving…</template>
+                  <template v-else-if="providerSaving === 'saved'">Saved</template>
+                  <template v-else-if="providerSaving === 'error'">{{ providerSaveError }}</template>
+                </span>
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-4 w-4 text-gray-400 transition" :class="showProviderOverrides ? 'rotate-90' : ''">
+                  <path fill-rule="evenodd" d="M6.22 4.22a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1 0 1.06l-3.25 3.25a.75.75 0 0 1-1.06-1.06L8.94 8 6.22 5.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd" />
+                </svg>
+              </span>
+            </button>
+            <div v-if="showProviderOverrides" class="mt-3">
+              <ProviderOverridesPanel :model-value="providerOverrides" layer="project" @update:model-value="onProviderOverridesChange" />
             </div>
           </div>
 

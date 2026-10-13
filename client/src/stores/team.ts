@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import * as api from '../api/client'
-import type { Persona, Todo, TodoStatus, ActionItem, ActionItemStatus, ProviderType } from '../api/client'
+import type { Persona, Todo, TodoStatus, ActionItem, ActionItemStatus, ProviderType, ProviderSettingsOverrides } from '../api/client'
 
 /**
  * The team layer: personas (the AI org roster) and per-project todos.
@@ -48,6 +48,7 @@ export const useTeamStore = defineStore('team', () => {
     provider: ProviderType
     model?: string
     isLead: boolean
+    providerSettings?: ProviderSettingsOverrides
   }): Promise<Persona | null> {
     try {
       const persona = await api.createPersona(data)
@@ -186,8 +187,10 @@ export const useTeamStore = defineStore('team', () => {
   async function addAction(projectId: string, text: string, notes?: string, dueDate?: string) {
     try {
       const item = await api.createActionItem(projectId, text, notes, dueDate)
-      actions.value.unshift(item)
+      // An identical open item comes back instead of a new one.
+      if (!actions.value.some((a) => a.id === item.id)) actions.value.unshift(item)
       error.value = null
+      return item
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to add action item'
     }

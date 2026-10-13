@@ -12,7 +12,8 @@
     "start": "node dist/index.js",
     "test": "vitest run --exclude src/terminal.test.ts && vitest run src/terminal.test.ts",
     "test:watch": "vitest",
-    "gen-vapid": "web-push generate-vapid-keys"
+    "gen-vapid": "web-push generate-vapid-keys",
+    "agent-tool:install": "node scripts/agent-tool-install.mjs"
   },
   "keywords": [],
   "license": "MIT",

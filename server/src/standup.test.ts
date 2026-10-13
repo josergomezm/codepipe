@@ -8,6 +8,7 @@ import os from 'os'
 // ---------------------------------------------------------------------------
 
 let mockSpawnStdoutCb: ((data: Buffer) => void) | null = null
+let mockSpawnStderrCb: ((data: Buffer) => void) | null = null
 let mockSpawnCloseCb: ((code: number) => void) | null = null
 /** Total spawns so far — completeTurn() consumes one spawn per call. */
 let mockSpawnCount = 0
@@ -27,7 +28,11 @@ vi.mock('child_process', async (importOriginal) => {
             if (event === 'data') mockSpawnStdoutCb = cb
           },
         },
-        stderr: { on() { /* no-op */ } },
+        stderr: {
+          on(event: string, cb: (data: Buffer) => void) {
+            if (event === 'data') mockSpawnStderrCb = cb
+          },
+        },
         on(event: string, cb: (...args: unknown[]) => void) {
           if (event === 'close') mockSpawnCloseCb = cb as (code: number) => void
         },
@@ -42,8 +47,9 @@ vi.mock('child_process', async (importOriginal) => {
 import { StorageLayer } from './storage.js'
 import { SessionManager } from './session-manager.js'
 import { StandupService, hashTodos, isSameLocalDay, isStandupDue } from './standup.js'
-import { parseStandupTail, parseReviewerOutput, matchPersona, matchTodo, buildStandupPrompt, buildImplementPrompt, trackedActions, RESOLVED_ACTION_WINDOW_MS } from './standup-protocol.js'
+import { parseReviewerOutput, matchPersona, matchTodo, buildStandupPrompt, buildImplementPrompt, trackedActions, RESOLVED_ACTION_WINDOW_MS } from './standup-protocol.js'
 import { registerAdapter, clearAdapters } from './adapters/registry.js'
+import { AgentToolService } from './agent-tool-registry.js'
 import type { ICLIAdapter } from './adapters/types.js'
 import type { Persona, Project, Todo } from './schemas.js'
 import type { PushPayload, PushService } from './push.js'
@@ -66,8 +72,14 @@ const fakeAdapter: ICLIAdapter = {
   command: 'fake-cli',
   args: [],
   transport: 'oneshot',
+  // `TOOL <name>` lines stand in for a tool call between chunks of prose.
   onData: (line) =>
-    line.length > 0 ? [{ type: 'chunk', role: 'assistant', content: line }] : [],
+    line.startsWith('TOOL ')
+      ? [{ type: 'tool_use', tool: line.slice(5), content: line.slice(5) }]
+      : line.length > 0 ? [{ type: 'chunk', role: 'assistant', content: line }] : [],
+  // Kiro-style: tool calls can also arrive on stderr, mid-reply.
+  onStderr: (text) =>
+    text.split('\n').filter((l) => l.startsWith('TOOL ')).map((l) => ({ type: 'tool_use' as const, tool: l.slice(5), content: l.slice(5) })),
   buildMessageCommand: (text) => ({ command: 'fake-cli', args: [text] }),
 }
 
@@ -111,62 +123,16 @@ async function completeTurn(lines: string[]): Promise<void> {
   mockSpawnCloseCb?.(0)
 }
 
+/** Wait until the next CLI turn has spawned, without completing it. */
+async function waitForSpawn(): Promise<void> {
+  await waitFor(() => {
+    if (mockSpawnCount <= consumedSpawns || !mockSpawnCloseCb) throw new Error('next CLI turn not spawned yet')
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
-
-describe('parseStandupTail', () => {
-  const validOutput = {
-    messages: [{ persona: 'Maya', kind: 'proposal', text: 'We reviewed your list.' }],
-    proposals: [{ todoId: 'abc', summary: 'Do it', approach: 'Carefully' }],
-  }
-
-  it('parses a fenced json tail and strips it from the content', () => {
-    const content = `Team discussion here.\n\n\`\`\`json\n${JSON.stringify(validOutput)}\n\`\`\``
-    const parsed = parseStandupTail(content)
-    expect(parsed).not.toBeNull()
-    expect(parsed!.output.messages[0].persona).toBe('Maya')
-    expect(parsed!.stripped).toBe('Team discussion here.')
-  })
-
-  it('uses the LAST fenced block when several exist', () => {
-    const content = [
-      'Some code:',
-      '```json\n{"not": "the tail"}\n```',
-      'More discussion.',
-      `\`\`\`json\n${JSON.stringify(validOutput)}\n\`\`\``,
-    ].join('\n')
-    const parsed = parseStandupTail(content)
-    expect(parsed).not.toBeNull()
-    expect(parsed!.stripped).toContain('{"not": "the tail"}')
-  })
-
-  it('accepts a bare trailing JSON object', () => {
-    const content = `Discussion.\n${JSON.stringify(validOutput)}`
-    const parsed = parseStandupTail(content)
-    expect(parsed).not.toBeNull()
-    expect(parsed!.stripped).toBe('Discussion.')
-  })
-
-  it('drops a malformed dueDate instead of failing the whole tail', () => {
-    const output = {
-      ...validOutput,
-      user_actions: [
-        { text: 'Renew the cert', kind: 'task', dueDate: 'next Friday' },
-        { text: 'File taxes', kind: 'task', dueDate: null },
-        { text: 'Rotate keys', kind: 'task', dueDate: '2026-12-01' },
-      ],
-    }
-    const parsed = parseStandupTail(`\`\`\`json\n${JSON.stringify(output)}\n\`\`\``)
-    expect(parsed).not.toBeNull()
-    expect(parsed!.output.user_actions!.map((a) => a.dueDate)).toEqual([undefined, undefined, '2026-12-01'])
-  })
-
-  it('returns null when there is no valid tail', () => {
-    expect(parseStandupTail('Just prose, no JSON.')).toBeNull()
-    expect(parseStandupTail('```json\n{"messages": "wrong shape"}\n```')).toBeNull()
-  })
-})
 
 describe('parseReviewerOutput', () => {
   it('parses a fenced JSON take', () => {
@@ -275,16 +241,19 @@ describe('isStandupDue', () => {
 })
 
 describe('buildStandupPrompt', () => {
-  it('includes roster, todo ids, and the JSON contract', () => {
+  it('includes roster, todo ids, and the tool contract', () => {
     const project = { id: 'p', name: 'codepipe', path: '/x' } as Project
     const prompt = buildStandupPrompt(project, [makePersona()], [makeTodo()])
     expect(prompt).toContain('Maya (team lead)')
     expect(prompt).toContain('[11111111-1111-4111-8111-111111111111]')
-    expect(prompt).toContain('```json')
-    // The contract asks for execution briefs and typed user actions.
+    expect(prompt).toContain('team protocol v7')
+    expect(prompt).not.toContain('```json')
+    // The contract asks for execution briefs, typed user actions and the memo.
+    for (const tool of ['propose_plan', 'add_action_item', 'resolve_action_item', 'complete_idea', 'save_memo']) {
+      expect(prompt).toContain(`\`${tool}\``)
+    }
     expect(prompt).toContain('brief')
-    expect(prompt).toContain('decision | task')
-    expect(prompt).toContain('resolved_actions')
+    expect(prompt).toContain('kind `decision`')
   })
 
   it('shows the team what is already tracked, and what the user answered', () => {
@@ -321,11 +290,11 @@ describe('buildStandupPrompt', () => {
     const project = { id: 'p', name: 'codepipe', path: '/x' } as Project
     const planned = makeTodo({ status: 'proposed', text: 'Global error toasts' })
     const prompt = buildStandupPrompt(project, [makePersona()], [], { planned: [planned] })
-    expect(prompt).toContain('"options"')
-    expect(prompt).toContain('"recommended": true')
+    expect(prompt).toContain('2–4 `options`')
+    expect(prompt).toContain('marking your recommendation')
     expect(prompt).toContain('At most 4 items may wait')
     expect(prompt).toContain(`[${planned.id}] (proposed) Global error toasts`)
-    expect(prompt).toContain('completed_todos')
+    expect(prompt).toContain('report it with `complete_idea`')
   })
 })
 
@@ -552,6 +521,7 @@ describe('runTurn and StandupService', () => {
   let sessionManager: SessionManager
   let sent: PushPayload[]
   let standup: StandupService
+  let tools: AgentToolService
   let project: Project
 
   beforeEach(async () => {
@@ -575,14 +545,29 @@ describe('runTurn and StandupService', () => {
       sendToAll: async (p: PushPayload) => { sent.push(p) },
     } as unknown as PushService
     standup = new StandupService(storage, sessionManager, pushStub)
+    tools = new AgentToolService({
+      storage,
+      sessionManager,
+      onTeamActionClosed: (item) => standup.notifyActionResolved(item),
+    })
 
     project = await storage.addProject({ name: 'demo', path: tmpDir })
   })
 
   afterEach(async () => {
+    // Shutdown rejects any turn still waiting on the fake CLI, which lets
+    // the background pipelines finish; then their last writes land before
+    // the directory goes away.
     await sessionManager.shutdown()
+    await standup.whenIdle(5_000)
+    await storage.whenIdle()
     await rm(tmpDir, { recursive: true, force: true })
   })
+
+  /** What the CLI does mid-turn: call one of CodePipe's tools. */
+  async function callTool(sessionId: string, name: string, args: Record<string, unknown>) {
+    return tools.call(sessionManager.getSession(sessionId)!, name, args)
+  }
 
   it('runTurn resolves with the final assistant message', async () => {
     const session = await sessionManager.createSession('kiro', project.id)
@@ -591,6 +576,22 @@ describe('runTurn and StandupService', () => {
     const message = await turn
     expect(message?.role).toBe('assistant')
     expect(message?.content).toContain('Hi there!')
+  })
+
+  it('a tool call on stderr splits the reply: streamed text before it becomes its own message', async () => {
+    const session = await sessionManager.createSession('kiro', project.id)
+    const turn = sessionManager.runTurn(session.id, 'hello')
+    await waitForSpawn()
+    consumedSpawns = mockSpawnCount
+    // Kiro streams prose with no newline until the very end.
+    mockSpawnStdoutCb?.(Buffer.from('Let me look.'))
+    mockSpawnStderrCb?.(Buffer.from('TOOL read\n'))
+    mockSpawnStdoutCb?.(Buffer.from('Found it.\n'))
+    mockSpawnCloseCb?.(0)
+    expect((await turn)?.content).toBe('Found it.')
+    expect(sessionManager.getSession(session.id)!.messages.map((m) => `${m.role}:${m.content}`)).toEqual([
+      'user:hello', 'assistant:Let me look.', 'tool:read', 'assistant:Found it.',
+    ])
   })
 
   it('correlates queued runTurns with their own turns', async () => {
@@ -606,7 +607,7 @@ describe('runTurn and StandupService', () => {
     expect((await turnB)?.content).toContain('reply B')
   })
 
-  it('routes every team turn, even with more input queued behind it', async () => {
+  it('routes every team turn: the final reply is the lead, the narration before it collapses', async () => {
     const lead = await storage.addPersona({
       name: 'Maya', role: 'Lead', personality: '', provider: 'kiro', isLead: true,
     })
@@ -616,7 +617,7 @@ describe('runTurn and StandupService', () => {
     sessionManager.handleInput(session.id, 'second question') // queued
 
     // Turn 1 completes while input 2 is still queued — it must be routed.
-    await completeTurn(['Thinking.', '```json', JSON.stringify({ messages: [{ persona: 'Maya', text: 'Answer one' }] }), '```'])
+    await completeTurn(['Let me check the code.', 'TOOL save_memo', 'Answer one'])
     await waitFor(() => {
       const s = sessionManager.getSession(session.id)!
       if (!s.messages.some((m) => m.metadata?.personaId === lead.id && m.content === 'Answer one')) {
@@ -624,7 +625,7 @@ describe('runTurn and StandupService', () => {
       }
     })
 
-    await completeTurn(['More.', '```json', JSON.stringify({ messages: [{ persona: 'Maya', text: 'Answer two' }] }), '```'])
+    await completeTurn(['Answer two'])
     await waitFor(() => {
       const s = sessionManager.getSession(session.id)!
       if (!s.messages.some((m) => m.metadata?.personaId === lead.id && m.content === 'Answer two')) {
@@ -632,44 +633,11 @@ describe('runTurn and StandupService', () => {
       }
     })
 
-    // Both raw replies were tagged as deliberation, neither kept its JSON tail.
-    const deliberations = sessionManager
-      .getSession(session.id)!
-      .messages.filter((m) => m.metadata?.kind === 'deliberation')
-    expect(deliberations).toHaveLength(2)
-    for (const d of deliberations) expect(d.content).not.toContain('```json')
-  })
-
-  it('tracks a protocol fail streak, surfaces it at the threshold, and resets on success', async () => {
-    const lead = await storage.addPersona({
-      name: 'Maya', role: 'Lead', personality: '', provider: 'kiro', isLead: true,
-    })
-    const session = await sessionManager.createSession('kiro', project.id, { kind: 'team' })
-
-    // Three consecutive turns with no parseable tail.
-    for (let i = 1; i <= 3; i++) {
-      sessionManager.handleInput(session.id, `question ${i}`)
-      await completeTurn([`plain reply ${i}, no protocol tail`])
-      await waitFor(async () => {
-        const state = await storage.getStandupState(project.id)
-        if ((state?.protocolFailStreak ?? 0) !== i) throw new Error('streak not recorded yet')
-      })
-    }
-
-    // The degradation is surfaced once, in-thread, at the threshold.
     const messages = sessionManager.getSession(session.id)!.messages
-    const warnings = messages.filter((m) => m.role === 'system' && m.content.includes('failed to parse'))
-    expect(warnings).toHaveLength(1)
-    // Fallback attribution kept the thread coherent throughout.
-    expect(messages.filter((m) => m.metadata?.personaId === lead.id)).toHaveLength(3)
-
-    // A compliant turn resets the streak.
-    sessionManager.handleInput(session.id, 'question 4')
-    await completeTurn(['Back on protocol.', '```json', JSON.stringify({ messages: [{ persona: 'Maya', text: 'Fixed.' }] }), '```'])
-    await waitFor(async () => {
-      const state = await storage.getStandupState(project.id)
-      if (state?.protocolFailStreak !== 0) throw new Error('streak not reset yet')
-    })
+    expect(messages.filter((m) => m.metadata?.kind === 'deliberation').map((m) => m.content)).toEqual([
+      'Let me check the code.',
+    ])
+    expect(sent.map((p) => p.body)).toEqual(['Answer one', 'Answer two'])
   })
 
   it('runTurn times out when the CLI never finishes, and cancelOnTimeout frees the session', async () => {
@@ -681,7 +649,7 @@ describe('runTurn and StandupService', () => {
     expect(() => sessionManager.handleInput(session.id, 'again')).not.toThrow()
   })
 
-  it('runs the pipeline: reviewer take → synthesis → routing, memo, and gates', async () => {
+  it('runs the pipeline: reviewer take → synthesis through the tools → routing, memo, and gates', async () => {
     registerAdapter('gemini', () => ({ ...fakeAdapter, provider: 'gemini' }))
     const lead = await storage.addPersona({
       name: 'Maya', role: 'Team lead', personality: 'Pragmatic.', provider: 'kiro', isLead: true,
@@ -716,72 +684,65 @@ describe('runTurn and StandupService', () => {
     expect(reviewedTodo.takes![0].personaId).toBe(dev.id)
     expect(reviewedTodo.takes![0].concerns).toHaveLength(1)
 
-    // Turn 2: the lead's synthesis in the dated session.
-    const tail = {
-      messages: [
-        { persona: 'Maya', kind: 'proposal', text: 'We reviewed your idea — plan attached.' },
-        { persona: 'aria', kind: 'question', text: 'Should this apply to mobile too?' },
-      ],
-      proposals: [
-        { todoId: todo.id, summary: 'Backoff', approach: 'Exponential, cap 30s', effort: '2h', brief: 'Edit useSession.ts: add exponential backoff capped at 30s. Done when reconnects stop hammering.', persona: 'Aria' },
-      ],
-      user_actions: [
-        { persona: 'Aria', text: 'Add STRIPE_SECRET_KEY to the server env', notes: 'Needed for checkout', kind: 'task', steps: ['Open the Stripe dashboard → API keys', 'Copy the secret key', 'Add STRIPE_SECRET_KEY=<value> to server/.env'], todoId: todo.id, dueDate: '2026-11-30' },
-      ],
-      memo: 'Backoff proposed; waiting on Stripe key from the user.',
-    }
-    await completeTurn(['We discussed it.', '```json', JSON.stringify(tail), '```'])
+    // Turn 2: the lead's synthesis — the team acts through the tools.
+    await waitForSpawn()
+    const synthesis = { idea_id: todo.id, summary: 'Backoff', approach: 'Exponential, cap 30s', effort: '2h', brief: 'Edit useSession.ts: add exponential backoff capped at 30s. Done when reconnects stop hammering.', persona: 'Aria' }
+    const stripe = { persona: 'Aria', text: 'Add STRIPE_SECRET_KEY to the server env', notes: 'Needed for checkout', kind: 'task', steps: ['Open the Stripe dashboard → API keys', 'Copy the secret key', 'Add STRIPE_SECRET_KEY=<value> to server/.env'], todo_id: todo.id.slice(0, 8), due_date: '2026-11-30' }
+    expect((await callTool(result.sessionId!, 'propose_plan', synthesis)).isError).toBeUndefined()
+    expect((await callTool(result.sessionId!, 'add_action_item', stripe)).text).toContain('Added')
+    await callTool(result.sessionId!, 'save_memo', { memo: 'Backoff proposed; waiting on Stripe key from the user.' })
+    await completeTurn(['We reviewed your idea — plan attached.'])
 
-    // Routing is async after the turn lands — wait for its effects.
-    await waitFor(async () => {
-      const todos = await storage.listTodos(project.id)
-      if (todos[0].status !== 'proposed') throw new Error('not routed yet')
+    await waitFor(() => {
+      if (!session!.messages.some((m) => m.metadata?.personaId)) throw new Error('not routed yet')
     })
 
     // The synthesis prompt carried the reviewer's take, tagged for collapse.
     const promptMessage = session!.messages.find((m) => m.role === 'user')
     expect(promptMessage?.content).toContain('Backoff belongs in useSession.ts')
+    expect(promptMessage?.content).toContain('propose_plan')
     expect(promptMessage?.metadata?.kind).toBe('prompt')
 
     const [routedTodo] = await storage.listTodos(project.id)
+    expect(routedTodo.status).toBe('proposed')
     expect(routedTodo.proposal?.brief).toContain('exponential backoff capped at 30s')
     expect(routedTodo.proposal?.personaId).toBe(dev.id)
 
+    // The final reply is the lead's message, pushed under her name and face.
     const personaMessages = session!.messages.filter((m) => m.metadata?.personaId)
-    expect(personaMessages).toHaveLength(2)
+    expect(personaMessages).toHaveLength(1)
     expect(personaMessages[0].metadata?.personaId).toBe(lead.id)
-    expect(personaMessages[1].metadata?.personaId).toBe(dev.id)
-
-    // The memo persisted as the next standup's memory.
-    await waitFor(async () => {
-      const state = await storage.getStandupState(project.id)
-      if (!state?.memo?.includes('Backoff proposed')) throw new Error('memo not saved yet')
-    })
-
-    // Pushes: one per persona message, none for the reviewer session.
-    expect(sent).toHaveLength(2)
+    expect(sent).toHaveLength(1)
     expect(sent[0].title).toBe('Maya · demo')
     expect(sent[0].icon).toBe('/api/avatars/maya.png')
+
+    // The memo persisted as the next standup's memory — and since it was
+    // saved, no missing-tools warning.
+    const state = await storage.getStandupState(project.id)
+    expect(state?.memo).toContain('Backoff proposed')
+    await new Promise((r) => setTimeout(r, 50))
+    expect(session!.messages.some((m) => m.role === 'system' && m.content.includes("didn't load"))).toBe(false)
 
     // The reviewer session was throwaway compute — deleted after harvest.
     expect(sessionManager.listSessions().filter((s) => s.kind === 'review')).toHaveLength(0)
     expect((await storage.listSessions()).filter((s) => s.kind === 'review')).toHaveLength(0)
 
-    // The user action was recorded, attributed, typed with its guide, and
-    // linked to the idea it gates.
+    // The user action was recorded, attributed, typed with its guide, linked
+    // to the idea it gates, and shown in the thread as a card.
     const actions = await storage.listActionItems(project.id)
     expect(actions).toHaveLength(1)
-    expect(actions[0].kind).toBe('task')
+    expect(actions[0]).toMatchObject({ kind: 'task', dueDate: '2026-11-30', todoId: todo.id, personaId: dev.id })
     expect(actions[0].steps?.[2]).toContain('server/.env')
-    expect(actions[0].dueDate).toBe('2026-11-30')
-    expect(actions[0].todoId).toBe(todo.id)
+    expect(session!.messages.some((m) => m.metadata?.kind === 'action' && m.metadata.action?.itemId === actions[0].id)).toBe(true)
 
     // Forced re-run: no actionable todos left → no reviewer turns, straight
     // to synthesis; the repeated user action does not duplicate.
     const again = await standup.runStandup(project.id, { force: true })
     expect(again.ran).toBe(true)
     expect(again.sessionId).not.toBe(result.sessionId) // ephemeral: new dated session
-    await completeTurn(['Again.', '```json', JSON.stringify(tail), '```'])
+    await waitForSpawn()
+    expect((await callTool(again.sessionId!, 'add_action_item', stripe)).text).toContain('Already tracked')
+    await completeTurn(['Again.'])
     await waitFor(() => {
       const s = sessionManager.getSession(again.sessionId!)
       if (!s?.messages.some((m) => m.metadata?.personaId)) throw new Error('second run not routed yet')
@@ -791,6 +752,24 @@ describe('runTurn and StandupService', () => {
     // Nothing new (no todos, no agenda) → next non-forced run is skipped.
     const third = await standup.runStandup(project.id, { force: false })
     expect(third.ran).toBe(false)
+  })
+
+  it('warns in the thread when a standup ends without saving the memo (tools not loaded)', async () => {
+    await storage.addPersona({
+      name: 'Maya', role: 'Lead', personality: '', provider: 'kiro', isLead: true,
+    })
+    await storage.addTodo({ projectId: project.id, text: 'Some idea' })
+    const run = await standup.runStandup(project.id, { force: false })
+    // A CLI without the tools can only talk.
+    await completeTurn(['Here is my plan, in prose only.'])
+    await waitFor(() => {
+      const s = sessionManager.getSession(run.sessionId!)!
+      if (!s.messages.some((m) => m.role === 'system' && m.content.includes("didn't load for Kiro"))) {
+        throw new Error('warning not posted yet')
+      }
+    })
+    const warning = sessionManager.getSession(run.sessionId!)!.messages.find((m) => m.content.includes("didn't load"))
+    expect(warning?.content).toContain('npm run agent-tool:install')
   })
 
   it('skips a re-run when leftover todos are unchanged (status flips don\'t defeat the gate)', async () => {
@@ -803,7 +782,7 @@ describe('runTurn and StandupService', () => {
     // nothing — the todo stays actionable.
     const first = await standup.runStandup(project.id, { force: false })
     expect(first.ran).toBe(true)
-    await completeTurn(['Hmm.', '```json', JSON.stringify({ messages: [{ persona: 'Maya', text: 'Need more context.' }] }), '```'])
+    await completeTurn(['Need more context.'])
     await waitFor(() => {
       const session = sessionManager.getSession(first.sessionId!)
       if (!session?.messages.some((m) => m.metadata?.personaId)) throw new Error('not routed yet')
@@ -843,7 +822,7 @@ describe('runTurn and StandupService', () => {
     expect(work?.title).toContain('Aria')
 
     // Approved + linked before the turn ran; duplicate dispatch is refused.
-    let linked = (await storage.listTodos(project.id)).find((t) => t.id === todo.id)!
+    const linked = (await storage.listTodos(project.id)).find((t) => t.id === todo.id)!
     expect(linked.status).toBe('approved')
     expect(linked.workSessionId).toBe(result.sessionId)
     const dup = await standup.implementProposal(todo.id)
@@ -887,24 +866,22 @@ describe('runTurn and StandupService', () => {
     expect(result.ran).toBe(true)
     expect(result.sessionId).toBe(teamSession.id)
 
-    // The revised proposal flows back through the normal router.
-    const revised = {
-      messages: [{ persona: 'Maya', text: 'Updated — capped at 10s, Safari covered.' }],
-      proposals: [{ todoId: todo.id, summary: 'Backoff v2', approach: 'Plan v2', brief: 'Brief v2: cap 10s, test mobile Safari' }],
-    }
-    await completeTurn(['Discussing the feedback.', '```json', JSON.stringify(revised), '```'])
-    await waitFor(async () => {
-      const t = (await storage.listTodos(project.id)).find((x) => x.id === todo.id)!
-      if (t.proposal?.brief !== 'Brief v2: cap 10s, test mobile Safari') throw new Error('not revised yet')
+    // The revised proposal is re-saved through the tool, replacing v1.
+    await waitForSpawn()
+    expect(sessionManager.getSession(teamSession.id)!.messages.find((m) => m.role === 'user')?.content).toContain(`propose_plan\` on idea [${todo.id}]`)
+    await callTool(teamSession.id, 'propose_plan', {
+      idea_id: todo.id, summary: 'Backoff v2', approach: 'Plan v2', brief: 'Brief v2: cap 10s, test mobile Safari',
+    })
+    await completeTurn(['Updated — capped at 10s, Safari covered.'])
+    await waitFor(() => {
+      const s = sessionManager.getSession(teamSession.id)!
+      if (!s.messages.some((m) => m.metadata?.personaId === lead.id && m.content.includes('capped at 10s'))) {
+        throw new Error('not routed yet')
+      }
     })
     const t = (await storage.listTodos(project.id)).find((x) => x.id === todo.id)!
     expect(t.status).toBe('proposed')
-    expect(t.proposal?.summary).toBe('Backoff v2')
-    expect(
-      sessionManager.getSession(teamSession.id)!.messages.some(
-        (m) => m.metadata?.personaId === lead.id && m.content.includes('capped at 10s'),
-      ),
-    ).toBe(true)
+    expect(t.proposal).toMatchObject({ summary: 'Backoff v2', brief: 'Brief v2: cap 10s, test mobile Safari' })
   })
 
   it('queues resolved actions on the agenda, and the next standup consumes them', async () => {
@@ -931,7 +908,7 @@ describe('runTurn and StandupService', () => {
     // The agenda is consumed at dispatch and lands in the synthesis prompt.
     state = await storage.getStandupState(project.id)
     expect(state?.agenda).toHaveLength(0)
-    await completeTurn(['Noted.', '```json', JSON.stringify({ messages: [{ persona: 'Maya', text: 'Stripe is unblocked — nice.' }], memo: 'Stripe account exists now.' }), '```'])
+    await completeTurn(['Stripe is unblocked — nice.'])
     await waitFor(() => {
       const s = sessionManager.getSession(run.sessionId!)
       if (!s?.messages.some((m) => m.metadata?.personaId === lead.id)) throw new Error('not routed yet')
@@ -974,16 +951,17 @@ describe('runTurn and StandupService', () => {
 
     const run = await standup.runStandup(project.id, { force: true })
     expect(run.ran).toBe(true)
-    await completeTurn(['Sorted.', '```json', JSON.stringify({
-      messages: [{ persona: 'Maya', text: 'Auth is settled, Clerk it is.' }],
-      // A re-raise of the just-answered item (same text) must not duplicate,
-      // and the manual item is the user's — the team can't close it.
-      user_actions: [{ persona: 'Maya', text: 'Pick a  DATABASE', kind: 'decision' }],
-      resolved_actions: [pending.id.slice(0, 8), manual.id, 'no-such-id'],
-    }), '```'])
-    await waitFor(async () => {
-      const item = (await storage.listActionItems(project.id)).find((a) => a.id === pending.id)
-      if (item?.status !== 'done') throw new Error('not routed yet')
+    await waitForSpawn()
+    // A re-raise of the just-answered item (same text) must not duplicate,
+    // and the manual item is the user's — the team can't close it.
+    expect((await callTool(run.sessionId!, 'add_action_item', { persona: 'Maya', text: 'Pick a  DATABASE', kind: 'decision' })).text).toContain('Already tracked')
+    expect((await callTool(run.sessionId!, 'resolve_action_item', { id: pending.id.slice(0, 8) })).isError).toBeUndefined()
+    expect((await callTool(run.sessionId!, 'resolve_action_item', { id: manual.id })).text).toContain("user's own")
+    expect((await callTool(run.sessionId!, 'resolve_action_item', { id: 'no-such-id' })).isError).toBe(true)
+    await completeTurn(['Auth is settled, Clerk it is.'])
+    await waitFor(() => {
+      const s = sessionManager.getSession(run.sessionId!)
+      if (!s?.messages.some((m) => m.metadata?.personaId === lead.id)) throw new Error('not routed yet')
     })
 
     const prompt = sessionManager.getSession(run.sessionId!)!.messages.find((m) => m.role === 'user')
@@ -992,6 +970,7 @@ describe('runTurn and StandupService', () => {
 
     const items = await storage.listActionItems(project.id)
     expect(items).toHaveLength(3)
+    expect(items.find((a) => a.id === pending.id)?.status).toBe('done')
     expect(items.find((a) => a.id === manual.id)?.status).toBe('open')
     // Closed by the team → no agenda echo back to the team.
     expect((await storage.getStandupState(project.id))?.agenda ?? []).toHaveLength(0)
@@ -1013,27 +992,24 @@ describe('runTurn and StandupService', () => {
     }
 
     const run = await standup.runStandup(project.id, { force: true })
-    await completeTurn(['Done.', '```json', JSON.stringify({
-      messages: [{ persona: 'Maya', text: 'Toasts already shipped.' }],
-      completed_todos: [{ todoId: shipped.id, evidence: 'fc8e0a7' }],
-      user_actions: [
-        {
-          persona: 'Maya', text: 'Which region?', kind: 'decision', blocking: false,
-          options: [{ label: 'US', detail: 'Lowest latency', recommended: true }, { label: 'EU' }],
-        },
-        { persona: 'Maya', text: 'One too many', kind: 'decision' },
-      ],
-    }), '```'])
-    await waitFor(async () => {
-      const [t] = (await storage.listTodos(project.id)).filter((x) => x.id === shipped.id)
-      if (t.status !== 'done') throw new Error('not routed yet')
-    })
-
+    await waitForSpawn()
     const prompt = sessionManager.getSession(run.sessionId!)!.messages.find((m) => m.role === 'user')
     expect(prompt?.content).toContain(`[${shipped.id}] (proposed) Global error toasts`)
 
+    // The shipped idea moves to Done and its prerequisite closes with it —
+    // freeing the slot the next item takes.
+    expect((await callTool(run.sessionId!, 'complete_idea', { idea_id: shipped.id, evidence: 'fc8e0a7' })).text).toContain('1 prerequisite')
+    await callTool(run.sessionId!, 'add_action_item', {
+      persona: 'Maya', text: 'Which region?', kind: 'decision', blocking: false,
+      options: [{ label: 'US', detail: 'Lowest latency', recommended: true }, { label: 'EU' }],
+    })
+    const overCap = await callTool(run.sessionId!, 'add_action_item', { persona: 'Maya', text: 'One too many', kind: 'decision' })
+    expect(overCap.isError).toBe(true)
+    expect(overCap.text).toContain('already waiting')
+    await completeTurn(['Toasts already shipped.'])
+
+    expect((await storage.listTodos(project.id)).find((x) => x.id === shipped.id)?.status).toBe('done')
     const items = await storage.listActionItems(project.id)
-    // The shipped idea's prerequisite closed with it — freeing the slot.
     expect(items.find((a) => a.id === prereq.id)?.status).toBe('done')
     const region = items.find((a) => a.text === 'Which region?')!
     expect(region.blocking).toBe(false)
@@ -1041,11 +1017,25 @@ describe('runTurn and StandupService', () => {
       { label: 'US', detail: 'Lowest latency', recommended: true },
       { label: 'EU' },
     ])
-    // Over the cap: discarded, and the thread says so.
     expect(items.some((a) => a.text === 'One too many')).toBe(false)
     const system = sessionManager.getSession(run.sessionId!)!.messages.filter((m) => m.role === 'system')
     expect(system.some((m) => m.content.includes('already implemented (fc8e0a7)'))).toBe(true)
-    expect(system.some((m) => m.content.includes('were not added'))).toBe(true)
+  })
+
+  it('a chat agent closing a team item tells the next standup; closing the user\'s own does not', async () => {
+    const lead = await storage.addPersona({
+      name: 'Maya', role: 'Lead', personality: '', provider: 'kiro', isLead: true,
+    })
+    const teamItem = await storage.addActionItem({ projectId: project.id, text: 'Add the API key', personaId: lead.id })
+    const mine = await storage.addActionItem({ projectId: project.id, text: 'Call the bank' })
+    const chat = await sessionManager.createSession('kiro', project.id)
+
+    await callTool(chat.id, 'resolve_action_item', { id: teamItem.id, resolution: 'Added it to .env' })
+    await callTool(chat.id, 'resolve_action_item', { id: mine.id })
+    const agenda = (await storage.getStandupState(project.id))?.agenda ?? []
+    expect(agenda).toHaveLength(1)
+    expect(agenda[0]).toContain('Add the API key')
+    expect(agenda[0]).toContain('Added it to .env')
   })
 
   it('relays declines and option answers to the next standup', async () => {

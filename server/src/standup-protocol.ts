@@ -1,81 +1,26 @@
 /**
- * The team-output protocol: the contract between CodePipe and the CLI that
- * role-plays the personas. This module owns both sides of it — building the
- * prompt that states the contract, and parsing/validating what comes back.
- * Everything here is pure (no I/O), so it's trivially testable and the
- * contract can only drift in one file.
+ * The team protocol: what CodePipe tells the CLI that role-plays the
+ * personas, and the pure helpers around it. This module builds the prompts
+ * (standup, reviewer, refine, implement) and parses reviewer takes; the team
+ * acts through CodePipe's tools (agent-tool-registry.ts), whose names these
+ * prompts refer to.
  *
- * The wire format is a fenced ```json block at the END of each team reply.
- * Parsing is deliberately lenient (last fence wins, bare trailing object
- * accepted) and failure is expected — callers degrade to lead attribution.
- * Bump PROTOCOL_VERSION when the contract changes shape: the version is
- * stated in the prompt, so a resumed thread carrying older instructions in
- * its CLI context is detectable rather than a silent mystery.
+ * Everything here is pure (no I/O), so it's trivially testable. Bump
+ * PROTOCOL_VERSION when the contract changes shape: the version is stated
+ * in the prompt, so a thread carrying older instructions is recognizable.
  */
 
 import {
-  StandupOutputSchema,
   ReviewerOutputSchema,
   type ActionItem,
   type Persona,
   type Project,
   type ReviewerOutput,
-  type StandupOutput,
   type Todo,
 } from './schemas.js'
 import { localDay } from './dates.js'
 
-export const PROTOCOL_VERSION = 6
-
-export interface ParsedStandupTail {
-  output: StandupOutput
-  /** The message content with the JSON tail removed. */
-  stripped: string
-}
-
-/**
- * Extract and validate the structured JSON tail from a team turn's final
- * message. Accepts a trailing ```json fenced block (preferred) or a trailing
- * bare JSON object. Returns null when no valid tail is found.
- */
-export function parseStandupTail(content: string): ParsedStandupTail | null {
-  // Preferred: the LAST fenced json block.
-  const fenceRe = /```(?:json)?\s*\n([\s\S]*?)```/g
-  let lastFence: { raw: string; start: number; end: number } | null = null
-  for (let m = fenceRe.exec(content); m !== null; m = fenceRe.exec(content)) {
-    lastFence = { raw: m[1], start: m.index, end: m.index + m[0].length }
-  }
-
-  if (lastFence) {
-    const output = tryParseOutput(lastFence.raw)
-    if (output) {
-      const stripped = (content.slice(0, lastFence.start) + content.slice(lastFence.end)).trim()
-      return { output, stripped }
-    }
-  }
-
-  // Fallback: a bare JSON object at the very end of the message.
-  const braceStart = content.lastIndexOf('\n{')
-  if (braceStart >= 0) {
-    const candidate = content.slice(braceStart).trim()
-    const output = tryParseOutput(candidate)
-    if (output) {
-      return { output, stripped: content.slice(0, braceStart).trim() }
-    }
-  }
-
-  return null
-}
-
-function tryParseOutput(raw: string): StandupOutput | null {
-  try {
-    const parsed = JSON.parse(raw)
-    const result = StandupOutputSchema.safeParse(parsed)
-    return result.success ? result.data : null
-  } catch {
-    return null
-  }
-}
+export const PROTOCOL_VERSION = 7
 
 /** Resolve a persona reference (id or name, case-insensitive). */
 export function matchPersona(personas: Persona[], ref: string): Persona | null {
@@ -137,7 +82,7 @@ function formatTrackedActions(actions: ActionItem[], today: string): string {
   const sections: string[] = []
   if (open.length > 0) {
     sections.push(
-      `Already waiting on the user — ${open.length} of at most ${MAX_OPEN_ACTIONS} (tracked — do NOT raise these again in \`user_actions\`):\n` +
+      `Already waiting on the user — ${open.length} of at most ${MAX_OPEN_ACTIONS} (tracked — do NOT raise these again with \`add_action_item\`):\n` +
         open
           .map(
             (a) =>
@@ -169,7 +114,7 @@ function formatTrackedActions(actions: ActionItem[], today: string): string {
 function formatPlannedTodos(planned: Todo[]): string {
   if (planned.length === 0) return ''
   return (
-    'Ideas already planned (proposed/approved — not for review today). If one is ALREADY implemented in the codebase (check `git log` and the code), report it in `completed_todos`:\n' +
+    'Ideas already planned (proposed/approved — not for review today). If one is ALREADY implemented in the codebase (check `git log` and the code), report it with `complete_idea`:\n' +
     planned.map((t) => `- [${t.id}] (${t.status}) ${t.text}`).join('\n') +
     '\n'
   )
@@ -334,9 +279,8 @@ function salvageReviewerFields(text: string): ReviewerOutput | null {
 
 /**
  * Build the standup-session turn for refining a proposal from user feedback.
- * Runs in a standup ('team') session, so the JSON protocol applies — the
- * revised proposal re-emitted with the same todoId flows through the normal
- * router and replaces the stored one.
+ * Runs in a standup ('team') session: the team re-saves the revised
+ * proposal with `propose_plan` on the same idea, replacing the stored one.
  */
 export function buildRefinePrompt(todo: Todo, personas: Persona[], feedback: string): string {
   const proposal = todo.proposal
@@ -351,7 +295,7 @@ export function buildRefinePrompt(todo: Todo, personas: Persona[], feedback: str
     `The user's feedback:`,
     feedback,
     '',
-    'Revise the proposal — especially the `brief`, since that is what the builder will run on. Read the codebase if needed but modify nothing. Re-emit the FULL updated proposal in `proposals` with the same todoId (summary, approach, effort, brief). Have the proposing team member reply with one short message saying what changed. End with the same ```json block as always.',
+    `Revise the proposal — especially the \`brief\`, since that is what the builder will run on. Read the codebase if needed but modify nothing. Save the FULL updated proposal with \`propose_plan\` on idea [${todo.id}] (summary, approach, effort, brief) — it replaces the current one. Then reply with one short message saying what changed.`,
   ]
     .filter(Boolean)
     .join('\n')
@@ -468,61 +412,18 @@ export function buildStandupPrompt(
     '',
     `You speak for the whole team, synthesizing the takes above — where reviewers disagree, weigh the disagreement rather than smoothing it over. Investigate the codebase if you need to verify something, but this is PLANNING: read anything, modify nothing.`,
     '',
-    `Then END your reply with a single fenced \`\`\`json block (nothing after it) in exactly this shape (team output protocol v${PROTOCOL_VERSION}):`,
+    `Record the outcome with CodePipe's tools (team protocol v${PROTOCOL_VERSION}). They are the ONLY way anything you decide reaches the user's board — text alone changes nothing:`,
     '',
-    '```json',
-    JSON.stringify(
-      {
-        messages: [
-          {
-            persona: '<your name — the lead speaks for the team>',
-            kind: 'proposal | question | update',
-            text: '<one short chat message to the user summarizing the standup>',
-          },
-        ],
-        proposals: [
-          {
-            todoId: '<the [id] of the todo>',
-            summary: '<one-line summary>',
-            approach: '<how to implement it, for the user to read>',
-            effort: '<rough estimate>',
-            brief: '<the execution prompt — see rules below>',
-            persona: '<who proposes it>',
-          },
-        ],
-        user_actions: [
-          {
-            persona: '<who raised it>',
-            text: '<a task or decision only the user can handle>',
-            notes: '<optional: short context — why it is needed>',
-            kind: 'decision | task',
-            options: [
-              { label: '<for decisions: a short answer the user can tap>', detail: '<one line: what it means>', recommended: true },
-              { label: '<another answer>', detail: '<one line>' },
-            ],
-            steps: ['<for tasks: concrete numbered steps to complete it>'],
-            blocking: true,
-            dueDate: '<optional YYYY-MM-DD: only a real external deadline>',
-            todoId: '<the [id] of the idea this gates, when it is a prerequisite of one>',
-          },
-        ],
-        resolved_actions: ['<[id] of a tracked user action that no longer blocks anything>'],
-        completed_todos: [{ todoId: '<[id] of a planned idea that is already implemented>', evidence: '<commit hash or file that proves it>' }],
-        memo: '<handoff note to your next standup: open questions, decisions made, what to revisit — a few sentences>',
-      },
-      null,
-      2,
-    ),
-    '```',
+    '- `propose_plan` — once per idea you formed a recommendation for, using its [id]. `approach` is the human-readable plan; `brief` is the real deliverable of this standup: the EXACT prompt a coding agent will be handed to implement it. Write the brief with everything the agent needs and nothing it doesn\'t — the goal, the specific files and docs to read first (by path, e.g. `docs/pos.md`, `src/foo.ts`), hard constraints and things NOT to touch, and a definition of done (tests to run, behavior to verify). Ground it in what you actually found in the codebase. The brief must STAND ALONE: never reference the team, the takes, this conversation, or who proposed what. Credit the proposer with `persona` — they will build it.',
+    '- `add_action_item` — ONLY for things only the user can do that block progress. Use kind `decision` when the user must choose or clarify something: phrase `text` as the question and give 2–4 `options` (short tappable `label`, one-line `detail`), marking your recommendation, so the user can answer in one tap; keep `notes` to brief context. Use kind `task` for external setup — accounts, secrets, purchases — with `steps`: a concrete walkthrough (console URLs, exact commands, which file to put the value in). Set `todo_id` when it gates a specific idea, `blocking: false` when it blocks nothing, and `due_date` ONLY for a real external deadline you found in the code, docs or conversation (an expiring key, a date the user named) — never an invented target. If a reviewer\'s take holds a question only the user can answer, raise it here as a decision credited to that reviewer via `persona`. At most ' + MAX_OPEN_ACTIONS + ' items may wait on the user at once: at the limit, raise something only if it matters more than a waiting item, and close that item first. Never re-raise what is already waiting or recently settled — build on the user\'s answer instead. Deadlines on tracked items are the user\'s: weigh overdue ones, but don\'t re-raise an item to change its date.',
+    '- `resolve_action_item` — close a waiting team item that no longer blocks anything (settled in conversation, or moot after a plan change).',
+    '- `complete_idea` — a planned idea you VERIFIED is already implemented, with `evidence` the user can check (a commit hash, a file). Only what you confirmed in the code.',
+    '- `save_memo` — ALWAYS, once, after everything else: your handoff note. The next standup starts fresh and receives ONLY this note plus the board — record decisions made, open questions, and anything you would otherwise forget. Under a paragraph.',
+    '- `list_action_items` / `add_idea` are there if you need them.',
     '',
-    'Rules for the JSON block:',
-    '- `messages` come from YOU, the lead, only — usually exactly one short summary, personal like a colleague texting. Do NOT fabricate messages from other team members: they already spoke through their independent takes, which the user sees on the board. If a reviewer\'s take contains a question the user must answer, turn it into a `user_actions` entry with kind `decision`, credited to that reviewer via `persona`.',
-    '- `proposals` maps your recommendations onto the todo ids above. Only include todos you actually formed a recommendation for. `approach` is the human-readable plan; `brief` is the real deliverable of this standup: the EXACT prompt a coding agent will be handed to implement the proposal. Write the brief with everything the agent needs and nothing it doesn\'t — the goal, the specific files and docs to read first (by path, e.g. `docs/pos.md`, `src/foo.ts`), hard constraints and things NOT to touch, and a definition of done (tests to run, behavior to verify). Ground it in what you actually found in the codebase. The brief must STAND ALONE: never reference the team, the takes, this conversation, or who proposed what — the executing agent knows none of that and needs none of it.',
-    '- `user_actions` are tasks ONLY the user can do and that block progress. Set `kind`: use `decision` when the user must choose or clarify something — phrase `text` as the question and give 2–4 `options` (short tappable `label`, one-line `detail`), marking your recommendation with `recommended: true`, so the user can answer in one tap; keep `notes` to brief context, not a restatement of the options. Use `task` for external setup — accounts, secrets, purchases — and then include `steps`: a concrete numbered walkthrough (console URLs, exact commands, which file to put the value in). When an action gates a specific idea (an API key its build needs), set `todoId` to that idea\'s [id] so it shows as a prerequisite on the idea\'s card. Set `blocking: false` when it is worth knowing but blocks nothing. Set `dueDate` (YYYY-MM-DD) ONLY for a real external deadline you found in the code, docs or conversation — a certificate or key that expires, a filing or launch date the user named — never an invented target; omit it otherwise (the user sets their own deadlines, and the reminder they get must mean something). Deadlines on tracked items are the user\'s: weigh overdue ones when prioritizing, but do not re-raise an item to change its date. Include them sparingly and omit the array when there are none. At most ' + MAX_OPEN_ACTIONS + ' items may wait on the user at once — new ones past that are discarded — so at the limit, raise something only if it matters more than a waiting item, and drop that item via `resolved_actions`. Only NEW blockers belong here: anything already listed as waiting on the user is tracked, and anything recently resolved is settled — build on the user\'s answer instead of re-asking.',
-    '- `resolved_actions` lists the [id]s of items waiting on the user that no longer block anything — the user settled it in this conversation, or the plan changed so it is moot. Omit it when there are none.',
-    '- `completed_todos` lists planned ideas you VERIFIED are already implemented (built outside this flow) — with `evidence` the user can check, like a commit hash. They move to Done. Only report what you confirmed in the code; omit it otherwise.',
-    '- `memo` is your memory: the next standup starts fresh and receives ONLY this note plus the board. Record decisions made, open questions, and anything you would otherwise forget. Keep it under a paragraph.',
-    '- The user may reply in this session today. In EVERY reply (including answers to their follow-ups), end with the same ```json block — usually a single message from whichever team member is answering, plus an updated `memo` if something worth remembering changed.',
+    'Then finish with your message to the user — that final reply is what they read, and get notified with. Make it one short summary from you, the lead, personal like a colleague texting. Don\'t write messages for other team members: they already spoke through their takes, which the user sees on the board.',
+    '',
+    'The user may reply in this session today. Answer as the team, and use the same tools whenever something changes: a revised proposal, an item settled, a memo worth updating.',
   ]
     .filter(Boolean)
     .join('\n')

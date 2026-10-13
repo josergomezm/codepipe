@@ -16,8 +16,10 @@
  *   {event:'result', result:{status, error?, denied_actions?,
  *      duration_seconds, usage:{total_tokens}}}                      → message_complete
  *
- * `--dangerously-skip-permissions` is required: headless mode can't prompt,
- * so without it agy silently denies shell commands (even in accept-edits).
+ * `--dangerously-skip-permissions` is on by default: headless mode can't
+ * prompt, so without it agy silently denies shell commands (even in
+ * accept-edits). It and the other flags come from the provider launch
+ * settings (provider-settings.ts).
  */
 
 import { platform } from 'os'
@@ -29,6 +31,8 @@ import type { ProviderType } from '../schemas.js'
 import type { ICLIAdapter, AdapterEvent } from './types.js'
 import { summarizeToolInput } from './tool-summary.js'
 import { ISOLATED_CHILD } from '../child-options.js'
+import type { McpServerSpec } from '../agent-tools.js'
+import { defaultSettings, settingsToArgs, type SettingValues } from '../provider-settings.js'
 
 /** Resolve the Antigravity CLI binary: `AGY_CLI_BIN` override (falls back to `GEMINI_CLI_BIN`), else platform default. */
 export function resolveAgyBinary(): string {
@@ -105,7 +109,8 @@ function resultMetadata(result: Record<string, unknown>): { credits: string; tim
 export class GeminiAdapter implements ICLIAdapter {
   readonly provider: ProviderType = 'gemini'
   readonly command = resolveAgyBinary()
-  readonly args: string[] = ['--output-format', 'stream-json', '--dangerously-skip-permissions']
+  /** Permission skipping, mode, sandbox… come from the launch settings. */
+  readonly args: string[] = ['--output-format', 'stream-json']
   /** Conversation ID is captured inline (cli_session event) and resumed via --conversation. */
   readonly transport = 'oneshot' as const
 
@@ -216,8 +221,10 @@ export class GeminiAdapter implements ICLIAdapter {
     cliSessionId: string | null,
     attachments?: { path: string; mimeType: string }[],
     model?: string | null,
+    _mcpServers?: McpServerSpec[],
+    settings: SettingValues = defaultSettings('gemini'),
   ): { command: string; args: string[] } {
-    const args = [...this.args]
+    const args = [...this.args, ...settingsToArgs('gemini', settings)]
 
     if (model) {
       args.push('--model', model)

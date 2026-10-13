@@ -2,6 +2,8 @@ import { z } from 'zod'
 import type { ProviderType } from '../schemas.js'
 import { MessageRoleSchema } from '../schemas.js'
 import type { AcpProfile } from '../acp/profile.js'
+import type { McpServerSpec } from '../agent-tools.js'
+import type { SettingValues } from '../provider-settings.js'
 
 // ---------------------------------------------------------------------------
 // AdapterEvent — Zod schemas + TypeScript types
@@ -148,12 +150,18 @@ export interface ICLIAdapter {
    * @param cliSessionId — the CLI's session ID for multi-turn (null for first message)
    * @param attachments — optional file attachments
    * @param model — the session's selected model, if any
+   * @param mcpServers — MCP servers to give the agent for this turn (CodePipe's
+   *   own tools). Adapters whose CLI can't take them per invocation ignore it.
+   * @param settings — resolved launch settings for this session (see
+   *   provider-settings.ts). Absent = the provider's defaults.
    */
   buildMessageCommand?(
     text: string,
     cliSessionId: string | null,
     attachments?: { path: string; mimeType: string }[],
     model?: string | null,
+    mcpServers?: McpServerSpec[],
+    settings?: SettingValues,
   ): { command: string; args: string[] }
 }
 

@@ -21,6 +21,7 @@ import type { JsonRpcRequest } from './jsonrpc.js'
 import { SPEC_ACP_PROFILE, type AcpProfile } from './profile.js'
 import { log } from '../logger.js'
 import { ISOLATED_CHILD } from '../child-options.js'
+import type { McpServerSpec } from '../agent-tools.js'
 
 // ── Minimal child-process surface (so tests can fake it) ──────────────────
 
@@ -62,6 +63,8 @@ export interface AcpDriverOptions {
   /** Provider ACP dialect (method names, launch args, post-session hook). */
   profile?: AcpProfile
   spawn?: AcpSpawnFn
+  /** MCP servers the agent gets for this session (CodePipe's own tools). */
+  mcpServers?: McpServerSpec[]
   protocolVersion?: number
   clientName?: string
   clientVersion?: string
@@ -153,12 +156,20 @@ export class AcpSessionDriver {
       clientInfo: { name: this.opts.clientName ?? 'codepipe', version: this.opts.clientVersion ?? '0.1.0' },
     })
 
+    // ACP's stdio server shape: env as a name/value list.
+    const mcpServers = (this.opts.mcpServers ?? []).map((s) => ({
+      name: s.name,
+      command: s.command,
+      args: s.args,
+      env: Object.entries(s.env).map(([name, value]) => ({ name, value })),
+    }))
+
     if (resumeSessionId) {
-      const result = await client.request(methods.loadSession, { sessionId: resumeSessionId, cwd: this.opts.cwd, mcpServers: [] })
+      const result = await client.request(methods.loadSession, { sessionId: resumeSessionId, cwd: this.opts.cwd, mcpServers })
       this.sessionId = resumeSessionId
       this.emitModels(result)
     } else {
-      const result = (await client.request(methods.newSession, { cwd: this.opts.cwd, mcpServers: [] })) as
+      const result = (await client.request(methods.newSession, { cwd: this.opts.cwd, mcpServers })) as
         | { sessionId?: string; session?: { id?: string } }
         | undefined
       const id = result?.sessionId ?? result?.session?.id

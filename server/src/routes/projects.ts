@@ -5,6 +5,7 @@ import path from 'path'
 
 import type { IStorageLayer } from '../storage.js'
 import { CreateProjectRequestSchema, ProjectDevServerSchema, ProjectStandupConfigSchema } from '../schemas.js'
+import { cleanProviderOverrides } from '../provider-settings.js'
 import { log } from '../logger.js'
 import type { DevServerManager } from '../dev-server-manager.js'
 import { getServeStatus, getTailscaleHostname } from '../tailscale.js'
@@ -133,6 +134,17 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
           }
           updates.standup = parsed.data
         }
+      }
+
+      // Launch-setting overrides, `{ provider: { key: value } }`. Null or an
+      // empty map clears them; each value is checked against the spec.
+      if (req.body.providerSettings !== undefined) {
+        const result = cleanProviderOverrides(req.body.providerSettings)
+        if (!result.ok) {
+          res.status(400).json({ error: result.error })
+          return
+        }
+        updates.providerSettings = result.overrides
       }
 
       const updated = await storage.updateProject(id, updates)

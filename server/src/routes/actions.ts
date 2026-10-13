@@ -5,6 +5,7 @@ import type { StandupService } from '../standup.js'
 import { CreateActionItemRequestSchema, UpdateActionItemRequestSchema } from '../schemas.js'
 import { log } from '../logger.js'
 import { buildActionItemsCalendar } from '../action-calendar.js'
+import { recordActionItem } from '../action-items.js'
 
 /**
  * Create an Express Router for action items — tasks only the user can do
@@ -47,7 +48,8 @@ export function createActionRoutes(storage: IStorageLayer, standup?: StandupServ
     }
   })
 
-  // POST /api/actions — add an action item manually
+  // POST /api/actions — add an action item manually (an identical open item
+  // is returned instead of duplicated)
   router.post('/', async (req, res) => {
     const parsed = CreateActionItemRequestSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -61,8 +63,10 @@ export function createActionRoutes(storage: IStorageLayer, standup?: StandupServ
         res.status(404).json({ error: 'Project not found' })
         return
       }
-      const item = await storage.addActionItem(parsed.data)
-      res.status(201).json(item)
+      const { projectId, ...draft } = parsed.data
+      const result = await recordActionItem(storage, projectId, draft)
+      if (result.status === 'over_cap') throw new Error('Unexpected cap on a manual item')
+      res.status(result.status === 'added' ? 201 : 200).json(result.item)
     } catch (err) {
       log.error('api', 'Failed to add action item', err)
       res.status(500).json({ error: 'Failed to add action item' })

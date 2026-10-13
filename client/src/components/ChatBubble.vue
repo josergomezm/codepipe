@@ -9,7 +9,10 @@ function usageLabel(value: string): string {
 import { computed, ref } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { useTeamStore } from '@/stores/team'
+import { useSessionsStore } from '@/stores/sessions'
+import { useUiStore } from '@/stores/ui'
 import PersonaAvatar from '@/components/PersonaAvatar.vue'
+import ChatToolCard from '@/components/ChatToolCard.vue'
 import type { ChatMessage } from '@/api/client'
 
 const props = defineProps<{
@@ -17,6 +20,8 @@ const props = defineProps<{
 }>()
 
 const teamStore = useTeamStore()
+const sessionsStore = useSessionsStore()
+const ui = useUiStore()
 
 const md = new MarkdownIt({
   html: false,
@@ -46,6 +51,7 @@ const isUser = computed(() => props.message.role === 'user')
 const isAssistant = computed(() => props.message.role === 'assistant')
 const isTool = computed(() => props.message.role === 'tool')
 const isSystem = computed(() => props.message.role === 'system')
+const isToolCard = computed(() => props.message.metadata?.kind === 'action' || props.message.metadata?.kind === 'idea')
 
 // Team sessions: persona attribution + collapsed deliberation transcript
 const persona = computed(() => {
@@ -61,6 +67,25 @@ const deliberationOpen = ref(false)
 const isPrompt = computed(() => props.message.metadata?.kind === 'prompt')
 const promptOpen = ref(false)
 
+/**
+ * Open the quick-add dialog for this reply: the selected text (if any, and
+ * inside this message) becomes the item, otherwise the reply is its context.
+ */
+const bubble = ref<HTMLElement | null>(null)
+function addAsActionItem() {
+  const selection = window.getSelection()
+  const selected =
+    selection && bubble.value && selection.anchorNode && bubble.value.contains(selection.anchorNode)
+      ? selection.toString().trim()
+      : ''
+  const projectId = sessionsStore.sessions.find((s) => s.id === sessionsStore.activeSessionId)?.projectId
+  ui.openQuickAdd(
+    selected
+      ? { projectId, text: selected.replace(/\s+/g, ' ').slice(0, 2000) }
+      : { projectId, notes: props.message.content.trim().slice(0, 10000) },
+  )
+}
+
 const copied = ref(false)
 async function copyContent() {
   await navigator.clipboard.writeText(props.message.content)
@@ -70,8 +95,11 @@ async function copyContent() {
 </script>
 
 <template>
+  <!-- A card an agent tool posted (action item / idea) -->
+  <ChatToolCard v-if="isSystem && isToolCard" :message="message" />
+
   <!-- System message: centered, muted -->
-  <div v-if="isSystem" class="flex justify-center px-4 py-2">
+  <div v-else-if="isSystem" class="flex justify-center px-4 py-2">
     <div class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-center dark:border-amber-800/40 dark:bg-amber-900/20">
       <p class="whitespace-pre-wrap text-sm text-amber-800 dark:text-amber-300">{{ message.content }}</p>
     </div>
@@ -158,7 +186,7 @@ async function copyContent() {
   <!-- Assistant message: left-aligned, gray (persona-attributed in team sessions) -->
   <div v-else-if="isAssistant" class="group relative flex items-start gap-2 px-4 py-1">
     <PersonaAvatar v-if="persona" :persona="persona" size="sm" class="mt-1" />
-    <div class="max-w-[75%] overflow-hidden rounded-2xl bg-gray-100 px-4 py-2.5 dark:bg-gray-800">
+    <div ref="bubble" class="max-w-[75%] overflow-hidden rounded-2xl bg-gray-100 px-4 py-2.5 dark:bg-gray-800">
       <div v-if="persona" class="mb-1 flex items-baseline gap-1.5">
         <span class="text-xs font-semibold text-gray-800 dark:text-gray-200">{{ persona.name }}</span>
         <span class="text-[10px] text-gray-400 dark:text-gray-500">{{ persona.role }}</span>
@@ -183,6 +211,16 @@ async function copyContent() {
     >
       <svg v-if="!copied" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
       <svg v-else xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-green-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+    </button>
+    <!-- Add as action item: the selected text, or this reply as context -->
+    <button
+      v-if="!isStreaming"
+      class="mt-1 rounded p-1 text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
+      title="Add as action item (select text first to use it as the item)"
+      @mousedown.prevent
+      @click="addAsActionItem"
+    >
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 8v8M8 12h8"/></svg>
     </button>
   </div>
 </template>

@@ -25,6 +25,11 @@ const router = createRouter({
       component: () => import('../views/LedgerView.vue'),
     },
     {
+      path: '/providers',
+      name: 'providers',
+      component: () => import('../views/ProviderSettingsView.vue'),
+    },
+    {
       path: '/team/:personaId',
       name: 'persona',
       component: () => import('../views/PersonaView.vue'),

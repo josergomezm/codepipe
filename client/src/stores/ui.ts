@@ -35,5 +35,22 @@ export const useUiStore = defineStore('ui', () => {
     sidebarOpen.value = false
   }
 
-  return { sidebarOpen, darkMode, toggleSidebar, closeSidebar, toggleDarkMode }
+  /**
+   * The quick-add dialog for action items — opened from any chat (header
+   * button, or a message's "Add as action item"), prefilled with what's known.
+   */
+  const quickAdd = ref<{ projectId?: string; text?: string; notes?: string } | null>(null)
+
+  function openQuickAdd(prefill: { projectId?: string; text?: string; notes?: string } = {}) {
+    quickAdd.value = prefill
+  }
+
+  function closeQuickAdd() {
+    quickAdd.value = null
+  }
+
+  return {
+    sidebarOpen, darkMode, toggleSidebar, closeSidebar, toggleDarkMode,
+    quickAdd, openQuickAdd, closeQuickAdd,
+  }
 })

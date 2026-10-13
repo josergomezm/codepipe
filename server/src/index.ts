@@ -26,6 +26,8 @@ import { createBrowseRoutes } from './routes/browse.js'
 import { createUploadRoutes } from './routes/upload.js'
 import { createTodoRoutes } from './routes/todos.js'
 import { createActionRoutes } from './routes/actions.js'
+import { createAgentRoutes } from './routes/agent.js'
+import { AgentToolService } from './agent-tool-registry.js'
 import { DueReminderService } from './due-reminders.js'
 import { createPersonaRoutes } from './routes/personas.js'
 import { createStandupRoutes } from './routes/standup.js'
@@ -38,6 +40,8 @@ import { log, setCrashContext } from './logger.js'
 import { onFatal } from './crash-guard.js'
 import { startHealthMonitor } from './health.js'
 import { createDiagnosticsRoutes } from './routes/diagnostics.js'
+import { ProviderSettingsStore } from './provider-settings-store.js'
+import { createProviderSettingsRoutes } from './routes/provider-settings.js'
 
 // ---------------------------------------------------------------------------
 // Initialize storage and session manager
@@ -53,13 +57,25 @@ await storage.ensureDataDir()
 const pushService = new PushService({ dataDir: './data' })
 log.info('server', `Push notifications: ${pushService.isEnabled() ? 'enabled' : 'disabled (no VAPID keys)'}`)
 
-const sessionManager = new SessionManager(storage, pushService)
+// Provider launch settings (permission modes, tool trust, extra flags…) —
+// the global layer; projects and personas override it.
+const providerSettings = new ProviderSettingsStore({ dataDir: './data' })
+await providerSettings.load()
+
+const sessionManager = new SessionManager(storage, pushService, providerSettings)
 const devServerManager = new DevServerManager()
 const serviceManager = new ServiceManager()
 
 // The proactive team layer: daily standups over the per-project todo list,
 // routed through personas. Registers the team-turn hook on the session manager.
 const standupService = new StandupService(storage, sessionManager, pushService)
+// The tools agents call from any chat (via CodePipe's MCP server). A team
+// item closed from a chat joins the next standup's agenda.
+const agentTools = new AgentToolService({
+  storage,
+  sessionManager,
+  onTeamActionClosed: (item) => standupService.notifyActionResolved(item),
+})
 // Daily push for action items due today or overdue.
 const dueReminders = new DueReminderService(storage, pushService, { dataDir: './data' })
 
@@ -109,10 +125,12 @@ app.use('/api/upload', createUploadRoutes('./data/uploads'))
 app.use('/api/push', createPushRoutes(pushService))
 app.use('/api/todos', createTodoRoutes(storage, standupService))
 app.use('/api/actions', createActionRoutes(storage, standupService))
+app.use('/api/agent', createAgentRoutes(storage, sessionManager, agentTools))
 app.use('/api/personas', createPersonaRoutes(storage, './data/avatars'))
 app.use('/api/avatars', express.static('./data/avatars', { maxAge: '1d' }))
 app.use('/api/standup', createStandupRoutes(standupService, storage))
 app.use('/api/diagnostics', createDiagnosticsRoutes(() => healthCounts()))
+app.use('/api/provider-settings', createProviderSettingsRoutes(providerSettings, storage))
 
 // ---------------------------------------------------------------------------
 // HTTP + WebSocket server
@@ -173,6 +191,10 @@ if (isMainModule) {
       await serviceManager.shutdownAll()
       terminalManager.killAll()
       await sessionManager.shutdown()
+      // Standup pipelines end once their turns are rejected above; let
+      // their final bookkeeping land rather than cutting it off mid-write.
+      await standupService.whenIdle(5_000)
+      await storage.whenIdle()
     } catch (err) {
       log.error('server', 'Error during shutdown', err)
     }

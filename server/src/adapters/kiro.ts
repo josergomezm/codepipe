@@ -9,7 +9,8 @@
  * Multi-turn conversations work via `--resume-id <cliSessionId>`, which
  * tells the CLI to continue an existing conversation.
  *
- * Tool use is auto-approved with `--trust-all-tools`.
+ * Tool use is auto-approved with `--trust-all-tools` by default; the trust
+ * flags come from the provider launch settings (provider-settings.ts).
  */
 
 import { platform } from 'os'
@@ -25,6 +26,24 @@ import {
   TOOL_NAME_PATTERN,
 } from './kiro-patterns.js'
 import { ISOLATED_CHILD } from '../child-options.js'
+import { stripAnsi } from './strip-ansi.js'
+import type { McpServerSpec } from '../agent-tools.js'
+import { defaultSettings, settingsToArgs, type SettingValues } from '../provider-settings.js'
+
+/**
+ * A tool call as Kiro reports it on stderr: `[tool] Reading src/a.ts:1`,
+ * `[tool] Running: @codepipe/add_action_item`. Its `[tool] status: …`
+ * follow-up lines carry nothing new and are skipped.
+ */
+const STDERR_TOOL_LINE = /^\[tool\]\s+(?!status:)(.+)$/
+
+/** Tool name + summary from a stderr tool line's body. */
+export function parseStderrTool(body: string): { tool: string; content: string } {
+  const running = /^Running:\s*@?(\S+)\s*(.*)$/.exec(body)
+  if (running) return { tool: running[1], content: running[2] || running[1] }
+  const [verb, ...rest] = body.split(/\s+/)
+  return { tool: verb.toLowerCase(), content: rest.join(' ') || body }
+}
 
 /**
  * Resolve the Kiro CLI binary name for the current platform.
@@ -143,7 +162,8 @@ export async function listKiroModels(): Promise<{ id: string; name?: string }[]>
 export class KiroAdapter implements ICLIAdapter {
   readonly provider: ProviderType = 'kiro'
   readonly command = resolveKiroBinary()
-  readonly args: string[] = ['chat', '--no-interactive', '--trust-all-tools', '--wrap', 'never']
+  /** Tool trust (`--trust-all-tools` by default) comes from the launch settings. */
+  readonly args: string[] = ['chat', '--no-interactive', '--wrap', 'never']
   /** One `kiro-cli chat --no-interactive` process per message. */
   readonly transport = 'oneshot' as const
 
@@ -220,15 +240,23 @@ export class KiroAdapter implements ICLIAdapter {
   /**
    * Parse stderr output. In non-interactive mode, stderr contains:
    * - Trust-all-tools warning (skipped)
+   * - Tool calls (`[tool] Reading a.ts:1`) — reported as tool_use, which
+   *   also splits the reply around them (see SessionManager)
    * - Credits line (▸ Credits: 0.05 • Time: 3s)
    */
   onStderr(text: string): AdapterEvent[] {
     const events: AdapterEvent[] = []
-    const lines = text.split('\n')
+    const lines = stripAnsi(text).split('\n')
 
     for (const line of lines) {
       const trimmed = line.trim()
       if (trimmed.length === 0) continue
+
+      const tool = STDERR_TOOL_LINE.exec(trimmed)
+      if (tool) {
+        events.push({ type: 'tool_use', ...parseStderrTool(tool[1].trim()) })
+        continue
+      }
 
       const credits = parseCredits(trimmed)
       if (credits) {
@@ -254,8 +282,11 @@ export class KiroAdapter implements ICLIAdapter {
     cliSessionId: string | null,
     attachments?: { path: string; mimeType: string }[],
     model?: string | null,
+    _mcpServers?: McpServerSpec[],
+    settings: SettingValues = defaultSettings('kiro'),
   ): { command: string; args: string[] } {
-    const args = [...this.args]
+    // Trust flags, agent profile, effort, extra flags (provider-settings.ts).
+    const args = [...this.args, ...settingsToArgs('kiro', settings)]
 
     if (cliSessionId) {
       args.push('--resume-id', cliSessionId)

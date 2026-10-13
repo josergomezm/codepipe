@@ -48,8 +48,14 @@ export interface ChatMessage {
     time?: string
     /** Persona who authored this message (team sessions). */
     personaId?: string
-    /** 'deliberation' = raw team output; 'prompt' = machine-built dispatch prompt. Both collapse in the UI. */
-    kind?: 'deliberation' | 'prompt'
+    /**
+     * 'deliberation' = raw team output; 'prompt' = machine-built dispatch
+     * prompt (both collapse in the UI); 'action' / 'idea' = a card an agent
+     * tool posted.
+     */
+    kind?: 'deliberation' | 'prompt' | 'action' | 'idea'
+    action?: ChatActionCard
+    idea?: ChatIdeaCard
   }
   attachments?: Attachment[]
 }
@@ -111,6 +117,62 @@ export interface Project {
   devServerStatus?: DevServerInfo | null
   services?: ServiceConfig[]
   standup?: ProjectStandupConfig
+  /** Launch-setting overrides for sessions in this project (over the global layer). */
+  providerSettings?: ProviderSettingsOverrides
+}
+
+// --- Provider launch settings (see server/src/provider-settings.ts) ---
+
+export type SettingValue = string | boolean | string[]
+export type SettingValues = Record<string, SettingValue>
+export type SettingSource = 'default' | 'env' | 'global' | 'project' | 'persona'
+export type ProviderSettingsOverrides = Partial<Record<ProviderType, SettingValues>>
+
+export interface SettingOption {
+  value: string
+  label: string
+  caution?: string
+}
+
+export interface ProviderSettingSpec {
+  key: string
+  label: string
+  description: string
+  type: 'enum' | 'boolean' | 'string' | 'list'
+  options?: SettingOption[]
+  /** Lists: known entries rendered as toggles; other entries are still allowed. */
+  choices?: SettingOption[]
+  /** Strings: common values offered in a picker, with a custom escape hatch. */
+  suggestions?: SettingOption[]
+  default: SettingValue
+  env?: string
+  caution?: string
+  /** Strings: a multi-line editor. */
+  multiline?: boolean
+}
+
+export interface ProviderSettingsSpec {
+  provider: ProviderType
+  docsUrl: string
+  docsCheckedOn: string
+  docsCheckedAgainst: string
+  note?: string
+  /** Why these settings are not in effect on this server right now, if they aren't. */
+  inactive?: string
+  settings: ProviderSettingSpec[]
+}
+
+export interface ResolvedSettings {
+  values: SettingValues
+  sources: Record<string, SettingSource>
+}
+
+/** One provider as the settings API describes it: schema, global layer, effective values. */
+export interface ProviderSettingsInfo {
+  spec: ProviderSettingsSpec
+  global: SettingValues
+  resolved: ResolvedSettings
+  args: string[]
 }
 
 export type SessionKind = 'chat' | 'team' | 'work' | 'review'
@@ -190,6 +252,38 @@ export interface ActionItemOption {
   recommended?: boolean
 }
 
+/** An action item's content as an agent proposed it (no id/status yet). */
+export interface ActionDraft {
+  text: string
+  notes?: string
+  kind?: ActionItemKind
+  steps?: string[]
+  options?: ActionItemOption[]
+  blocking?: boolean
+  dueDate?: string
+}
+
+/** An action-item card in a chat: an item the agent added, or one it suggests. */
+export interface ChatActionCard {
+  draft: ActionDraft
+  /** closed = the agent resolved an existing item; undo reopens it (reopened). */
+  state: 'added' | 'suggested' | 'dismissed' | 'undone' | 'closed' | 'reopened'
+  /** The item the card is about, while it exists. */
+  itemId?: string
+  /** closed: the answer or what was done. */
+  resolution?: string
+  /** closed as won't-do. */
+  declined?: boolean
+}
+
+/** An idea an agent put on the board (undo-able from the chat). */
+export interface ChatIdeaCard {
+  text: string
+  notes?: string
+  state: 'added' | 'undone'
+  todoId?: string
+}
+
 export interface ActionItem {
   id: string
   projectId: string
@@ -227,6 +321,8 @@ export interface Persona {
   provider: ProviderType
   model?: string
   isLead: boolean
+  /** Launch-setting overrides for this persona's sessions (over global and project). */
+  providerSettings?: ProviderSettingsOverrides
 }
 
 export interface StandupState {
@@ -334,7 +430,15 @@ export async function deleteProject(id: string): Promise<void> {
   await request<unknown>(`/api/projects/${id}`, { method: 'DELETE' })
 }
 
-export function updateProject(id: string, data: { name?: string; devServer?: ProjectDevServer | null; standup?: ProjectStandupConfig | null }): Promise<Project> {
+export function updateProject(
+  id: string,
+  data: {
+    name?: string
+    devServer?: ProjectDevServer | null
+    standup?: ProjectStandupConfig | null
+    providerSettings?: ProviderSettingsOverrides | null
+  },
+): Promise<Project> {
   return request<Project>(`/api/projects/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -450,6 +554,21 @@ export interface Diagnostics {
   crashes: CrashSummary[]
   restarts: RestartRecord[]
   recentProblems: string[]
+}
+
+// --- Provider launch settings ---
+
+export function fetchProviderSettings(): Promise<{ providers: ProviderSettingsInfo[] }> {
+  return request<{ providers: ProviderSettingsInfo[] }>('/api/provider-settings')
+}
+
+/** Replace a provider's global layer (only the keys sent stay overridden). */
+export function updateProviderSettings(provider: ProviderType, values: SettingValues): Promise<ProviderSettingsInfo> {
+  return request<ProviderSettingsInfo>(`/api/provider-settings/${provider}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(values),
+  })
 }
 
 export function fetchDiagnostics(): Promise<Diagnostics> {
@@ -585,6 +704,26 @@ export function createActionItem(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ projectId, text, ...(notes ? { notes } : {}), ...(dueDate ? { dueDate } : {}) }),
   })
+}
+
+/**
+ * Act on a card an agent tool posted: accept or dismiss a suggested action
+ * item, undo an added one (or re-add it), reopen one the agent closed, undo
+ * an added idea. Returns the card's new state.
+ */
+export function cardOp<T extends ChatActionCard | ChatIdeaCard>(
+  sessionId: string,
+  messageId: string,
+  op: 'accept' | 'dismiss' | 'undo',
+): Promise<T> {
+  return request<T>(
+    `/api/agent/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/card`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ op }),
+    },
+  )
 }
 
 /** Open tasks with deadlines as an importable .ics (stable UIDs — no duplicates on re-import). */

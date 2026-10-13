@@ -2,7 +2,8 @@
 import { ref, onMounted } from 'vue'
 import { useTeamStore } from '@/stores/team'
 import PersonaAvatar from '@/components/PersonaAvatar.vue'
-import { providerLabel, PROVIDER_LABELS, SELECTABLE_PROVIDERS, type Persona, type ProviderType } from '@/api/client'
+import ProviderOverridesPanel from '@/components/ProviderOverridesPanel.vue'
+import { providerLabel, PROVIDER_LABELS, SELECTABLE_PROVIDERS, type Persona, type ProviderType, type ProviderSettingsOverrides } from '@/api/client'
 
 const emit = defineEmits<{ close: [] }>()
 
@@ -19,6 +20,9 @@ const provider = ref<ProviderType>('kiro')
 const model = ref('')
 const isLead = ref(false)
 const saving = ref(false)
+/** Launch overrides for this persona's sessions, keyed by provider. */
+const providerOverrides = ref<ProviderSettingsOverrides>({})
+const showOverrides = ref(false)
 
 const avatarInput = ref<HTMLInputElement | null>(null)
 const avatarTargetId = ref<string | null>(null)
@@ -35,6 +39,8 @@ function startAdd() {
   provider.value = 'kiro'
   model.value = ''
   isLead.value = teamStore.personas.length === 0
+  providerOverrides.value = {}
+  showOverrides.value = false
   showForm.value = true
 }
 
@@ -46,6 +52,8 @@ function startEdit(persona: Persona) {
   provider.value = persona.provider
   model.value = persona.model ?? ''
   isLead.value = persona.isLead
+  providerOverrides.value = { ...(persona.providerSettings ?? {}) }
+  showOverrides.value = Object.keys(providerOverrides.value).length > 0
   showForm.value = true
 }
 
@@ -59,6 +67,11 @@ async function save() {
     provider: provider.value,
     ...(model.value.trim() ? { model: model.value.trim() } : {}),
     isLead: isLead.value,
+    // Always sent, and only for the chosen provider: an empty map clears
+    // overrides left from a previous edit or a previous provider.
+    providerSettings: providerOverrides.value[provider.value]
+      ? { [provider.value]: providerOverrides.value[provider.value] }
+      : {},
   }
   if (editingId.value) {
     await teamStore.updatePersona(editingId.value, data)
@@ -209,6 +222,25 @@ function close() {
             <p v-if="isLead" class="text-[11px] text-gray-400 dark:text-gray-500">
               Changing the lead's provider starts a fresh team thread on the next standup (old threads stay as history).
             </p>
+            <div class="rounded border border-gray-200 px-2.5 py-2 dark:border-gray-700">
+              <button class="flex w-full items-center justify-between text-left text-xs text-gray-700 dark:text-gray-300" @click="showOverrides = !showOverrides">
+                <span>
+                  Launch overrides for {{ PROVIDER_LABELS[provider] }}
+                  <span v-if="Object.keys(providerOverrides[provider] ?? {}).length" class="ml-1 text-[11px] text-blue-600 dark:text-blue-400">
+                    {{ Object.keys(providerOverrides[provider] ?? {}).length }} set
+                  </span>
+                </span>
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-3.5 w-3.5 text-gray-400 transition" :class="showOverrides ? 'rotate-90' : ''">
+                  <path fill-rule="evenodd" d="M6.22 4.22a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1 0 1.06l-3.25 3.25a.75.75 0 0 1-1.06-1.06L8.94 8 6.22 5.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd" />
+                </svg>
+              </button>
+              <p class="mt-0.5 text-[11px] text-gray-400 dark:text-gray-500">
+                Permission mode and flags for sessions this persona runs, over the global and project settings.
+              </p>
+              <div v-if="showOverrides" class="mt-2">
+                <ProviderOverridesPanel v-model="providerOverrides" layer="persona" :providers="[provider]" />
+              </div>
+            </div>
             <div class="flex gap-1.5">
               <button
                 :disabled="saving || !name.trim() || !role.trim()"

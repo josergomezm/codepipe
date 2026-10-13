@@ -81,6 +81,24 @@ Each provider has a dedicated adapter. Kiro ships in two flavors: the structured
 
 ## Configuration
 
+### Provider launch settings
+
+How each CLI is launched — permission mode, tool trust, effort, extra flags —
+is configured in the app under **Providers** (sidebar), not in env. Each
+provider exposes the settings its CLI supports, rendered from a schema in
+`server/src/provider-settings.ts`; the page's footer shows when that flag list
+was last checked against the CLI (`docsCheckedOn`) — bump it whenever you
+re-verify the flags. Values resolve in layers, most specific wins:
+
+```
+spec default → env fallback → global (Providers page) → project (project settings) → persona (team roster)
+```
+
+Only the keys a layer sets are stored (`data/provider-settings.json` for the
+global layer; `providerSettings` on the project / persona records). Settings
+are read per message, so a change applies to the next turn of any live chat.
+The `CLAUDE_*` env vars below remain as fallbacks for the global layer.
+
 The server reads these environment variables:
 
 | Variable          | Default       | Description                                                                 |
@@ -91,8 +109,8 @@ The server reads these environment variables:
 | `KIRO_CLI_BIN`    | platform name | Override the Kiro binary (absolute path or name on `PATH`). Defaults to `kiro-cli` (`kiro-cli.exe` on Windows). |
 | `AGY_CLI_BIN`     | `agy`         | Override the Antigravity CLI binary (`agy.exe` on Windows; `GEMINI_CLI_BIN` is still honoured). |
 | `CLAUDE_CLI_BIN`  | `claude`      | Override the Claude Code binary (`claude.cmd` on Windows).                 |
-| `CLAUDE_PERMISSION_MODE` | `acceptEdits` | Claude Code `--permission-mode`. See SECURITY.md before broadening.   |
-| `CLAUDE_EXTRA_ARGS` | _(unset)_   | Extra flags appended to Claude Code (e.g. `--dangerously-skip-permissions`). |
+| `CLAUDE_PERMISSION_MODE` | `acceptEdits` | Fallback for Claude Code's permission mode when the Providers page leaves it unset. See SECURITY.md before broadening. |
+| `CLAUDE_EXTRA_ARGS` | _(unset)_   | Fallback extra flags for Claude Code (e.g. `--dangerously-skip-permissions`) when the Providers page leaves them unset. |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | _(unset)_ | Web Push keys. Generate with `npm run gen-vapid`. Push is disabled without them. |
 | `VAPID_SUBJECT`   | `mailto:admin@codepipe.local` | Contact URI sent with push (a `mailto:` or `https:` URL). |
 | `LOG_LEVEL`       | `info`        | `debug`, `info`, `warn`, `error` or `fatal`. |
@@ -141,6 +159,22 @@ CodePipe includes a proactive layer on top of ordinary sessions: a small AI
   automatically (deduplicated against open items) and you can add your own.
   Completing a team-raised item pings the team thread: a persona acknowledges
   and picks up whatever it was blocking.
+  - **From any chat:** the **+** button in the chat header opens a quick-add
+    dialog for that chat's project, and the same button on a reply turns the
+    selected text (or the whole reply, as context) into an item.
+  - **By asking:** every chat's agent gets CodePipe's tools through
+    CodePipe's own MCP server (`server/mcp/codepipe-mcp.mjs`, a thin proxy
+    to the tool registry in `server/src/agent-tool-registry.ts`):
+    `add_action_item`, `list_action_items`, `resolve_action_item` and
+    `add_idea`. Ask "add renewing the cert to my action items", "I paid the
+    invoice, close that one" or "put that on the ideas board", and a card in
+    the chat confirms it with **Undo** (or **Reopen**). When the agent spots
+    something only you can do on its own, it posts a **suggestion card**
+    instead, and nothing is added until you tap **Add**. Claude Code and Kiro
+    over ACP get the tools automatically. For Kiro's default text mode and
+    Antigravity, run `npm run agent-tool:install` in `server/` once. It
+    registers the server in their global MCP config, and outside CodePipe the
+    server offers no tools. Remove it with `-- --uninstall`.
 - **Ideas board** (`/board`): a kanban over the idea lifecycle (Inbox → In
   review → Proposed → Approved → Done) with a project filter, quick capture,
   and per-card move controls. Moving a card is just
@@ -161,8 +195,13 @@ CodePipe includes a proactive layer on top of ordinary sessions: a small AI
   fresh, read-only session (their `take` — one point, chosen well — lands on
   the idea's card and the throwaway session is deleted), then the lead
   synthesizes takes + agenda + memo in a dated session ("project standup ·
-  Sep 2") that you can watch and reply to that day. Proposals land on ideas
-  with a summary, approach, effort, and execution brief.
+  Sep 2") that you can watch and reply to that day. The lead records the
+  outcome with standup-only tools (`propose_plan`, `complete_idea`,
+  `save_memo`) plus the action-item tools, then messages you: that final
+  reply is what you read and get notified with, and the investigation before
+  it collapses as "Team deliberation". Proposals land on ideas with a summary,
+  approach, effort, and execution brief. A standup that ends without saving
+  its memo most likely ran without the tools, and the thread says so.
 - **Continuity is state, not chat history**: the board, takes, and briefs
   persist; the team ends each standup with a **memo** (their handoff note,
   injected into the next run); and events between standups — action items you

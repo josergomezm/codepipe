@@ -342,6 +342,48 @@ describe('Atomic write behavior', () => {
 // 2.3.4b — Session index
 // =========================================================================
 
+describe('Collection cache', () => {
+  let tmpDir: string
+  let storage: StorageLayer
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), 'codepipe-cache-'))
+    storage = new StorageLayer(tmpDir)
+    await storage.ensureDataDir()
+  })
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true })
+  })
+
+  it('hands out independent copies, so mutating a result does not leak', async () => {
+    await storage.addProject(makeProject({ name: 'Keep' }))
+    const first = await storage.listProjects()
+    first[0]!.name = 'Mutated'
+    first.push({ id: randomUUID(), name: 'Ghost', path: '/x' })
+    const second = await storage.listProjects()
+    expect(second.map((p) => p.name)).toEqual(['Keep'])
+  })
+
+  it('sees an external edit to the file', async () => {
+    await storage.addProject(makeProject({ name: 'Before' }))
+    const loaded = await storage.listProjects()
+    const file = path.join(tmpDir, 'projects.json')
+    // Make sure the mtime moves even on coarse filesystems.
+    await new Promise((r) => setTimeout(r, 20))
+    await writeFile(file, JSON.stringify([{ ...loaded[0], name: 'After (edited by hand)' }]), 'utf-8')
+    expect((await storage.listProjects()).map((p) => p.name)).toEqual(['After (edited by hand)'])
+  })
+
+  it('reflects its own writes immediately', async () => {
+    const created = await storage.addProject(makeProject({ name: 'One' }))
+    await storage.listProjects()
+    await storage.updateProject(created.id, { name: 'Two' })
+    expect((await storage.listProjects())[0]!.name).toBe('Two')
+    await storage.removeProject(created.id)
+    expect(await storage.listProjects()).toEqual([])
+  })
+})
+
 describe('Session index', () => {
   it('rebuilds the index from existing session files on a fresh instance', async () => {
     const s1 = makeSession({ title: 'One' })

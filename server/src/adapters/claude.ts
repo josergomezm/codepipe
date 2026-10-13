@@ -7,9 +7,10 @@
  * `--resume <session_id>`, where the session ID is captured inline from the
  * stream (the `cli_session` event), so no session-list scraping is needed.
  *
- * Tool approval: defaults to `--permission-mode acceptEdits`. For fuller
- * autonomy (Bash, network, etc.) set `CLAUDE_PERMISSION_MODE` or append flags
- * via `CLAUDE_EXTRA_ARGS` (e.g. `--dangerously-skip-permissions`). See
+ * Tool approval: defaults to `--permission-mode acceptEdits`. The permission
+ * mode, allowed/disallowed tools and extra flags come from the provider
+ * launch settings (provider-settings.ts — editable in the UI, with
+ * `CLAUDE_PERMISSION_MODE` / `CLAUDE_EXTRA_ARGS` as env fallbacks). See
  * SECURITY.md before broadening this.
  */
 
@@ -20,6 +21,8 @@ import { dirname, join } from 'path'
 import type { ProviderType } from '../schemas.js'
 import type { ICLIAdapter, AdapterEvent } from './types.js'
 import { translateStreamJsonLine } from './claude-stream-json.js'
+import type { McpServerSpec } from '../agent-tools.js'
+import { defaultSettings, settingsToArgs, type SettingValues } from '../provider-settings.js'
 
 /**
  * Resolve the Claude Code binary: `CLAUDE_CLI_BIN` override, else the native
@@ -36,12 +39,6 @@ export function resolveClaudeBinary(): string {
   if (existsSync(native)) return native
 
   return isWindows ? 'claude.cmd' : 'claude'
-}
-
-/** Extra args from `CLAUDE_EXTRA_ARGS` (space-separated), for power users. */
-function extraArgs(): string[] {
-  const raw = process.env['CLAUDE_EXTRA_ARGS']
-  return raw && raw.trim().length > 0 ? raw.trim().split(/\s+/) : []
 }
 
 export class ClaudeAdapter implements ICLIAdapter {
@@ -75,9 +72,31 @@ export class ClaudeAdapter implements ICLIAdapter {
     cliSessionId: string | null,
     attachments?: { path: string; mimeType: string }[],
     model?: string | null,
+    mcpServers?: McpServerSpec[],
+    settings: SettingValues = defaultSettings('claude'),
   ): { command: string; args: string[] } {
-    const permissionMode = process.env['CLAUDE_PERMISSION_MODE'] ?? 'acceptEdits'
-    const args = [...this.args, '--permission-mode', permissionMode, ...extraArgs()]
+    const args = [...this.args]
+
+    // CodePipe's tools, inline (no config file to manage) and pre-approved:
+    // print mode can't ask, so an unlisted MCP tool would just be denied.
+    // The user's own allowed tools ride on the same variadic flag. Both
+    // flags are variadic — keep them before another option so they can't
+    // swallow anything positional.
+    if (mcpServers?.length) {
+      const config = {
+        mcpServers: Object.fromEntries(
+          mcpServers.map((s) => [s.name, { type: 'stdio', command: s.command, args: s.args, env: s.env }]),
+        ),
+      }
+      args.push('--mcp-config', JSON.stringify(config))
+    }
+    const allowedTools = [
+      ...(mcpServers ?? []).map((s) => `mcp__${s.name}`),
+      ...(Array.isArray(settings['allowedTools']) ? settings['allowedTools'] : []),
+    ]
+
+    // Allowed/disallowed tools, permission mode, extra flags… (provider-settings.ts).
+    args.push(...settingsToArgs('claude', { ...settings, allowedTools }))
 
     if (model) {
       args.push('--model', model)

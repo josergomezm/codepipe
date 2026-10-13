@@ -278,12 +278,15 @@ describe('Integration tests', () => {
         // Send user input
         ws.send(JSON.stringify({ type: 'input', data: 'hello' }))
 
-        // Should receive a user message broadcast (message #3)
-        const msgs = await collectMessages(3)
+        // Should receive a user message broadcast (message #3), then the
+        // typing status (#4) once the CLI is spawned — the spawn waits on the
+        // launch-settings lookup, so it lands a tick after the user message.
+        const msgs = await collectMessages(4)
         const userMsg = msgs[2] as { type: string; data: { role: string; content: string } }
         expect(userMsg.type).toBe('message')
         expect(userMsg.data.role).toBe('user')
         expect(userMsg.data.content).toBe('hello')
+        expect(msgs[3]).toEqual({ type: 'status', data: 'typing' })
 
         // For non-interactive mode, child_process.spawn is called (not pty.write)
         // The mock spawn should have been called with the message as the last arg

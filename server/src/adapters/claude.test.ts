@@ -145,17 +145,76 @@ describe('ClaudeAdapter', () => {
     expect(args[args.length - 1]).toContain(`@${join('/data', 'uploads', 'a.png')}`)
   })
 
+  it('gives the agent the CodePipe MCP server inline, pre-approved, before the prompt', () => {
+    const server = { name: 'codepipe', command: 'node', args: ['/x/codepipe-mcp.mjs'], env: { CODEPIPE_SESSION_ID: 's1' } }
+    const { args } = new ClaudeAdapter().buildMessageCommand('hi', null, undefined, null, [server])
+    const config = JSON.parse(args[args.indexOf('--mcp-config') + 1])
+    expect(config.mcpServers.codepipe).toEqual({ type: 'stdio', command: 'node', args: ['/x/codepipe-mcp.mjs'], env: { CODEPIPE_SESSION_ID: 's1' } })
+    expect(args[args.indexOf('--allowedTools') + 1]).toBe('mcp__codepipe')
+    // Both flags are variadic: another option must follow before the prompt.
+    expect(args[args.indexOf('--allowedTools') + 2]).toMatch(/^--/)
+    expect(args[args.length - 1]).toBe('hi')
+  })
+
+  it('adds no MCP flags without servers', () => {
+    const { args } = new ClaudeAdapter().buildMessageCommand('hi', null, undefined, null, [])
+    expect(args).not.toContain('--mcp-config')
+    expect(args).not.toContain('--allowedTools')
+  })
+
   it('omits --model when no model is selected', () => {
     const { args } = new ClaudeAdapter().buildMessageCommand('hi', null)
     expect(args).not.toContain('--model')
   })
 
-  it('honors CLAUDE_PERMISSION_MODE and CLAUDE_EXTRA_ARGS', () => {
+  it('defaults to acceptEdits with no extra flags', () => {
+    const { args } = new ClaudeAdapter().buildMessageCommand('hi', null)
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('acceptEdits')
+    expect(args).not.toContain('--dangerously-skip-permissions')
+    expect(args).not.toContain('--disallowedTools')
+  })
+
+  it('honors CLAUDE_PERMISSION_MODE and CLAUDE_EXTRA_ARGS as fallbacks', () => {
     process.env['CLAUDE_PERMISSION_MODE'] = 'plan'
     process.env['CLAUDE_EXTRA_ARGS'] = '--dangerously-skip-permissions'
     const { args } = new ClaudeAdapter().buildMessageCommand('hi', null)
     expect(args[args.indexOf('--permission-mode') + 1]).toBe('plan')
     expect(args).toContain('--dangerously-skip-permissions')
+  })
+
+  it('launch settings override the env fallbacks', () => {
+    process.env['CLAUDE_PERMISSION_MODE'] = 'plan'
+    const { args } = new ClaudeAdapter().buildMessageCommand('hi', null, undefined, null, [], {
+      permissionMode: 'bypassPermissions',
+      skipPermissions: true,
+      disallowedTools: ['WebSearch', 'Bash(rm:*)'],
+      appendSystemPrompt: 'Always answer in Spanish.',
+      extraArgs: ['--max-turns', '3'],
+    })
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('bypassPermissions')
+    expect(args).toContain('--dangerously-skip-permissions')
+    const d = args.indexOf('--disallowedTools')
+    expect(args.slice(d + 1, d + 3)).toEqual(['WebSearch', 'Bash(rm:*)'])
+    expect(args[args.indexOf('--append-system-prompt') + 1]).toBe('Always answer in Spanish.')
+    expect(args[args.indexOf('--max-turns') + 1]).toBe('3')
+    expect(args.slice(-2)).toEqual(['-p', 'hi'])
+  })
+
+  it('merges the allowed tools from settings with the MCP tools on one flag', () => {
+    const server = { name: 'codepipe', command: 'node', args: ['/x.mjs'], env: {} }
+    const { args } = new ClaudeAdapter().buildMessageCommand('hi', null, undefined, null, [server], {
+      allowedTools: ['Bash(git:*)', 'Read'],
+    })
+    expect(args.filter((a) => a === '--allowedTools')).toHaveLength(1)
+    expect(args[args.indexOf('--allowedTools') + 1]).toBe('mcp__codepipe,Bash(git:*),Read')
+    // Variadic: an option must follow before the prompt.
+    expect(args[args.indexOf('--allowedTools') + 2]).toMatch(/^--/)
+  })
+
+  it('allows the configured tools even without MCP servers', () => {
+    const { args } = new ClaudeAdapter().buildMessageCommand('hi', null, undefined, null, [], { allowedTools: ['Read'] })
+    expect(args[args.indexOf('--allowedTools') + 1]).toBe('Read')
+    expect(args).not.toContain('--mcp-config')
   })
 
   it('inlines attachments into the prompt with @paths', () => {

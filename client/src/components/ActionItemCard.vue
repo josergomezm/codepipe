@@ -196,7 +196,7 @@ async function tellThemNow() {
 /**
  * For decisions that need a back-and-forth: jump into the project's team
  * thread with a reply drafted about this item. The team closes the item
- * itself (resolved_actions) once the conversation settles it.
+ * itself (resolve_action_item) once the conversation settles it.
  */
 async function discussInThread() {
   showMenu.value = false

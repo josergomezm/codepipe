@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useTeamStore } from '@/stores/team'
 import { useProjectsStore } from '@/stores/projects'
 import { useUiStore } from '@/stores/ui'
 import ActionItemCard from '@/components/ActionItemCard.vue'
+import ActionAddForm from '@/components/ActionAddForm.vue'
 import * as api from '@/api/client'
 import type { ActionItem } from '@/api/client'
 
@@ -11,13 +12,7 @@ const teamStore = useTeamStore()
 const projectStore = useProjectsStore()
 const ui = useUiStore()
 
-const newText = ref('')
-const newNotes = ref('')
-/** YYYY-MM-DD, or '' for none. */
-const newDueDate = ref('')
 const showAdd = ref(false)
-const showNotes = ref(false)
-const newProjectId = ref('')
 const showDone = ref(false)
 const showSnoozed = ref(false)
 /** Projects whose nice-to-know items are expanded. */
@@ -30,16 +25,6 @@ onMounted(() => {
   teamStore.fetchPersonas()
   teamStore.fetchTodos()
 })
-
-// Default the add form's project — also when projects load after mount
-// (opening /actions directly).
-watch(
-  () => projectStore.projects,
-  (projects) => {
-    if (!projects.some((p) => p.id === newProjectId.value)) newProjectId.value = projects[0]?.id ?? ''
-  },
-  { immediate: true },
-)
 
 const visibleActions = computed(() =>
   filterProjectId.value
@@ -107,21 +92,6 @@ function toggleExtras(projectId: string) {
   else next.add(projectId)
   expandedExtras.value = next
 }
-
-async function add() {
-  if (!newText.value.trim() || !newProjectId.value) return
-  await teamStore.addAction(
-    newProjectId.value,
-    newText.value.trim(),
-    newNotes.value.trim() || undefined,
-    newDueDate.value || undefined,
-  )
-  newText.value = ''
-  newNotes.value = ''
-  newDueDate.value = ''
-  showNotes.value = false
-  showAdd.value = false
-}
 </script>
 
 <template>
@@ -167,49 +137,8 @@ async function add() {
     <div class="min-h-0 flex-1 overflow-y-auto">
       <div class="mx-auto flex max-w-2xl flex-col gap-5 px-4 py-6">
         <!-- Manual add (most items come from the team, so it stays tucked away) -->
-        <div v-if="showAdd" class="flex flex-col gap-1.5 rounded-lg border border-dashed border-gray-300 p-3 dark:border-gray-700">
-          <div class="flex gap-1.5">
-            <select
-              v-model="newProjectId"
-              class="shrink-0 rounded-lg border border-gray-200 bg-white px-2 py-2 text-xs text-gray-700 focus:border-blue-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
-            >
-              <option v-for="p in projectStore.projects" :key="p.id" :value="p.id">{{ p.name }}</option>
-            </select>
-            <input
-              v-model="newText"
-              type="text"
-              placeholder="Add something you need to do…"
-              class="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:border-blue-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
-              @keydown.enter="add"
-            />
-            <button
-              :disabled="!newText.trim() || !newProjectId"
-              class="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
-              @click="add"
-            >Add</button>
-          </div>
-          <div class="flex items-center gap-3">
-            <button
-              v-if="!showNotes"
-              class="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-              @click="showNotes = true"
-            >+ add context</button>
-            <label class="flex items-center gap-1.5 text-xs text-gray-400">
-              Due
-              <input
-                v-model="newDueDate"
-                type="date"
-                class="rounded border border-gray-200 bg-white px-1.5 py-0.5 text-xs text-gray-700 focus:border-blue-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:[color-scheme:dark]"
-              />
-            </label>
-          </div>
-          <textarea
-            v-if="showNotes"
-            v-model="newNotes"
-            rows="2"
-            placeholder="Optional context…"
-            class="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-900 placeholder:text-gray-400 focus:border-blue-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
-          />
+        <div v-if="showAdd" class="rounded-lg border border-dashed border-gray-300 p-3 dark:border-gray-700">
+          <ActionAddForm :project-id="filterProjectId || undefined" autofocus @added="showAdd = false" />
         </div>
 
         <div v-if="teamStore.error" class="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-900/20 dark:text-red-400">

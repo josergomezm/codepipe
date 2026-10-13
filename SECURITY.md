@@ -31,15 +31,27 @@ Because there is no interactive terminal to approve tool calls, each adapter
 auto-approves them so the agent can actually work. This is intentional but
 means the agent acts without per-action confirmation:
 
-- **Kiro (text transport):** launched with `--trust-all-tools`.
+- **Kiro (text transport):** launched with `--trust-all-tools` by default.
+  The Providers page can turn that off and list the only tools to trust
+  (`--trust-tools`); everything else is then denied, since non-interactive
+  mode can't prompt.
 - **Kiro (ACP):** the client auto-approves `request_permission` prompts.
-- **Antigravity:** launched with `--dangerously-skip-permissions`; headless
-  mode can't prompt, and without it shell commands are silently denied.
+- **Antigravity:** launched with `--dangerously-skip-permissions` by default;
+  headless mode can't prompt, and without it shell commands are silently
+  denied. The Providers page can turn it off, or add `--sandbox`.
 - **Claude Code:** defaults to `--permission-mode acceptEdits`. This does **not**
-  auto-approve arbitrary Bash or network access. To grant fuller autonomy set
-  `CLAUDE_PERMISSION_MODE` or append `--dangerously-skip-permissions` via
-  `CLAUDE_EXTRA_ARGS` — only do this on a machine and project you trust, since
-  it removes Claude Code's safety prompts entirely.
+  auto-approve arbitrary Bash or network access. Fuller autonomy (another
+  permission mode, `--dangerously-skip-permissions`, allowed tools) is set on
+  the Providers page — or via the `CLAUDE_PERMISSION_MODE` / `CLAUDE_EXTRA_ARGS`
+  fallbacks — only on a machine and project you trust, since it removes
+  Claude Code's safety prompts entirely.
+
+These defaults live on the **Providers** page and can be overridden per
+project (project settings) and per persona (team roster); the most specific
+layer wins, and settings that broaden access are flagged in the UI. Because
+the API accepts any value the CLI accepts, anyone who can reach CodePipe's
+server can grant an agent full autonomy on your machine — keep it on your
+tailnet.
 
 Run CodePipe only against project directories whose contents you trust, and be
 aware that a prompt-injection payload in a file the agent reads could cause it

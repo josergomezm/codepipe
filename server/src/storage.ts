@@ -1,8 +1,9 @@
-import { mkdir, readFile, writeFile, rename, unlink, readdir } from 'fs/promises'
+import { mkdir, readFile, writeFile, rename, unlink, readdir, stat } from 'fs/promises'
 import { existsSync } from 'fs'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
+import { atomicWriteJson, FileLocks } from './json-file.js'
 import {
   SessionSchema,
   SessionMetaSchema,
@@ -28,6 +29,8 @@ import type { ChangedCollection } from './events.js'
 // ---------------------------------------------------------------------------
 
 export interface IStorageLayer {
+  /** Resolves once every write queued so far has settled (shutdown, tests). */
+  whenIdle(): Promise<void>
   // Sessions
   saveSession(session: Session): Promise<void>
   getSession(sessionId: string): Promise<Session | null>
@@ -102,7 +105,14 @@ export class StorageLayer implements IStorageLayer {
    * file's lock (see runExclusive) — two concurrent updates to the same
    * collection serialize instead of losing one of the writes.
    */
-  private readonly fileLocks = new Map<string, Promise<void>>()
+  private readonly fileLocks = new FileLocks()
+  /**
+   * Parsed collection files, keyed by path and tagged with the file's size
+   * and mtime. A read whose stat matches skips the read + parse + validate;
+   * our own writes drop the entry, and an external edit changes the stat.
+   * Callers get a deep copy, so mutating a loaded array never leaks back.
+   */
+  private readonly collectionCache = new Map<string, { size: number; mtimeMs: number; data: unknown }>()
   /** Change-capture hook: called once per committed mutation, per collection. */
   private readonly onChange: ((collection: ChangedCollection) => void) | null
   /**
@@ -182,16 +192,12 @@ export class StorageLayer implements IStorageLayer {
    * on the same path (use atomicWrite directly inside a held lock).
    */
   private runExclusive<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
-    const prev = this.fileLocks.get(filePath) ?? Promise.resolve()
-    const next = prev.then(fn, fn)
-    this.fileLocks.set(
-      filePath,
-      next.then(
-        () => undefined,
-        () => undefined,
-      ),
-    )
-    return next
+    return this.fileLocks.runExclusive(filePath, fn)
+  }
+
+  /** Wait for every queued write to settle — nothing is mid-write afterwards. */
+  whenIdle(): Promise<void> {
+    return this.fileLocks.whenIdle()
   }
 
   /** Whole-object write under the file's lock (no read-back involved). */
@@ -200,23 +206,11 @@ export class StorageLayer implements IStorageLayer {
   }
 
   private async atomicWrite(filePath: string, data: unknown): Promise<void> {
-    const json = JSON.stringify(data, null, 2)
-    const tempPath = filePath + '.tmp.' + randomUUID()
-    try {
-      await writeFile(tempPath, json, 'utf-8')
-      await rename(tempPath, filePath)
-    } catch {
-      // On Windows, rename can fail if the target is locked.
-      // Fall back to direct write — use flag 'w' to ensure the file is
-      // truncated first so no stale tail bytes remain from a longer
-      // previous write.
-      try {
-        await unlink(tempPath)
-      } catch {
-        // Temp file may not exist
-      }
-      await writeFile(filePath, json, { encoding: 'utf-8', flag: 'w' })
-    }
+    // Drop the cached copy before AND after: a reader racing the write must
+    // not pin stale data, and the written file gets a fresh stat next read.
+    this.collectionCache.delete(filePath)
+    await atomicWriteJson(filePath, data)
+    this.collectionCache.delete(filePath)
   }
 
   // -----------------------------------------------------------------------
@@ -231,8 +225,15 @@ export class StorageLayer implements IStorageLayer {
    * destroying the collection. Writes must never destroy.
    */
   private async loadArrayFile<T>(file: string, schema: z.ZodType<T[]>): Promise<T[]> {
-    if (!existsSync(file)) {
+    let info: { size: number; mtimeMs: number }
+    try {
+      info = await stat(file)
+    } catch {
       return []
+    }
+    const cached = this.collectionCache.get(file)
+    if (cached && cached.size === info.size && cached.mtimeMs === info.mtimeMs) {
+      return structuredClone(cached.data as T[])
     }
     const raw = await readFile(file, 'utf-8')
     let parsed: unknown
@@ -247,6 +248,7 @@ export class StorageLayer implements IStorageLayer {
         `${path.basename(file)} failed validation — refusing to touch it (fix or remove the file): ${JSON.stringify(result.error.format()).slice(0, 300)}`,
       )
     }
+    this.collectionCache.set(file, { size: info.size, mtimeMs: info.mtimeMs, data: structuredClone(result.data) })
     return result.data
   }
 

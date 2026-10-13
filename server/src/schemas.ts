@@ -27,6 +27,76 @@ export const MessageRoleSchema = z.enum(['user', 'assistant', 'system', 'tool'])
 
 export const MessageStatusSchema = z.enum(['streaming', 'complete'])
 
+// --- Action item primitives (used by chat cards and action items) ---
+
+/**
+ * 'decision' = the user must decide something (resolved by answering it —
+ * the answer is stored as the item's `resolution`); 'task' = external setup
+ * only the user can do (resolved by following the steps). Absent on
+ * older/manual items — treated as a plain task.
+ */
+export const ActionItemKindSchema = z.enum(['decision', 'task'])
+
+/** One answer the team offers for a decision — rendered as a one-tap button. */
+export const ActionItemOptionSchema = z.object({
+  label: z.string().min(1).max(200),
+  detail: z.string().max(1000).optional(),
+  recommended: z.boolean().optional(),
+})
+
+/** A calendar date, YYYY-MM-DD. */
+export const DueDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  // Round-trips only for real dates (rejects 2026-02-30).
+  .refine((d) => {
+    const t = Date.parse(`${d}T00:00:00Z`)
+    return !Number.isNaN(t) && new Date(t).toISOString().startsWith(d)
+  }, 'Invalid date')
+
+/**
+ * The content of an action item as an agent proposes it — through the
+ * CodePipe MCP tool in any chat, or a standup's `user_actions`. Ids, status
+ * and timestamps are the server's to assign.
+ */
+export const ActionDraftSchema = z.object({
+  text: z.string().trim().min(1).max(2000),
+  notes: z.string().max(10000).optional(),
+  kind: ActionItemKindSchema.optional(),
+  steps: z.array(z.string().min(1).max(1000)).max(12).optional(),
+  options: z.array(ActionItemOptionSchema).max(6).optional(),
+  blocking: z.boolean().optional(),
+  dueDate: DueDateSchema.optional(),
+})
+
+/**
+ * An action-item card in a chat: the agent added an item (state 'added'),
+ * or suggested one the user can accept ('suggested'). The draft rides along
+ * so the card still reads after an undo or dismissal.
+ */
+export const ChatActionCardSchema = z.object({
+  draft: ActionDraftSchema,
+  /**
+   * added/suggested → dismissed/undone by the user; closed = the agent
+   * resolved an existing item (undo reopens it → reopened).
+   */
+  state: z.enum(['added', 'suggested', 'dismissed', 'undone', 'closed', 'reopened']),
+  /** The item the card is about, while it exists. */
+  itemId: z.string().uuid().optional(),
+  /** closed: the answer or what was done ('declined' marks a won't-do). */
+  resolution: z.string().max(4000).optional(),
+  declined: z.boolean().optional(),
+})
+
+/** An idea the agent put on the board (add_idea tool) — undo-able from the chat. */
+export const ChatIdeaCardSchema = z.object({
+  text: z.string().min(1).max(2000),
+  notes: z.string().max(10000).optional(),
+  state: z.enum(['added', 'undone']),
+  /** The created idea, while it exists. */
+  todoId: z.string().uuid().optional(),
+})
+
 // --- Core Models ---
 
 export const ChatMessageMetadataSchema = z.object({
@@ -41,7 +111,11 @@ export const ChatMessageMetadataSchema = z.object({
    * machine-built dispatch prompt (standup/refine/implement). Both are
    * collapsed behind a disclosure in the UI.
    */
-  kind: z.enum(['deliberation', 'prompt']).optional(),
+  kind: z.enum(['deliberation', 'prompt', 'action', 'idea']).optional(),
+  /** kind 'action': an action-item card (see ChatActionCardSchema). */
+  action: ChatActionCardSchema.optional(),
+  /** kind 'idea': an idea card (see ChatIdeaCardSchema). */
+  idea: ChatIdeaCardSchema.optional(),
 })
 
 export const AttachmentSchema = z.object({
@@ -85,6 +159,24 @@ export const ProjectStandupConfigSchema = z.object({
   hour: z.number().int().min(0).max(23),
 })
 
+/**
+ * One layer of provider launch settings: only the keys this layer overrides.
+ * Keys and values are checked against the provider's spec by the routes
+ * (see provider-settings.ts); the schema just pins the value shapes.
+ */
+export const ProviderSettingValuesSchema = z.record(
+  z.string(),
+  z.union([z.string(), z.boolean(), z.array(z.string())]),
+)
+
+/** Per-provider overrides, as stored on a project or persona. */
+export const ProviderSettingsOverridesSchema = z.object({
+  kiro: ProviderSettingValuesSchema.optional(),
+  gemini: ProviderSettingValuesSchema.optional(),
+  claude: ProviderSettingValuesSchema.optional(),
+  codex: ProviderSettingValuesSchema.optional(),
+})
+
 export const ProjectSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1).max(100),
@@ -92,6 +184,8 @@ export const ProjectSchema = z.object({
   devServer: ProjectDevServerSchema.optional(),
   services: z.array(ProjectServiceConfigSchema).optional(),
   standup: ProjectStandupConfigSchema.optional(),
+  /** Launch-setting overrides for sessions in this project (over the global layer). */
+  providerSettings: ProviderSettingsOverridesSchema.optional(),
 })
 
 // Base session object without the refinement — needed so .omit() works
@@ -111,6 +205,8 @@ const SessionObjectSchema = z.object({
   model: z.string().optional(),
   /** Session kind — absent means 'chat' (a normal user session). */
   kind: SessionKindSchema.optional(),
+  /** Persona driving this session (team runs) — their launch overrides apply. */
+  personaId: z.string().uuid().optional(),
 })
 
 // A model the provider can run, for the picker.
@@ -188,31 +284,6 @@ export const TodoSchema = z.object({
  */
 export const ActionItemStatusSchema = z.enum(['open', 'done', 'dismissed'])
 
-/**
- * 'decision' = the user must decide something (resolved by answering it —
- * the answer is stored as the item's `resolution`); 'task' = external setup
- * only the user can do (resolved by following the steps). Absent on
- * older/manual items — treated as a plain task.
- */
-export const ActionItemKindSchema = z.enum(['decision', 'task'])
-
-/** One answer the team offers for a decision — rendered as a one-tap button. */
-export const ActionItemOptionSchema = z.object({
-  label: z.string().min(1).max(200),
-  detail: z.string().max(1000).optional(),
-  recommended: z.boolean().optional(),
-})
-
-/** A calendar date, YYYY-MM-DD. */
-export const DueDateSchema = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/)
-  // Round-trips only for real dates (rejects 2026-02-30).
-  .refine((d) => {
-    const t = Date.parse(`${d}T00:00:00Z`)
-    return !Number.isNaN(t) && new Date(t).toISOString().startsWith(d)
-  }, 'Invalid date')
-
 export const ActionItemSchema = z.object({
   id: z.string().uuid(),
   projectId: z.string().uuid(),
@@ -260,6 +331,8 @@ export const PersonaSchema = z.object({
   model: z.string().optional(),
   /** Exactly one persona should lead — their provider runs the team session. */
   isLead: z.boolean(),
+  /** Launch-setting overrides for this persona's sessions (over global and project). */
+  providerSettings: ProviderSettingsOverridesSchema.optional(),
 })
 
 /** Internal per-project standup runtime state (not user config). */
@@ -284,80 +357,11 @@ export const StandupStateSchema = z.object({
    */
   agenda: z.array(z.string().min(1).max(1000)).max(30).optional(),
   /**
-   * Consecutive team turns whose structured JSON tail failed to parse.
-   * Reset on the first successful parse; makes silent protocol degradation
-   * observable (surfaced in the thread once the streak passes a threshold).
+   * When the team last saved the memo (save_memo tool). A standup that ends
+   * without one most likely ran without CodePipe's tools — surfaced in the
+   * thread rather than failing silently.
    */
-  protocolFailStreak: z.number().int().nonnegative().optional(),
-})
-
-// --- Standup structured output (the JSON tail the team session must emit) ---
-
-/** One outbound message from a persona to the user. */
-export const StandupMessageSchema = z.object({
-  /** Persona name or id — resolved leniently against the roster. */
-  persona: z.string().min(1),
-  kind: z.enum(['proposal', 'question', 'update']).optional(),
-  text: z.string().min(1),
-})
-
-export const StandupProposalSchema = z.object({
-  todoId: z.string().min(1),
-  summary: z.string().min(1),
-  approach: z.string().min(1),
-  effort: z.string().optional(),
-  brief: z.string().optional(),
-  persona: z.string().optional(),
-})
-
-/** A task only the user can do (secrets, accounts, purchases, decisions). */
-export const StandupUserActionSchema = z.object({
-  persona: z.string().optional(),
-  text: z.string().min(1),
-  notes: z.string().optional(),
-  kind: ActionItemKindSchema.optional(),
-  steps: z.array(z.string().min(1)).optional(),
-  /** Decision answers, each a one-tap button for the user. */
-  options: z
-    .array(
-      z.object({
-        label: z.string().min(1),
-        detail: z.string().optional(),
-        recommended: z.boolean().optional(),
-      }),
-    )
-    .optional(),
-  /** False for nice-to-know items that block nothing. */
-  blocking: z.boolean().optional(),
-  /**
-   * A real external deadline (YYYY-MM-DD). A malformed one is dropped, not
-   * fatal — it must not cost the rest of the team's output.
-   */
-  dueDate: DueDateSchema.optional().catch(undefined),
-  /** The [id] of the idea this action gates, when it is a prerequisite. */
-  todoId: z.string().optional(),
-})
-
-/** An idea the lead found already shipped (e.g. built outside CodePipe). */
-export const StandupCompletedTodoSchema = z.object({
-  todoId: z.string().min(1),
-  /** How the lead knows — a commit hash, a file. Shown to the user. */
-  evidence: z.string().optional(),
-})
-
-export const StandupOutputSchema = z.object({
-  messages: z.array(StandupMessageSchema),
-  proposals: z.array(StandupProposalSchema).optional(),
-  user_actions: z.array(StandupUserActionSchema).optional(),
-  /**
-   * [id]s of already-tracked action items that no longer block anything —
-   * the user settled them in the thread, or the plan changed.
-   */
-  resolved_actions: z.array(z.string()).optional(),
-  /** Planned ideas the lead verified are already implemented. */
-  completed_todos: z.array(StandupCompletedTodoSchema).optional(),
-  /** The team's handoff note to their next standup (see StandupState.memo). */
-  memo: z.string().optional(),
+  memoSavedAt: z.number().int().positive().optional(),
 })
 
 /** What a single reviewer session returns (lenient — raw text falls back to `take`). */
@@ -446,6 +450,16 @@ export const CreateActionItemRequestSchema = z.object({
   dueDate: DueDateSchema.optional(),
 })
 
+/** An agent tool call, forwarded by the CodePipe MCP server (routes/agent.ts). */
+export const AgentToolCallRequestSchema = z.object({
+  arguments: z.record(z.unknown()).optional(),
+})
+
+/** The user acting on a card in a chat (action item or idea). */
+export const CardOpRequestSchema = z.object({
+  op: z.enum(['accept', 'dismiss', 'undo']),
+})
+
 export const UpdateActionItemRequestSchema = z.object({
   text: z.string().min(1).max(2000).optional(),
   notes: z.string().max(10000).optional(),
@@ -487,9 +501,8 @@ export type ReviewerOutput = z.infer<typeof ReviewerOutputSchema>
 export type ActionItemStatus = z.infer<typeof ActionItemStatusSchema>
 export type ActionItemKind = z.infer<typeof ActionItemKindSchema>
 export type ActionItem = z.infer<typeof ActionItemSchema>
-export type StandupUserAction = z.infer<typeof StandupUserActionSchema>
+export type ActionDraft = z.infer<typeof ActionDraftSchema>
+export type ChatActionCard = z.infer<typeof ChatActionCardSchema>
+export type ChatIdeaCard = z.infer<typeof ChatIdeaCardSchema>
 export type Persona = z.infer<typeof PersonaSchema>
 export type StandupState = z.infer<typeof StandupStateSchema>
-export type StandupMessage = z.infer<typeof StandupMessageSchema>
-export type StandupProposal = z.infer<typeof StandupProposalSchema>
-export type StandupOutput = z.infer<typeof StandupOutputSchema>

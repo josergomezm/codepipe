@@ -60,4 +60,20 @@ describe('GeminiAdapter (agy stream-json)', () => {
     expect(args[args.indexOf('--add-dir') + 1]).toBe(join('/data', 'uploads'))
     expect(args.slice(-2)).toEqual(['-p', `@${img} look`])
   })
+
+  it('applies launch settings: permission skipping off, mode, sandbox, effort, extra args', () => {
+    const { args } = new GeminiAdapter().buildMessageCommand('hi', null, undefined, null, undefined, {
+      skipPermissions: false,
+      mode: 'accept-edits',
+      sandbox: true,
+      effort: 'low',
+      extraArgs: ['--print-timeout', '30s'],
+    })
+    expect(args).not.toContain('--dangerously-skip-permissions')
+    expect(args[args.indexOf('--mode') + 1]).toBe('accept-edits')
+    expect(args).toContain('--sandbox')
+    expect(args[args.indexOf('--effort') + 1]).toBe('low')
+    expect(args[args.indexOf('--print-timeout') + 1]).toBe('30s')
+    expect(args.slice(-2)).toEqual(['-p', 'hi'])
+  })
 })

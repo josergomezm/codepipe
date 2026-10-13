@@ -18,6 +18,7 @@ const navItems = computed(() => [
   { label: 'Action items', path: '/actions', badge: team.openActionCount },
   { label: 'Ideas board', path: '/board', badge: 0 },
   { label: 'Ledger', path: '/ledger', badge: 0 },
+  { label: 'Providers', path: '/providers', badge: 0 },
   { label: 'Diagnostics', path: '/diagnostics', badge: 0 },
 ])
 

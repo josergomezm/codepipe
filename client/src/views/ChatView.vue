@@ -22,6 +22,24 @@ const showMenu = ref(false)
 // Chat / Changes / Terminal tabs, scoped to the active chat's project.
 type Tab = 'chat' | 'changes' | 'terminal'
 const activeTab = ref<Tab>('chat')
+/** Header icons for the tabs (Heroicons mini, 20px): chat bubble, code diff, terminal window. */
+const TABS: { id: Tab; label: string; paths: string[] }[] = [
+  {
+    id: 'chat',
+    label: 'Chat',
+    paths: ['M3.43 2.524A41.29 41.29 0 0 1 10 2c2.236 0 4.43.18 6.57.524 1.437.231 2.43 1.49 2.43 2.902v5.148c0 1.413-.993 2.67-2.43 2.902a41.202 41.202 0 0 1-5.183.501.78.78 0 0 0-.528.224l-3.579 3.58A.75.75 0 0 1 6 17.25v-3.443a41.033 41.033 0 0 1-2.57-.33C1.993 13.244 1 11.986 1 10.573V5.426c0-1.413.993-2.67 2.43-2.902Z'],
+  },
+  {
+    id: 'changes',
+    label: 'Changes',
+    paths: ['M6.28 5.22a.75.75 0 0 1 0 1.06L2.56 10l3.72 3.72a.75.75 0 0 1-1.06 1.06L.97 10.53a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 0 1 1.06 0Zm7.44 0a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L17.44 10l-3.72-3.72a.75.75 0 0 1 0-1.06ZM11.377 2.011a.75.75 0 0 1 .612.867l-2.5 14.5a.75.75 0 0 1-1.478-.255l2.5-14.5a.75.75 0 0 1 .866-.612Z'],
+  },
+  {
+    id: 'terminal',
+    label: 'Terminal',
+    paths: ['M3.25 3A2.25 2.25 0 0 0 1 5.25v9.5A2.25 2.25 0 0 0 3.25 17h13.5A2.25 2.25 0 0 0 19 14.75v-9.5A2.25 2.25 0 0 0 16.75 3H3.25Zm.943 8.752a.75.75 0 0 1 .055-1.06L6.128 9l-1.88-1.692a.75.75 0 1 1 1.004-1.116l2.5 2.25a.75.75 0 0 1 0 1.116l-2.5 2.25a.75.75 0 0 1-1.06-.056ZM9.75 10.25a.75.75 0 0 0 0 1.5h2.5a.75.75 0 0 0 0-1.5h-2.5Z'],
+  },
+]
 const changesCount = ref<number | null>(null)
 const changesPanel = ref<InstanceType<typeof ChangesPanel> | null>(null)
 // Terminals start a real shell, so only mount one once its tab is opened.
@@ -138,6 +156,43 @@ function handleRestart() {
         </svg>
       </button>
 
+      <!-- Chat / Changes / Terminal, as icons -->
+      <template v-if="store.activeSessionId">
+        <button
+          v-for="tab in TABS"
+          :key="tab.id"
+          class="relative mr-1 rounded-lg p-1.5 transition"
+          :class="activeTab === tab.id
+            ? 'bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300'
+            : 'text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800'"
+          :title="tab.label"
+          :aria-label="tab.label"
+          :aria-pressed="activeTab === tab.id"
+          @click="selectTab(tab.id)"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-5 w-5">
+            <path v-for="(d, i) in tab.paths" :key="i" fill-rule="evenodd" clip-rule="evenodd" :d="d" />
+          </svg>
+          <span
+            v-if="tab.id === 'changes' && changesCount"
+            class="absolute -right-0.5 -top-0.5 min-w-[16px] rounded-full bg-violet-600 px-1 text-center text-[10px] font-medium leading-4 text-white"
+          >{{ changesCount }}</span>
+        </button>
+        <span class="mx-1 h-5 w-px bg-gray-200 dark:bg-gray-700" />
+      </template>
+
+      <!-- Add an action item for this chat's project -->
+      <button
+        v-if="store.activeSessionId"
+        class="mr-1 rounded-lg p-1.5 text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+        title="Add an action item"
+        @click="ui.openQuickAdd({ projectId: activeProjectId ?? undefined })"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-5 w-5">
+          <path fill-rule="evenodd" d="M4.25 2A2.25 2.25 0 0 0 2 4.25v11.5A2.25 2.25 0 0 0 4.25 18h11.5A2.25 2.25 0 0 0 18 15.75V4.25A2.25 2.25 0 0 0 15.75 2H4.25ZM10 6a.75.75 0 0 1 .75.75v2.5h2.5a.75.75 0 0 1 0 1.5h-2.5v2.5a.75.75 0 0 1-1.5 0v-2.5h-2.5a.75.75 0 0 1 0-1.5h2.5v-2.5A.75.75 0 0 1 10 6Z" clip-rule="evenodd" />
+        </svg>
+      </button>
+
       <!-- Three-dot menu -->
       <div v-if="store.activeSessionId" class="relative">
         <button
@@ -198,25 +253,6 @@ function handleRestart() {
 
     <!-- Active chat -->
     <template v-else>
-      <!-- Tabs -->
-      <div class="flex shrink-0 gap-1 border-b border-gray-200 px-3 dark:border-gray-800">
-        <button
-          v-for="tab in (['chat', 'changes', 'terminal'] as const)"
-          :key="tab"
-          class="-mb-px flex items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-xs font-medium capitalize transition"
-          :class="activeTab === tab
-            ? 'border-violet-500 text-violet-700 dark:text-violet-300'
-            : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'"
-          @click="selectTab(tab)"
-        >
-          {{ tab }}
-          <span
-            v-if="tab === 'changes' && changesCount"
-            class="rounded-full bg-gray-200 px-1.5 text-[10px] font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300"
-          >{{ changesCount }}</span>
-        </button>
-      </div>
-
       <div v-show="activeTab === 'chat'" class="flex min-h-0 flex-1 flex-col">
         <ChatLoader v-if="store.loading" />
         <template v-else>

@@ -7,6 +7,7 @@ import { existsSync } from 'fs'
 
 import type { IStorageLayer } from '../storage.js'
 import { PersonaBodySchema, UpdatePersonaRequestSchema } from '../schemas.js'
+import { cleanProviderOverrides } from '../provider-settings.js'
 import { log } from '../logger.js'
 
 /** Avatar uploads: images only, small. */
@@ -59,9 +60,18 @@ export function createPersonaRoutes(storage: IStorageLayer, avatarsDir: string):
       res.status(400).json({ error: parsed.error.format() })
       return
     }
+    const settings = cleanProviderOverrides(parsed.data.providerSettings)
+    if (!settings.ok) {
+      res.status(400).json({ error: settings.error })
+      return
+    }
 
     try {
-      const persona = await storage.addPersona(parsed.data)
+      const { providerSettings: _ignored, ...rest } = parsed.data
+      const persona = await storage.addPersona({
+        ...rest,
+        ...(settings.overrides ? { providerSettings: settings.overrides } : {}),
+      })
       res.status(201).json(persona)
     } catch (err) {
       log.error('api', 'Failed to add persona', err)
@@ -76,9 +86,17 @@ export function createPersonaRoutes(storage: IStorageLayer, avatarsDir: string):
       res.status(400).json({ error: parsed.error.format() })
       return
     }
+    const settings = cleanProviderOverrides(parsed.data.providerSettings)
+    if (!settings.ok) {
+      res.status(400).json({ error: settings.error })
+      return
+    }
 
     try {
-      const persona = await storage.updatePersona(req.params.id, parsed.data)
+      // An explicit `providerSettings` (even `{}`) replaces the whole map.
+      const { providerSettings: _ignored, ...rest } = parsed.data
+      const data = 'providerSettings' in parsed.data ? { ...rest, providerSettings: settings.overrides } : rest
+      const persona = await storage.updatePersona(req.params.id, data)
       res.json(persona)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to update persona'

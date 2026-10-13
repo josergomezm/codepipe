@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as api from '../api/client'
-import type { Project, ProjectDevServer, DevServerInfo, ServiceWithState, ServiceConfig, ServiceState, PortRegistry } from '../api/client'
+import type { Project, ProjectDevServer, DevServerInfo, ServiceWithState, ServiceConfig, ServiceState, PortRegistry, ProviderSettingsOverrides } from '../api/client'
 
 /** Projects are always listed alphabetically by name ("App 2" before "App 10"). */
 function byName(a: Project, b: Project): number {
@@ -63,6 +63,20 @@ export const useProjectsStore = defineStore('projects', () => {
       error.value = null
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to update dev server config'
+    }
+  }
+
+  async function updateProjectProviderSettings(id: string, providerSettings: ProviderSettingsOverrides | null) {
+    try {
+      const updated = await api.updateProject(id, { providerSettings })
+      const index = projects.value.findIndex((p) => p.id === id)
+      if (index !== -1) {
+        projects.value[index] = { ...projects.value[index], ...updated, providerSettings: updated.providerSettings }
+      }
+      error.value = null
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to update provider overrides'
+      throw e
     }
   }
 
@@ -220,6 +234,7 @@ export const useProjectsStore = defineStore('projects', () => {
     removeProject,
     updateProjectDevServer,
     updateProjectStandup,
+    updateProjectProviderSettings,
     startDevServer,
     stopDevServer,
     getProjectDevUrl,

@@ -8,6 +8,8 @@ import type {
   SessionMeta,
   SessionKind,
   ChatMessage,
+  ChatActionCard,
+  ChatIdeaCard,
   Attachment,
   ModelState,
   ModelOption,
@@ -22,7 +24,10 @@ import { AcpSessionDriver } from './acp/driver.js'
 import type { TurnNotifier } from './push.js'
 import { log } from './logger.js'
 import { ISOLATED_CHILD } from './child-options.js'
+import { agentToolEnv, codepipeMcpServer, sessionGetsAgentTools } from './agent-tools.js'
 import { killProcessTree, listTurnProcesses, wasStoppedByUs } from './process-tree.js'
+import { resolveSettings, type SettingLayers, type SettingValues } from './provider-settings.js'
+import type { ProviderSettingsStore } from './provider-settings-store.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -91,6 +96,8 @@ export interface CreateSessionOptions {
   kind?: SessionKind
   title?: string
   model?: string
+  /** Persona driving the session — their launch-setting overrides apply. */
+  personaId?: string
 }
 
 export interface RunTurnOptions {
@@ -170,9 +177,36 @@ export class SessionManager implements ISessionManager {
    */
   onTeamTurn: ((session: Session, lastAssistant: ChatMessage | null) => void) | null = null
 
-  constructor(storage: IStorageLayer, notifier?: TurnNotifier) {
+  /** Global layer of provider launch settings; absent = spec defaults + env. */
+  private readonly providerSettings: ProviderSettingsStore | null
+
+  constructor(storage: IStorageLayer, notifier?: TurnNotifier, providerSettings?: ProviderSettingsStore) {
     this.storage = storage
     this.notifier = notifier ?? null
+    this.providerSettings = providerSettings ?? null
+  }
+
+  /**
+   * Launch settings for a session: defaults → env → global → project →
+   * persona. Read fresh per turn so a change on the settings page applies
+   * to the next message, no restart or new session needed.
+   */
+  async resolveLaunchSettings(session: Pick<Session, 'provider' | 'projectId' | 'personaId'>): Promise<SettingValues> {
+    const layers: SettingLayers = {}
+    if (this.providerSettings) layers.global = this.providerSettings.get(session.provider)
+    try {
+      const project = await this.storage.getProject(session.projectId)
+      const projectLayer = project?.providerSettings?.[session.provider]
+      if (projectLayer) layers.project = projectLayer
+      if (session.personaId) {
+        const persona = (await this.storage.listPersonas()).find((p) => p.id === session.personaId)
+        const personaLayer = persona?.providerSettings?.[session.provider]
+        if (personaLayer) layers.persona = personaLayer
+      }
+    } catch (err) {
+      log.warn('session', `Could not read project/persona launch overrides — using global settings`, err)
+    }
+    return resolveSettings(session.provider, layers).values
   }
 
   // -----------------------------------------------------------------------
@@ -209,6 +243,7 @@ export class SessionManager implements ISessionManager {
       messages: [],
       ...(options.kind ? { kind: options.kind } : {}),
       ...(options.model ? { model: options.model } : {}),
+      ...(options.personaId ? { personaId: options.personaId } : {}),
     }
 
     if (adapter.transport === 'acp') {
@@ -511,7 +546,12 @@ export class SessionManager implements ISessionManager {
     if (ctx.adapter.transport === 'acp') {
       this.handleAcpInput(sessionId, ctx, next.text, next.attachments)
     } else {
-      this.handleNonInteractiveInput(sessionId, ctx, next.text, next.attachments)
+      this.handleNonInteractiveInput(sessionId, ctx, next.text, next.attachments).catch((err) => {
+        log.error('session', `Failed to start turn for session ${sessionId}`, err)
+        this.emitSystemMessage(sessionId, ctx, `Could not start the CLI: ${err instanceof Error ? err.message : String(err)}`)
+        this.broadcast(sessionId, { type: 'status', data: 'idle' })
+        this.finishTurn(sessionId)
+      })
     }
   }
 
@@ -741,6 +781,7 @@ export class SessionManager implements ISessionManager {
       binary: ctx.adapter.command,
       cwd: ctx.projectPath,
       profile: ctx.adapter.acpProfile,
+      mcpServers: sessionGetsAgentTools(ctx.session.kind) ? [codepipeMcpServer(sessionId)] : [],
       callbacks: {
         onEvent: (event) => {
           const valid = validateAdapterEvents([event], (msg) => log.warn('adapter', msg))
@@ -867,6 +908,34 @@ export class SessionManager implements ISessionManager {
     this.emitSystemMessage(sessionId, ctx, content)
   }
 
+  /**
+   * Append + broadcast a card from an agent tool (an action item added,
+   * suggested or closed; an idea added). `content` is the plain-text
+   * fallback; the card itself rides in `metadata`.
+   */
+  appendCard(
+    sessionId: string,
+    content: string,
+    metadata: { kind: 'action'; action: ChatActionCard } | { kind: 'idea'; idea: ChatIdeaCard },
+  ): ChatMessage | null {
+    const ctx = this.sessions.get(sessionId)
+    if (!ctx) return null
+    const msg: ChatMessage = {
+      id: randomUUID(),
+      role: 'system',
+      content,
+      timestamp: Date.now(),
+      status: 'complete',
+      metadata,
+    }
+    ctx.session.messages.push(msg)
+    this.storage.appendMessage(sessionId, msg).catch((err) => {
+      log.error('session', `Failed to persist card for session ${sessionId}`, err)
+    })
+    this.broadcast(sessionId, { type: 'message', data: msg })
+    return msg
+  }
+
   /** Append + broadcast a system message (used for ACP errors). */
   private emitSystemMessage(sessionId: string, ctx: SessionContext, content: string): void {
     const msg: ChatMessage = {
@@ -885,18 +954,23 @@ export class SessionManager implements ISessionManager {
   // Non-interactive input (spawn per message)
   // -----------------------------------------------------------------------
 
-  private handleNonInteractiveInput(
+  private async handleNonInteractiveInput(
     sessionId: string,
     ctx: SessionContext,
     text: string,
     attachments?: Attachment[],
-  ): void {
+  ): Promise<void> {
     const adapter = ctx.adapter
 
     if (!adapter.buildMessageCommand) {
       log.error('session', `Adapter for ${adapter.provider} is non-interactive but missing buildMessageCommand`)
       throw new Error('Adapter configuration error')
     }
+
+    // Per-turn, so settings edits apply without recreating the session. The
+    // session may have been closed while we read them.
+    const launchSettings = await this.resolveLaunchSettings(ctx.session)
+    if (this.sessions.get(sessionId) !== ctx) return
 
     // Kill any still-running child process from a previous message
     if (ctx.childProcess) {
@@ -907,18 +981,23 @@ export class SessionManager implements ISessionManager {
     const isFirstMessage = !ctx.session.cliSessionId
 
     const attachmentRefs = attachments?.map(a => ({ path: a.path, mimeType: a.mimeType }))
+    const withTools = sessionGetsAgentTools(ctx.session.kind)
     const { command, args } = adapter.buildMessageCommand!(
       text,
       ctx.session.cliSessionId ?? null,
       attachmentRefs,
       ctx.session.model ?? null,
+      withTools ? [codepipeMcpServer(sessionId)] : [],
+      launchSettings,
     )
 
     log.info('session', `Spawning: ${command} ${args.join(' ')} in ${ctx.projectPath}`)
 
     const child = spawn(command, args, {
       cwd: ctx.projectPath,
-      env: { ...process.env },
+      // The session id also rides on the CLI's own environment, for CLIs that
+      // have CodePipe's MCP server registered globally (see agent-tools.ts).
+      env: { ...process.env, ...(withTools ? agentToolEnv(sessionId) : {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: false,
       ...ISOLATED_CHILD,
@@ -978,6 +1057,13 @@ export class SessionManager implements ISessionManager {
           const validEvents = validateAdapterEvents(stderrEvents, (msg) => {
             log.warn('adapter', msg)
           })
+          // A tool call reported on stderr (Kiro) marks a boundary in the
+          // reply: the text streamed so far — still a partial stdout line,
+          // since Kiro only ends its output with a newline — comes first.
+          if (validEvents.some((e) => e.type === 'tool_use') && stdoutBuffer.trim().length > 0) {
+            this.processNonInteractiveLine(sessionId, ctx, stdoutBuffer)
+            stdoutBuffer = ''
+          }
           if (validEvents.length > 0) {
             this.processAdapterEvents(sessionId, validEvents)
           }
@@ -1386,6 +1472,10 @@ export class SessionManager implements ISessionManager {
     }
 
     this.sessions.clear()
+
+    // Fire-and-forget writes (cards, notices, amended messages) may still
+    // be in flight; shutdown is not done until they have landed.
+    await this.storage.whenIdle()
   }
 
   // -----------------------------------------------------------------------

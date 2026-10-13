@@ -46,7 +46,8 @@ describe('KiroAdapter — properties', () => {
     expect(adapter.provider).toBe('kiro')
     expect(adapter.command).toBe(resolveKiroBinary())
     expect(adapter.args).toContain('--no-interactive')
-    expect(adapter.args).toContain('--trust-all-tools')
+    // Tool trust is a launch setting, applied per message (see below).
+    expect(adapter.args).not.toContain('--trust-all-tools')
     expect(adapter.args).toContain('--wrap')
   })
 
@@ -182,6 +183,16 @@ describe('KiroAdapter — onStderr', () => {
     const events = adapter.onStderr('some warning text\n')
     expect(events).toHaveLength(0)
   })
+
+  it('reports tool calls from stderr, skipping their status lines', () => {
+    const events = adapter.onStderr(
+      '\n\x1b[38;5;8m[tool]\x1b[0m Reading src/a.ts:1\n[tool] status: Completed\n[tool] Running: @codepipe/add_action_item\n',
+    )
+    expect(events).toEqual([
+      { type: 'tool_use', tool: 'reading', content: 'src/a.ts:1' },
+      { type: 'tool_use', tool: 'codepipe/add_action_item', content: 'codepipe/add_action_item' },
+    ])
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -209,9 +220,41 @@ describe('KiroAdapter — buildMessageCommand', () => {
     expect(args[args.length - 1]).toBe('follow up')
   })
 
-  it('always includes --trust-all-tools', () => {
+  it('includes --trust-all-tools by default', () => {
     expect(adapter.buildMessageCommand('hi', null).args).toContain('--trust-all-tools')
     expect(adapter.buildMessageCommand('hi', 'x').args).toContain('--trust-all-tools')
+  })
+
+  it('narrows trust to the listed tools when trust-all is off', () => {
+    const { args } = adapter.buildMessageCommand('hi', null, undefined, null, undefined, {
+      trustAllTools: false,
+      trustTools: ['fs_read', 'fs_write'],
+    })
+    expect(args).not.toContain('--trust-all-tools')
+    expect(args).toContain('--trust-tools=fs_read,fs_write')
+    expect(args[args.length - 1]).toBe('hi')
+  })
+
+  it('ignores the trusted-tool list while trust-all is on', () => {
+    const { args } = adapter.buildMessageCommand('hi', null, undefined, null, undefined, {
+      trustAllTools: true,
+      trustTools: ['fs_read'],
+    })
+    expect(args).toContain('--trust-all-tools')
+    expect(args.some((a) => a.startsWith('--trust-tools'))).toBe(false)
+  })
+
+  it('passes agent profile, effort and extra args from the settings', () => {
+    const { args } = adapter.buildMessageCommand('hi', null, undefined, null, undefined, {
+      trustAllTools: true,
+      agent: 'reviewer',
+      effort: 'high',
+      extraArgs: ['--foo', 'bar'],
+    })
+    expect(args[args.indexOf('--agent') + 1]).toBe('reviewer')
+    expect(args[args.indexOf('--effort') + 1]).toBe('high')
+    expect(args).toEqual(expect.arrayContaining(['--foo', 'bar']))
+    expect(args[args.length - 1]).toBe('hi')
   })
 
   it('prepends attachment references', () => {
