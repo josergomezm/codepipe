@@ -2,6 +2,7 @@ import { existsSync } from 'fs'
 import { readFile, readdir } from 'fs/promises'
 import path from 'path'
 import type { ProjectServiceConfig } from '../schemas.js'
+import { readPortsFile } from '../ports-file.js'
 import type { PortParser, ServiceState } from '../service-manager.js'
 import { randomUUID } from 'crypto'
 
@@ -14,7 +15,7 @@ import { randomUUID } from 'crypto'
  * emulator without an explicit port. Identical for every project, which is
  * why two projects on defaults collide.
  */
-const FIREBASE_DEFAULT_PORTS: Record<string, number> = {
+export const FIREBASE_DEFAULT_PORTS: Record<string, number> = {
   auth: 9099,
   functions: 5001,
   firestore: 8080,
@@ -28,6 +29,8 @@ const FIREBASE_DEFAULT_PORTS: Record<string, number> = {
   ui: 4000,
   hub: 4400,
   logging: 4500,
+  // Not an emulator entry: firebase.json's emulators.firestore.websocketPort
+  firestoreWebsocket: 9150,
 }
 
 export interface FirebaseDetectionResult {
@@ -37,6 +40,8 @@ export interface FirebaseDetectionResult {
   scriptName: string | null        // npm script name
   startCommand: string | null
   defaultPorts: Record<string, number>
+  /** Where defaultPorts came from: the project's ports.json, or firebase.json (+ defaults). */
+  portsSource: 'ports.json' | 'firebase.json' | null
 }
 
 /**
@@ -50,6 +55,7 @@ export async function detectFirebaseEmulators(projectPath: string): Promise<Fire
     scriptName: null,
     startCommand: null,
     defaultPorts: {},
+    portsSource: null,
   }
 
   // Search root and immediate subdirs for firebase.json
@@ -60,27 +66,15 @@ export async function detectFirebaseEmulators(projectPath: string): Promise<Fire
   const firebaseDir = path.dirname(firebasePath)
   result.firebaseDir = path.relative(projectPath, firebaseDir) || null
 
-  // Parse firebase.json for the ports the emulators will actually bind:
-  // explicit ports win, otherwise Firebase's built-in defaults apply.
-  try {
-    const raw = await readFile(firebasePath, 'utf-8')
-    const config = JSON.parse(raw)
-    if (config.emulators) {
-      for (const [service, cfg] of Object.entries(config.emulators)) {
-        const obj = (cfg && typeof cfg === 'object' ? cfg : {}) as Record<string, unknown>
-        if (typeof obj.port === 'number') {
-          result.defaultPorts[service] = obj.port
-        } else if (obj.enabled !== false && FIREBASE_DEFAULT_PORTS[service] !== undefined) {
-          result.defaultPorts[service] = FIREBASE_DEFAULT_PORTS[service]
-        }
-      }
-      // The emulator hub always runs alongside the emulators
-      if (result.defaultPorts['hub'] === undefined) {
-        result.defaultPorts['hub'] = FIREBASE_DEFAULT_PORTS['hub']
-      }
-    }
-  } catch {
-    // Invalid firebase.json — still detected, just no ports
+  // A project's ports.json is its declaration of every emulator port —
+  // firebase.json is only a copy of it.
+  const portsFile = await readPortsFile(projectPath)
+  if (portsFile && Object.keys(portsFile.emulators).length > 0) {
+    result.defaultPorts = { ...portsFile.emulators }
+    result.portsSource = 'ports.json'
+  } else {
+    result.defaultPorts = await readFirebaseJsonPorts(firebasePath)
+    if (Object.keys(result.defaultPorts).length > 0) result.portsSource = 'firebase.json'
   }
 
   // Find a package.json with an emulators script
@@ -92,6 +86,39 @@ export async function detectFirebaseEmulators(projectPath: string): Promise<Fire
   }
 
   return result
+}
+
+/**
+ * The ports firebase.json's emulators will bind: explicit ports win,
+ * otherwise Firebase's built-in defaults apply — including the ports the
+ * suite opens on its own (hub, logging, Firestore websocket).
+ */
+async function readFirebaseJsonPorts(firebasePath: string): Promise<Record<string, number>> {
+  const ports: Record<string, number> = {}
+  try {
+    const config = JSON.parse(await readFile(firebasePath, 'utf-8'))
+    if (!config.emulators) return ports
+    for (const [service, cfg] of Object.entries(config.emulators)) {
+      const obj = (cfg && typeof cfg === 'object' ? cfg : {}) as Record<string, unknown>
+      if (typeof obj.port === 'number') {
+        ports[service] = obj.port
+      } else if (obj.enabled !== false && FIREBASE_DEFAULT_PORTS[service] !== undefined) {
+        ports[service] = FIREBASE_DEFAULT_PORTS[service]
+      }
+      if (service === 'firestore' && service in ports) {
+        ports['firestoreWebsocket'] = typeof obj.websocketPort === 'number'
+          ? obj.websocketPort
+          : FIREBASE_DEFAULT_PORTS['firestoreWebsocket']
+      }
+    }
+    // The hub, logging and UI run alongside the others unless configured
+    for (const always of ['ui', 'hub', 'logging']) {
+      if (!(always in config.emulators)) ports[always] = FIREBASE_DEFAULT_PORTS[always]
+    }
+  } catch {
+    // Invalid firebase.json — still detected, just no ports
+  }
+  return ports
 }
 
 /**
@@ -107,7 +134,37 @@ export function buildFirebaseServiceConfig(detection: FirebaseDetectionResult): 
     // The command is a bare `npm run <script>`, so it must run in the directory
     // that actually owns that script — not necessarily the firebase.json dir.
     cwd: detection.scriptDir ?? detection.firebaseDir ?? undefined,
+    ports: Object.keys(detection.defaultPorts).length > 0 ? { ...detection.defaultPorts } : undefined,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Persisted ports
+// ---------------------------------------------------------------------------
+
+function samePorts(a: Record<string, number> | undefined, b: Record<string, number>): boolean {
+  const aKeys = Object.keys(a ?? {})
+  return aKeys.length === Object.keys(b).length && aKeys.every((k) => a![k] === b[k])
+}
+
+/**
+ * Store detected firebase.json ports on a project's firebase-emulators
+ * services. Returns the updated services list, or null when nothing changed.
+ * A detection that read no ports (firebase.json gone or unparseable) leaves
+ * the stored ports alone rather than wiping them.
+ */
+export function applyFirebasePorts(
+  services: ProjectServiceConfig[] | undefined,
+  detection: FirebaseDetectionResult,
+): ProjectServiceConfig[] | null {
+  if (!detection.found || Object.keys(detection.defaultPorts).length === 0) return null
+  let changed = false
+  const next = (services ?? []).map((svc) => {
+    if (svc.type !== 'firebase-emulators' || samePorts(svc.ports, detection.defaultPorts)) return svc
+    changed = true
+    return { ...svc, ports: { ...detection.defaultPorts } }
+  })
+  return changed ? next : null
 }
 
 // ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 import { ref, watch, computed, onUnmounted } from 'vue'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
-import { detectDevServer } from '@/api/client'
+import { detectDevServer, fetchPortsSetupPrompt } from '@/api/client'
 import type { Project, ProviderSettingsOverrides } from '@/api/client'
 import ProviderOverridesPanel from '@/components/ProviderOverridesPanel.vue'
 
@@ -121,6 +121,17 @@ const startCommand = computed(() => {
   return run
 })
 
+// A repo with ports.json owns its dev server ports — the fields show the
+// file's values read-only (the server applies them on save either way).
+const portsFile = computed(() => project.value?.portsFile ?? null)
+const fileVitePort = computed(() => portsFile.value?.app['vite'])
+const fileTailscalePort = computed(() => portsFile.value?.app['tailscale'])
+const declaredPortCount = computed(() =>
+  portsFile.value
+    ? Object.keys(portsFile.value.app).length + Object.keys(portsFile.value.emulators).length
+    : 0,
+)
+
 // Track whether the project already has dev:remote script
 const hasDevRemoteScript = ref(false)
 
@@ -131,8 +142,8 @@ async function refreshDetection() {
     const result = await detectDevServer(props.projectId)
     if (result.packageManager) packageManager.value = result.packageManager
     if (!project.value?.devServer) {
-      if (result.port) port.value = String(result.port)
-      if (result.tailscalePort) tailscalePort.value = String(result.tailscalePort)
+      if (result.port && fileVitePort.value === undefined) port.value = String(result.port)
+      if (result.tailscalePort && fileTailscalePort.value === undefined) tailscalePort.value = String(result.tailscalePort)
     }
     detectedFramework.value = result.framework
     detectedSubDir.value = result.subDir
@@ -180,8 +191,8 @@ watch(
         customCommand.value = cmd
       }
     } else {
-      port.value = ''
-      tailscalePort.value = ''
+      port.value = fileVitePort.value !== undefined ? String(fileVitePort.value) : ''
+      tailscalePort.value = fileTailscalePort.value !== undefined ? String(fileTailscalePort.value) : ''
       packageManager.value = 'npm'
     }
 
@@ -222,7 +233,9 @@ const portError = computed<string | null>(() => {
   if (p < MIN_PORT || p > MAX_PORT) return `Must be ${MIN_PORT}–${MAX_PORT}`
 
   // Reserved ports check (CodePipe Backend: 5551, CodePipe Frontend: 5552)
-  const reserved = store.portRegistry?.reserved.find((r) => r.port === p)
+  const reserved = store.portRegistry?.reserved.find(
+    (r) => r.port === p && (!r.projectId || r.projectId !== props.projectId),
+  )
   if (reserved) return `Reserved by ${reserved.owner}`
 
   // Check existing projects
@@ -350,6 +363,12 @@ async function setupProject() {
   const tp = tailscalePort.value || String(suggestedTailscalePort.value)
   const pm = packageManager.value
 
+  const portsNote = portsFile.value
+    ? `
+
+This project declares its ports in ports.json at the repo root — read the dev server port (app.vite) and the Tailscale port (app.tailscale) from there instead of hardcoding them, and take the emulator ports from its "emulators" section.`
+    : ''
+
   const prompt = `Set up this project for CodePipe remote dev access. Here's what needs to happen:
 
 1. Add a \`dev:remote\` script to package.json that sets TAILSCALE_HOST and TAILSCALE_PORT env vars before running the dev server. Use \`set\` for Windows CMD (this is a Windows machine). The tailscale host is "${store.tailscaleHostname || '<your-tailscale-host>'}" and the tailscale port is ${tp}.
@@ -377,10 +396,29 @@ async function setupProject() {
       - Local (no TAILSCALE_HOST): keep the normal 127.0.0.1:<port> emulator connections.
       - Callable functions used from the browser: route through the same origin (proxy) or move the calls to the backend — never the raw functions emulator port.
 
-Keep the existing dev script intact — dev:remote is a separate script for tunnel access. The regular dev script should keep working for local development.`
+Keep the existing dev script intact — dev:remote is a separate script for tunnel access. The regular dev script should keep working for local development.${portsNote}`
 
   emit('close')
   await sessionsStore.createSessionWithPrompt('kiro', props.projectId, prompt)
+}
+
+const portsSetupLoading = ref(false)
+const portsSetupError = ref<string | null>(null)
+
+/** Open a chat that centralizes this project's ports in ports.json. */
+async function setupPortsFile() {
+  if (!props.projectId) return
+  portsSetupLoading.value = true
+  portsSetupError.value = null
+  try {
+    const { prompt } = await fetchPortsSetupPrompt(props.projectId)
+    emit('close')
+    await sessionsStore.createSessionWithPrompt('kiro', props.projectId, prompt)
+  } catch (e) {
+    portsSetupError.value = e instanceof Error ? e.message : 'Failed to prepare the ports setup'
+  } finally {
+    portsSetupLoading.value = false
+  }
 }
 
 function close() {
@@ -493,6 +531,29 @@ function close() {
                 <span>Tailscale mapping will be created automatically on start.</span>
               </div>
             </div>
+          </div>
+
+          <!-- Port centralization (ports.json) -->
+          <div class="rounded-lg border border-gray-200 px-4 py-3 dark:border-gray-700">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <div class="text-sm font-medium text-gray-900 dark:text-gray-100">Ports</div>
+                <p class="text-xs text-gray-400 dark:text-gray-500">
+                  <template v-if="portsFile">
+                    <code class="font-mono">ports.json</code> declares {{ declaredPortCount }} port{{ declaredPortCount === 1 ? '' : 's' }} — it owns this project's ports.
+                  </template>
+                  <template v-else>
+                    No <code class="font-mono">ports.json</code> yet. A chat can declare every port there, with ports CodePipe picks free across projects.
+                  </template>
+                </p>
+              </div>
+              <button
+                :disabled="portsSetupLoading"
+                class="shrink-0 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                @click="setupPortsFile"
+              >{{ portsSetupLoading ? 'Preparing…' : portsFile ? 'Re-check setup' : 'Set up ports.json' }}</button>
+            </div>
+            <p v-if="portsSetupError" class="mt-2 text-xs text-red-500">{{ portsSetupError }}</p>
           </div>
 
           <!-- Daily standup -->
@@ -616,12 +677,15 @@ function close() {
                   v-model="port"
                   type="number"
                   placeholder="5173"
+                  :readonly="fileVitePort !== undefined"
+                  :title="fileVitePort !== undefined ? 'Set by ports.json (app.vite)' : undefined"
                   class="w-full rounded-lg border bg-white px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-1 dark:bg-gray-800 dark:text-gray-100"
                   :class="portError
                     ? 'border-red-300 focus:border-red-500 focus:ring-red-500 dark:border-red-700'
                     : 'border-gray-200 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-700'"
                 />
                 <p v-if="portError" class="mt-1 text-xs text-red-500 dark:text-red-400">{{ portError }}</p>
+                <p v-else-if="fileVitePort !== undefined" class="mt-1 text-xs text-gray-400 dark:text-gray-500">From ports.json</p>
               </div>
               <div>
                 <label class="mb-1 block text-xs text-gray-500 dark:text-gray-400">Tailscale Port <span class="text-gray-400 dark:text-gray-600">1024–65535</span></label>
@@ -629,14 +693,17 @@ function close() {
                   v-model="tailscalePort"
                   type="number"
                   :placeholder="String(suggestedTailscalePort)"
+                  :readonly="fileTailscalePort !== undefined"
+                  :title="fileTailscalePort !== undefined ? 'Set by ports.json (app.tailscale)' : undefined"
                   class="w-full rounded-lg border bg-white px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-1 dark:bg-gray-800 dark:text-gray-100"
                   :class="tailscalePortError
                     ? 'border-red-300 focus:border-red-500 focus:ring-red-500 dark:border-red-700'
                     : 'border-gray-200 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-700'"
                 />
                 <p v-if="tailscalePortError" class="mt-1 text-xs text-red-500 dark:text-red-400">{{ tailscalePortError }}</p>
+                <p v-else-if="fileTailscalePort !== undefined" class="mt-1 text-xs text-gray-400 dark:text-gray-500">From ports.json</p>
                 <button
-                  v-if="tailscalePort === '' || tailscalePortError"
+                  v-if="fileTailscalePort === undefined && (tailscalePort === '' || tailscalePortError)"
                   class="mt-1 text-xs text-blue-600 hover:text-blue-700 dark:text-blue-400"
                   @click="tailscalePort = String(suggestedTailscalePort)"
                 >Use {{ suggestedTailscalePort }} (free)</button>

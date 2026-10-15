@@ -150,6 +150,12 @@ export const ProjectServiceConfigSchema = z.object({
   label: z.string().min(1),
   startCommand: z.string().min(1),
   cwd: z.string().optional(),
+  /**
+   * Ports the service binds, by name (e.g. firebase.json emulator → port).
+   * Persisted so conflicts are caught while the service is stopped; the
+   * running service's stdout stays the source of truth while it's up.
+   */
+  ports: z.record(z.string(), z.number()).optional(),
 })
 
 /** Per-project daily standup configuration (the proactive team layer). */

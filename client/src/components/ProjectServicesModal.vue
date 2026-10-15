@@ -2,7 +2,7 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
-import { detectFirebase } from '@/api/client'
+import { detectFirebase, fetchPortsSetupPrompt } from '@/api/client'
 import type { ServiceWithState, DetectFirebaseResponse } from '@/api/client'
 
 const props = defineProps<{
@@ -136,6 +136,23 @@ const isPortConflictError = computed(
 async function fixEmulatorPorts() {
   if (!props.projectId) return
 
+  const conflictContext = isPortConflictError.value
+    ? `The emulators just failed to start with this error: "${store.error}"\n\n`
+    : ''
+
+  // A repo with ports.json renumbers there (firebase.json is only its copy):
+  // reuse the ports setup, which picks a free port block across projects.
+  if (project.value?.portsFile) {
+    try {
+      const { prompt } = await fetchPortsSetupPrompt(props.projectId)
+      close()
+      await sessionsStore.createSessionWithPrompt('kiro', props.projectId, conflictContext + prompt)
+    } catch (e) {
+      store.error = e instanceof Error ? e.message : 'Failed to prepare the ports setup'
+    }
+    return
+  }
+
   // Every local port we know is taken on this machine
   const taken = new Set<number>()
   for (const r of store.portRegistry?.reserved ?? []) taken.add(r.port)
@@ -144,10 +161,6 @@ async function fixEmulatorPorts() {
     if (p.devServer) taken.add(p.devServer.port)
   }
   const takenList = [...taken].sort((a, b) => a - b).join(', ')
-
-  const conflictContext = isPortConflictError.value
-    ? `The emulators just failed to start with this error: "${store.error}"\n\n`
-    : ''
 
   const prompt = `${conflictContext}Fix the Firebase emulator ports of this project so its emulators can run alongside other projects on this machine. Firebase's default ports are the same for every project, so this project needs its own unique port block.
 

@@ -9,31 +9,51 @@ import { cleanProviderOverrides } from '../provider-settings.js'
 import { log } from '../logger.js'
 import type { DevServerManager } from '../dev-server-manager.js'
 import { getServeStatus, getTailscaleHostname } from '../tailscale.js'
-import { buildPortRegistry, checkPortConflicts, formatConflicts, servicePortsAsReserved, PortConflictError } from '../ports.js'
+import { buildPortRegistry, checkPortConflicts, formatConflicts, serviceReservations, PortConflictError } from '../ports.js'
 import type { ServiceManager } from '../service-manager.js'
+import { refreshProjectPorts } from '../project-ports.js'
+import { readPortsFile } from '../ports-file.js'
+import {
+  buildPortsSetupPrompt,
+  collectTakenPorts,
+  declaredPorts,
+  planAsExtraPorts,
+  planProjectPorts,
+  type ExtraPort,
+} from '../ports-setup.js'
+import { detectFirebaseEmulators } from '../services/firebase-detector.js'
 
 /**
  * Create an Express Router for project CRUD endpoints.
  */
 export function createProjectRoutes(storage: IStorageLayer, devServerManager: DevServerManager, serviceManager: ServiceManager): Router {
   const router = Router()
+  /** Port plans handed to a ports.json setup chat, by project (kept until restart). */
+  const handedOut = new Map<string, ExtraPort[]>()
 
   // GET /api/projects — list all projects
   router.get('/', async (_req, res) => {
     try {
-      const projects = await storage.listProjects()
+      // Re-read each repo's declared ports so edits to ports.json /
+      // firebase.json show up without a restart.
+      const refreshed = await Promise.all(
+        (await storage.listProjects()).map((p) => refreshProjectPorts(storage, p)),
+      )
+      const projects = refreshed.map((r) => r.project)
       const hostname = getTailscaleHostname()
-      // Attach runtime dev server status to each project
-      const result = projects.map((p) => ({
+      // Attach runtime dev server status (and the repo's ports.json) to each project
+      const result = refreshed.map(({ project: p, portsFile }) => ({
         ...p,
         devServerStatus: p.devServer
           ? devServerManager.getStatus(p.id, p.devServer)
           : null,
+        portsFile,
       }))
 
-      // Port registry: CodePipe's own ports, ports held by running services
-      // (e.g. Firebase emulators), and all Tailscale serve mappings
-      const servicePorts = servicePortsAsReserved(serviceManager.listRunning(), projects)
+      // Port registry: CodePipe's own ports, ports held by services (stored
+      // Firebase emulator ports, plus live ports of running services), and
+      // all Tailscale serve mappings
+      const servicePorts = serviceReservations(projects, serviceManager.listRunning())
       const portRegistry = buildPortRegistry(projects, servicePorts)
 
       res.json({ projects: result, tailscaleHostname: hostname, portRegistry })
@@ -111,8 +131,13 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
             return
           }
 
+          // A repo with ports.json owns its ports — the file wins over the form.
+          const portsFile = await readPortsFile(project.path)
+          if (portsFile?.app['vite'] !== undefined) parsed.data.port = portsFile.app['vite']
+          if (portsFile?.app['tailscale'] !== undefined) parsed.data.tailscalePort = portsFile.app['tailscale']
+
           const allProjects = await storage.listProjects()
-          const servicePorts = servicePortsAsReserved(serviceManager.listRunning(), allProjects)
+          const servicePorts = serviceReservations(allProjects, serviceManager.listRunning())
           const conflicts = checkPortConflicts(parsed.data.port, parsed.data.tailscalePort, allProjects, id, servicePorts)
           if (conflicts.length > 0) {
             res.status(400).json({ error: formatConflicts(conflicts) })
@@ -188,11 +213,13 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
     const { id } = req.params
 
     try {
-      const project = await storage.getProject(id)
-      if (!project) {
+      const stored = await storage.getProject(id)
+      if (!stored) {
         res.status(404).json({ error: 'Project not found' })
         return
       }
+      // Start on the ports the repo declares now, not what was last stored.
+      const { project } = await refreshProjectPorts(storage, stored)
 
       if (!project.devServer) {
         res.status(400).json({ error: 'No dev server configured for this project' })
@@ -202,7 +229,7 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
       // Guard against clobbering another project's ports or an active
       // Tailscale mapping — configs can go stale after they were saved.
       const allProjects = await storage.listProjects()
-      const servicePorts = servicePortsAsReserved(serviceManager.listRunning(), allProjects)
+      const servicePorts = serviceReservations(allProjects, serviceManager.listRunning())
       const conflicts = checkPortConflicts(project.devServer.port, project.devServer.tailscalePort, allProjects, id, servicePorts)
       if (conflicts.length > 0) {
         res.status(409).json({ error: `Cannot start: ${formatConflicts(conflicts)}. Update the ports in project settings.` })
@@ -271,6 +298,54 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
     } catch (err) {
       log.error('api', `Failed to detect dev server for project ${id}`, err)
       res.status(500).json({ error: 'Failed to detect dev server config' })
+    }
+  })
+
+  // GET /api/projects/:id/ports-setup — the agent prompt that centralizes
+  // this project's ports in ports.json, with a conflict-free port set picked
+  router.get('/:id/ports-setup', async (req, res) => {
+    const { id } = req.params
+
+    try {
+      const stored = await storage.getProject(id)
+      if (!stored) {
+        res.status(404).json({ error: 'Project not found' })
+        return
+      }
+
+      const { project, portsFile } = await refreshProjectPorts(storage, stored)
+      const detection = await detectFirebaseEmulators(project.path)
+      const vite = portsFile?.app['vite']
+        ?? project.devServer?.port
+        ?? (await detectDevServerConfig(project.path)).port
+        ?? undefined
+      const current = {
+        vite,
+        tailscale: portsFile?.app['tailscale'] ?? project.devServer?.tailscalePort,
+        emulators: detection.found ? detection.defaultPorts : {},
+      }
+
+      // Other repos' declared ports count even when CodePipe has no service
+      // config for them, and so do plans handed out whose chat hasn't
+      // written ports.json yet — two setups never get the same block.
+      const allProjects = await storage.listProjects()
+      const extra = [
+        ...(await Promise.all(allProjects.filter((p) => p.id !== id).map(declaredPorts))).flat(),
+        ...[...handedOut.entries()].filter(([pid]) => pid !== id).flatMap(([, ports]) => ports),
+      ]
+      const taken = collectTakenPorts(id, allProjects, serviceManager.listRunning(), getServeStatus().mappings, extra)
+      const plan = planProjectPorts(current, taken)
+      handedOut.set(id, planAsExtraPorts(id, project.name, plan))
+      const prompt = buildPortsSetupPrompt({
+        plan,
+        hasPortsFile: portsFile !== null,
+        firebase: detection.found ? { dir: detection.firebaseDir } : null,
+        taken: taken.local,
+      })
+      res.json({ prompt, plan })
+    } catch (err) {
+      log.error('api', `Failed to build ports setup for project ${id}`, err)
+      res.status(500).json({ error: 'Failed to build ports setup' })
     }
   })
 

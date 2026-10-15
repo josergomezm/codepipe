@@ -22,6 +22,7 @@ import { ClaudeAdapter } from './adapters/claude.js'
 import { createSessionRoutes } from './routes/sessions.js'
 import { createProjectRoutes } from './routes/projects.js'
 import { createServiceRoutes } from './routes/services.js'
+import { refreshProjectPorts } from './project-ports.js'
 import { createBrowseRoutes } from './routes/browse.js'
 import { createUploadRoutes } from './routes/upload.js'
 import { createTodoRoutes } from './routes/todos.js'
@@ -170,6 +171,12 @@ if (isMainModule) {
   server.listen(port, host, () => {
     log.info('server', `CodePipe server listening on http://${host}:${port}`)
   })
+
+  // Backfill / refresh the stored ports from each project's ports.json /
+  // firebase.json, so port conflicts are known without anything running.
+  void storage.listProjects()
+    .then((projects) => Promise.all(projects.map((p) => refreshProjectPorts(storage, p))))
+    .catch((err) => log.error('server', 'Failed to refresh stored service ports', err))
 
   standupService.start()
   dueReminders.start()

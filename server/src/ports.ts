@@ -25,12 +25,15 @@ export interface ProjectPortInfo {
   id: string
   name: string
   devServer?: { port: number; tailscalePort?: number }
+  services?: Array<{ label: string; ports?: Record<string, number> }>
 }
 
 export interface ReservedPort {
   port: number
   type: 'local'
   owner: string
+  /** Project whose service holds the port — a project never conflicts with itself. */
+  projectId?: string
 }
 
 export interface RegistryMapping {
@@ -140,8 +143,9 @@ export function checkPortConflicts(
     add({ port: localPort, type: 'local', owner: 'CodePipe Frontend' })
   }
 
-  // Runtime reservations (e.g. ports held by running Firebase emulators)
+  // Service reservations (e.g. Firebase emulator ports, stored or running)
   for (const r of extraReserved) {
+    if (r.projectId !== undefined && r.projectId === excludeProjectId) continue
     if (r.port === localPort) {
       add({ port: localPort, type: 'local', owner: r.owner })
     }
@@ -204,9 +208,36 @@ export function servicePortsAsReserved(running: RunningService[], projects: Proj
   for (const svc of running) {
     const projectName = projects.find((p) => p.id === svc.projectId)?.name ?? 'another project'
     for (const [name, info] of Object.entries(svc.state.ports)) {
-      out.push({ port: info.port, type: 'local', owner: `${projectName} — ${svc.label} (${name})` })
+      out.push({ port: info.port, type: 'local', owner: `${projectName} — ${svc.label} (${name})`, projectId: svc.projectId })
     }
   }
+  return out
+}
+
+/**
+ * All port reservations held by projects' services: the ports stored on each
+ * service config (from firebase.json) count even while nothing runs, and a
+ * running service's live ports are added on top, so a port that drifted from
+ * the stored value is still covered. One entry per project + port.
+ */
+export function serviceReservations(projects: ProjectPortInfo[], running: RunningService[] = []): ReservedPort[] {
+  const out: ReservedPort[] = []
+  const seen = new Set<string>()
+  const add = (r: ReservedPort) => {
+    const key = `${r.projectId}:${r.port}`
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push(r)
+  }
+
+  for (const project of projects) {
+    for (const svc of project.services ?? []) {
+      for (const [name, port] of Object.entries(svc.ports ?? {})) {
+        add({ port, type: 'local', owner: `${project.name} — ${svc.label} (${name})`, projectId: project.id })
+      }
+    }
+  }
+  for (const r of servicePortsAsReserved(running, projects)) add(r)
   return out
 }
 

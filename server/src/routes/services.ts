@@ -4,8 +4,14 @@ import type { IStorageLayer } from '../storage.js'
 import { normalizeStartCommand, type ServiceManager } from '../service-manager.js'
 import { ProjectServiceConfigSchema } from '../schemas.js'
 import { log } from '../logger.js'
-import { detectFirebaseEmulators, buildFirebaseServiceConfig, firebasePortParser } from '../services/firebase-detector.js'
+import {
+  detectFirebaseEmulators,
+  buildFirebaseServiceConfig,
+  firebasePortParser,
+  applyFirebasePorts,
+} from '../services/firebase-detector.js'
 import { isLocalPortListening, identifyLocalPortOwner, servicePortsAsReserved } from '../ports.js'
+import { refreshProjectPorts } from '../project-ports.js'
 
 // TypeScript doesn't reflect mergeParams at the type level, so we cast params
 // explicitly in each handler.
@@ -60,9 +66,16 @@ export function createServiceRoutes(storage: IStorageLayer, serviceManager: Serv
         return
       }
 
-      const services = [...(project.services ?? []), parsed.data]
+      // Persist the emulator ports from firebase.json so conflicts are
+      // caught even while the emulators are stopped.
+      const config = parsed.data
+      if (config.type === 'firebase-emulators' && !config.ports) {
+        config.ports = applyFirebasePorts([config], await detectFirebaseEmulators(project.path))?.[0]?.ports
+      }
+
+      const services = [...(project.services ?? []), config]
       await storage.updateProject(id, { services })
-      res.status(201).json(parsed.data)
+      res.status(201).json(config)
     } catch (err) {
       log.error('api', `Failed to add service to project ${id}`, err)
       res.status(500).json({ error: 'Failed to add service' })
@@ -83,6 +96,22 @@ export function createServiceRoutes(storage: IStorageLayer, serviceManager: Serv
     } catch (err) {
       log.error('api', `Failed to detect firebase for project ${id}`, err)
       res.status(500).json({ error: 'Detection failed' })
+    }
+  })
+
+  // POST /api/projects/:id/services/refresh — re-read the stored ports
+  // (ports.json / firebase.json) after the project's config changed
+  router.post('/refresh', async (req, res) => {
+    const { id } = req.params as unknown as P
+    try {
+      const project = await storage.getProject(id)
+      if (!project) { res.status(404).json({ error: 'Project not found' }); return }
+
+      const { project: updated } = await refreshProjectPorts(storage, project)
+      res.json({ services: updated.services ?? [] })
+    } catch (err) {
+      log.error('api', `Failed to refresh services for project ${id}`, err)
+      res.status(500).json({ error: 'Failed to refresh services' })
     }
   })
 
@@ -150,6 +179,9 @@ export function createServiceRoutes(storage: IStorageLayer, serviceManager: Serv
       // project, so check the ports this instance will bind before spawning.
       if (config.type === 'firebase-emulators') {
         const detection = await detectFirebaseEmulators(project.path)
+        // Keep the stored ports in step with firebase.json while we have it read.
+        const refreshed = applyFirebasePorts(project.services, detection)
+        if (refreshed) await storage.updateProject(id, { services: refreshed })
         const allProjects = await storage.listProjects()
 
         // Ports held by this same service are fine — start() restarts it.

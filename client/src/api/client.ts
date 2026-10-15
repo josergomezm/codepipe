@@ -88,6 +88,14 @@ export interface ServiceConfig {
   label: string
   startCommand: string
   cwd?: string
+  /** Stored ports by name (e.g. firebase.json emulator → port). */
+  ports?: Record<string, number>
+}
+
+/** A repo's ports.json (see server/src/ports-file.ts). */
+export interface PortsFile {
+  app: Record<string, number>
+  emulators: Record<string, number>
 }
 
 export interface ServiceState {
@@ -116,6 +124,8 @@ export interface Project {
   devServer?: ProjectDevServer
   devServerStatus?: DevServerInfo | null
   services?: ServiceConfig[]
+  /** The repo's ports.json, when it has one — it owns the project's ports. */
+  portsFile?: PortsFile | null
   standup?: ProjectStandupConfig
   /** Launch-setting overrides for sessions in this project (over the global layer). */
   providerSettings?: ProviderSettingsOverrides
@@ -395,6 +405,8 @@ export interface ReservedPort {
   port: number
   type: 'local'
   owner: string
+  /** Project whose service holds the port, if any. */
+  projectId?: string
 }
 
 export interface TailscaleMapping {
@@ -633,6 +645,10 @@ export function detectFirebase(projectId: string): Promise<DetectFirebaseRespons
   return request<DetectFirebaseResponse>(`/api/projects/${projectId}/services/detect/firebase`)
 }
 
+/** The agent prompt that centralizes a project's ports in ports.json. */
+export function fetchPortsSetupPrompt(projectId: string): Promise<{ prompt: string }> {
+  return request<{ prompt: string }>(`/api/projects/${projectId}/ports-setup`)
+}
 // --- Todos ---
 
 export function fetchTodos(projectId?: string): Promise<Todo[]> {
