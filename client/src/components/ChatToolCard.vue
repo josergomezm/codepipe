@@ -120,7 +120,8 @@ const TONES = {
 </script>
 
 <template>
-  <div v-if="view" class="flex justify-center px-4 py-2">
+  <!-- Left-aligned with the agent's replies: the card is the agent's output -->
+  <div v-if="view" class="flex justify-start px-4 py-1">
     <div class="w-full max-w-md rounded-xl border px-4 py-3" :class="TONES[view.tone].box">
       <p class="text-[11px] font-semibold uppercase tracking-wider" :class="TONES[view.tone].label">{{ view.label }}</p>
       <p

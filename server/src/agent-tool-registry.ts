@@ -247,12 +247,14 @@ const addActionItem: ToolDef = {
 
     const duplicate = findDuplicateAction(await storage.listActionItems(projectId), draft)
     if (duplicate) return { text: `Already on the user's list: "${duplicate.text}".` }
-    sessionManager.appendCard(ctx.session.id, `Suggested action item: ${draft.text}`, {
-      kind: 'action',
-      action: { draft, state: 'suggested' },
-    })
+    sessionManager.appendCard(
+      ctx.session.id,
+      `Suggested action item: ${draft.text}`,
+      { kind: 'action', action: { draft, state: 'suggested' } },
+      { atTurnEnd: true },
+    )
     return {
-      text: 'Shown to the user as a suggestion card in this chat — they decide whether to add it. No need to mention it again.',
+      text: 'The user will see this as a suggestion card right after your reply — they decide whether to add it. No need to repeat it in your reply.',
     }
   },
 }

@@ -77,6 +77,11 @@ export interface SessionContext {
    * output (or a routing artifact) when turns and routing interleave.
    */
   currentTurnAssistantId?: string
+  /**
+   * Cards posted mid-turn that wait for the turn to end (suggestions), so
+   * they land under the agent's final reply instead of between its steps.
+   */
+  deferredCards?: ChatMessage[]
 }
 
 interface QueuedInput {
@@ -560,6 +565,7 @@ export class SessionManager implements ISessionManager {
     const ctx = this.sessions.get(sessionId)
     if (!ctx) return
     ctx.busy = false
+    this.flushDeferredCards(sessionId)
 
     const queueDrained = !ctx.inputQueue || ctx.inputQueue.length === 0
     const isTeam = ctx.session.kind === 'team'
@@ -646,6 +652,7 @@ export class SessionManager implements ISessionManager {
     // Non-ACP processes emit 'close' which calls finishTurn; for ACP (cancel is
     // a fire-and-forget notification) clear busy now so the UI returns to idle.
     ctx.busy = false
+    this.flushDeferredCards(sessionId)
     this.broadcast(sessionId, { type: 'status', data: 'idle' })
   }
 
@@ -678,6 +685,7 @@ export class SessionManager implements ISessionManager {
     // Finalize any streaming message
     this.finalizeCurrentMessage(sessionId)
     ctx.currentMessage = null
+    this.flushDeferredCards(sessionId)
 
     // 3. Emit a system message so the user knows what happened
     this.emitSystemMessage(sessionId, ctx, 'CLI restarted.')
@@ -912,11 +920,16 @@ export class SessionManager implements ISessionManager {
    * Append + broadcast a card from an agent tool (an action item added,
    * suggested or closed; an idea added). `content` is the plain-text
    * fallback; the card itself rides in `metadata`.
+   *
+   * `atTurnEnd` holds the card while a turn is in flight and posts it once
+   * the turn ends, under the agent's final reply — for cards that ask the
+   * user to decide something (suggestions) rather than report what happened.
    */
   appendCard(
     sessionId: string,
     content: string,
     metadata: { kind: 'action'; action: ChatActionCard } | { kind: 'idea'; idea: ChatIdeaCard },
+    options: { atTurnEnd?: boolean } = {},
   ): ChatMessage | null {
     const ctx = this.sessions.get(sessionId)
     if (!ctx) return null
@@ -928,12 +941,34 @@ export class SessionManager implements ISessionManager {
       status: 'complete',
       metadata,
     }
+    if (options.atTurnEnd && ctx.busy) {
+      ;(ctx.deferredCards ??= []).push(msg)
+      return msg
+    }
+    this.postCard(sessionId, ctx, msg)
+    return msg
+  }
+
+  private postCard(sessionId: string, ctx: SessionContext, msg: ChatMessage): void {
+    // The tool call can reach us before the CLI's own output for the text
+    // that preceded it — close that text first so the card lands after it,
+    // in memory and on disk (the streaming text's write is debounced).
+    this.finalizeCurrentMessage(sessionId)
+    msg.timestamp = Date.now()
     ctx.session.messages.push(msg)
     this.storage.appendMessage(sessionId, msg).catch((err) => {
       log.error('session', `Failed to persist card for session ${sessionId}`, err)
     })
     this.broadcast(sessionId, { type: 'message', data: msg })
-    return msg
+  }
+
+  /** Post the cards held for the end of the turn (see appendCard). */
+  private flushDeferredCards(sessionId: string): void {
+    const ctx = this.sessions.get(sessionId)
+    const cards = ctx?.deferredCards
+    if (!ctx || !cards?.length) return
+    ctx.deferredCards = []
+    for (const msg of cards) this.postCard(sessionId, ctx, msg)
   }
 
   /** Append + broadcast a system message (used for ACP errors). */
