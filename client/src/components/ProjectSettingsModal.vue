@@ -356,56 +356,15 @@ function openDevUrl() {
   }
 }
 
-async function setupProject() {
-  if (!props.projectId || !project.value) return
-
-  const p = port.value || '5173'
-  const tp = tailscalePort.value || String(suggestedTailscalePort.value)
-  const pm = packageManager.value
-
-  const portsNote = portsFile.value
-    ? `
-
-This project declares its ports in ports.json at the repo root — read the dev server port (app.vite) and the Tailscale port (app.tailscale) from there instead of hardcoding them, and take the emulator ports from its "emulators" section.`
-    : ''
-
-  const prompt = `Set up this project for CodePipe remote dev access. Here's what needs to happen:
-
-1. Add a \`dev:remote\` script to package.json that sets TAILSCALE_HOST and TAILSCALE_PORT env vars before running the dev server. Use \`set\` for Windows CMD (this is a Windows machine). The tailscale host is "${store.tailscaleHostname || '<your-tailscale-host>'}" and the tailscale port is ${tp}.
-
-2. Configure the dev server (Vite, Next, etc.) for HMR over Tailscale:
-   - Bind to 0.0.0.0
-   - Set port to ${p}
-   - Configure HMR to use wss:// protocol with the TAILSCALE_HOST env var and clientPort from TAILSCALE_PORT env var (only when TAILSCALE_HOST is set, otherwise use defaults for local dev)
-   - Set allowedHosts to true (safe on a tailnet)
-
-3. The package manager is ${pm}.
-
-4. IMPORTANT — single-origin rule: this app is accessed remotely (e.g. from a phone) through ONE Tailscale-served https origin, so browser code must NEVER connect directly to other localhost ports (on the phone, 127.0.0.1 is the phone; https pages also can't call http endpoints). Server-side emulator traffic (Admin SDK) is fine as-is via *_EMULATOR_HOST env vars. But if this project uses Firebase client-SDK emulators in the BROWSER, wire them through the dev server so all emulator traffic is same-origin:
-
-   a. Read the emulator ports from firebase.json, then add Vite server.proxy entries targeting them (emulator URL paths are globally unique, so they won't clash with app routes):
-      - '/identitytoolkit.googleapis.com' → http://127.0.0.1:<auth port>
-      - '/securetoken.googleapis.com' → http://127.0.0.1:<auth port>
-      - '/emulator' → http://127.0.0.1:<auth port>  (auth handler/widget pages used by signInWithPopup/Redirect)
-      - '/google.firestore.v1.Firestore' → http://127.0.0.1:<firestore port>  (set ws: true)
-      - '/v0' → http://127.0.0.1:<storage port>  (only if the storage emulator is used in the browser)
-
-   b. In the client emulator-connection code, branch on remote mode (expose TAILSCALE_HOST to the client, e.g. via Vite define/VITE_ var, or use the mode):
-      - Remote: connectAuthEmulator(auth, window.location.origin, { disableWarnings: true })
-      - Remote Firestore: do NOT use connectFirestoreEmulator (it forces ssl:false, which breaks on an https page). Instead: initializeFirestore(app, { host: window.location.host, ssl: true, experimentalAutoDetectLongPolling: true })
-      - Local (no TAILSCALE_HOST): keep the normal 127.0.0.1:<port> emulator connections.
-      - Callable functions used from the browser: route through the same origin (proxy) or move the calls to the backend — never the raw functions emulator port.
-
-Keep the existing dev script intact — dev:remote is a separate script for tunnel access. The regular dev script should keep working for local development.${portsNote}`
-
-  emit('close')
-  await sessionsStore.createSessionWithPrompt('kiro', props.projectId, prompt)
-}
-
 const portsSetupLoading = ref(false)
 const portsSetupError = ref<string | null>(null)
 
-/** Open a chat that centralizes this project's ports in ports.json. */
+/**
+ * Open a chat that sets the project up for remote dev — dev:remote, the dev
+ * server bound where CodePipe waits for it — and centralizes its ports in
+ * ports.json. The server builds the prompt: it knows the framework and picks
+ * ports free across every project.
+ */
 async function setupPortsFile() {
   if (!props.projectId) return
   portsSetupLoading.value = true
@@ -736,7 +695,7 @@ function close() {
             <div v-if="hasValidConfig && !hasDevRemoteScript" class="border-t border-gray-200 pt-3 dark:border-gray-700">
               <button
                 class="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                @click="setupProject"
+                @click="setupPortsFile"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-4 w-4">
                   <path fill-rule="evenodd" d="M11.5 8a3.5 3.5 0 0 0-3.495-3.5H7.5v-1A2.5 2.5 0 0 0 5 1H3.5A2.5 2.5 0 0 0 1 3.5V5a2.5 2.5 0 0 0 2.5 2.5h1V8.5A3.5 3.5 0 0 0 8 12h.5v1a2.5 2.5 0 0 0 2.5 2.5h1.5A2.5 2.5 0 0 0 15 13v-1.5a2.5 2.5 0 0 0-2.5-2.5H11v-.5A3.5 3.5 0 0 0 11.5 8ZM3.5 2.5H5A1 1 0 0 1 6 3.5v1H3.5A1 1 0 0 1 2.5 3.5V5a1 1 0 0 0 1-1V2.5ZM12.5 11H11a1 1 0 0 0-1 1v1.5a1 1 0 0 0 1 1h1.5a1 1 0 0 0 1-1V12a1 1 0 0 0-1-1Z" clip-rule="evenodd" />
@@ -744,7 +703,7 @@ function close() {
                 Set up project for remote dev
               </button>
               <p class="mt-1.5 text-center text-xs text-gray-400 dark:text-gray-500">
-                Opens a chat to add dev:remote script &amp; configure HMR
+                Opens a chat to add dev:remote, bind the dev server &amp; set up ports.json
               </p>
             </div>
 
@@ -758,8 +717,8 @@ function close() {
               </div>
               <button
                 class="mt-1.5 block w-full text-center text-xs text-blue-600 hover:text-blue-700 dark:text-blue-400"
-                @click="setupProject"
-              >Re-run remote setup (HMR + same-origin emulator proxy)</button>
+                @click="setupPortsFile"
+              >Re-run remote setup (dev server, HMR, ports.json)</button>
             </div>
           </div>
         </div>

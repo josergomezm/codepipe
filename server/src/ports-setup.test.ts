@@ -81,23 +81,55 @@ describe('collectTakenPorts', () => {
 })
 
 describe('buildPortsSetupPrompt', () => {
+  const viteApp = { framework: 'vite', dir: null, hasDevRemote: true, startCommand: 'npm run dev:remote' }
+  const base = { tailscaleHost: 'box.tail1.ts.net', windows: true, devServer: viteApp }
+
   it('hands the agent the exact ports, the changes and the enforcement steps', () => {
     const taken = none()
     const plan = planProjectPorts({ vite: 5173, tailscale: 5173, emulators: ON_DEFAULTS }, taken)
-    const prompt = buildPortsSetupPrompt({ plan, hasPortsFile: false, firebase: { dir: 'firebase' }, taken: taken.local })
+    const prompt = buildPortsSetupPrompt({ ...base, plan, hasPortsFile: false, firebase: { dir: 'firebase' }, taken: taken.local })
     expect(prompt).toContain(JSON.stringify({ app: plan.app, emulators: plan.emulators }, null, 2))
     expect(prompt).toContain('auth: 9099 → 10003')
     expect(prompt).toContain('firebase/firebase.json')
     expect(prompt).toContain('scripts/check-ports.mjs')
     expect(prompt).toContain('CLAUDE.md')
+    expect(prompt).toContain('/identitytoolkit.googleapis.com')
   })
 
   it('leaves the emulator steps out of a repo without Firebase', () => {
     const plan = planProjectPorts({ vite: 5180, tailscale: 8450, emulators: {} }, none())
-    const prompt = buildPortsSetupPrompt({ plan, hasPortsFile: true, firebase: null, taken: new Map() })
+    const prompt = buildPortsSetupPrompt({ ...base, plan, hasPortsFile: true, firebase: null, taken: new Map() })
     expect(prompt).not.toContain('check-ports.mjs')
     expect(prompt).not.toContain('"emulators"')
+    expect(prompt).not.toContain('identitytoolkit')
     expect(prompt).toContain('no port numbers change')
+  })
+
+  it("puts a Nuxt app's port in devServer, where Nuxt reads it", () => {
+    const plan = planProjectPorts({ vite: 2999, tailscale: 2999, emulators: {} }, none())
+    const prompt = buildPortsSetupPrompt({
+      ...base, plan, hasPortsFile: true, firebase: null, taken: new Map(),
+      devServer: { framework: 'nuxt', dir: 'www', hasDevRemote: true, startCommand: 'npm run dev:remote --prefix www' },
+    })
+    expect(prompt).toContain("devServer: { host: '0.0.0.0', port: app.vite }")
+    expect(prompt).toContain('ignores vite.server.port')
+    expect(prompt).toContain('`nuxt dev --public`')
+    expect(prompt).toContain('www/package.json')
+    expect(prompt).toContain('`npm run dev:remote --prefix www`')
+    expect(prompt).toContain('netstat -aon | findstr :2999')
+  })
+
+  it('has a new project add dev:remote without baking env vars into it', () => {
+    const plan = planProjectPorts({ emulators: {} }, none())
+    const prompt = buildPortsSetupPrompt({
+      ...base, plan, hasPortsFile: false, firebase: null, taken: new Map(),
+      devServer: { framework: 'next', dir: null, hasDevRemote: false, startCommand: 'pnpm run dev:remote' },
+    })
+    expect(prompt).toContain('add a dev:remote script')
+    expect(prompt).toContain('CodePipe sets TAILSCALE_HOST and TAILSCALE_PORT itself')
+    expect(prompt).toContain('next dev -H 0.0.0.0')
+    expect(prompt).toContain('allowedDevOrigins')
+    expect(prompt).toContain('TAILSCALE_HOST=box.tail1.ts.net')
   })
 })
 

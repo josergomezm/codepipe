@@ -7,7 +7,7 @@ import type { IStorageLayer } from '../storage.js'
 import { CreateProjectRequestSchema, ProjectDevServerSchema, ProjectStandupConfigSchema } from '../schemas.js'
 import { cleanProviderOverrides } from '../provider-settings.js'
 import { log } from '../logger.js'
-import type { DevServerManager } from '../dev-server-manager.js'
+import { DevServerStartError, type DevServerManager } from '../dev-server-manager.js'
 import { getServeStatus, getTailscaleHostname } from '../tailscale.js'
 import { buildPortRegistry, checkPortConflicts, formatConflicts, serviceReservations, PortConflictError } from '../ports.js'
 import type { ServiceManager } from '../service-manager.js'
@@ -243,6 +243,10 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
         res.status(409).json({ error: err.message })
         return
       }
+      if (err instanceof DevServerStartError) {
+        res.status(502).json({ error: err.message })
+        return
+      }
       log.error('api', `Failed to start dev server for project ${id}`, err)
       res.status(500).json({ error: 'Failed to start dev server' })
     }
@@ -301,8 +305,9 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
     }
   })
 
-  // GET /api/projects/:id/ports-setup — the agent prompt that centralizes
-  // this project's ports in ports.json, with a conflict-free port set picked
+  // GET /api/projects/:id/ports-setup — the agent prompt that sets the project
+  // up for remote dev (dev:remote, the dev server's bind) and centralizes its
+  // ports in ports.json, with a conflict-free port set picked
   router.get('/:id/ports-setup', async (req, res) => {
     const { id } = req.params
 
@@ -314,10 +319,13 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
       }
 
       const { project, portsFile } = await refreshProjectPorts(storage, stored)
-      const detection = await detectFirebaseEmulators(project.path)
+      const [detection, app] = await Promise.all([
+        detectFirebaseEmulators(project.path),
+        detectDevServerConfig(project.path),
+      ])
       const vite = portsFile?.app['vite']
         ?? project.devServer?.port
-        ?? (await detectDevServerConfig(project.path)).port
+        ?? app.port
         ?? undefined
       const current = {
         vite,
@@ -341,6 +349,15 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
         hasPortsFile: portsFile !== null,
         firebase: detection.found ? { dir: detection.firebaseDir } : null,
         taken: taken.local,
+        devServer: {
+          framework: app.framework,
+          dir: app.subDir,
+          hasDevRemote: app.script === 'dev:remote',
+          startCommand: project.devServer?.startCommand
+            ?? buildRunCommand(app.packageManager ?? 'npm', 'dev:remote', app.subDir),
+        },
+        tailscaleHost: getTailscaleHostname(),
+        windows: process.platform === 'win32',
       })
       res.json({ prompt, plan })
     } catch (err) {
@@ -462,15 +479,19 @@ async function detectDevServerConfig(projectPath: string): Promise<DetectedDevSe
     ...(pkg.devDependencies ?? {}) as Record<string, string>,
   }
 
-  if (deps['vite'] || deps['@vitejs/plugin-vue'] || deps['@vitejs/plugin-react']) {
-    result.framework = 'vite'
+  // Meta-frameworks first: they often list vite or a @vitejs plugin too, but
+  // run their own server, which takes its port somewhere else.
+  if (deps['nuxt']) {
+    result.framework = 'nuxt'
   } else if (deps['next']) {
     result.framework = 'next'
-  } else if (deps['nuxt']) {
-    result.framework = 'nuxt'
+  } else if (deps['@sveltejs/kit']) {
+    result.framework = 'sveltekit'
   } else if (deps['@angular/cli']) {
     result.framework = 'angular'
-  } else if (deps['svelte'] || deps['@sveltejs/kit']) {
+  } else if (deps['vite'] || deps['@vitejs/plugin-vue'] || deps['@vitejs/plugin-react']) {
+    result.framework = 'vite'
+  } else if (deps['svelte']) {
     result.framework = 'sveltekit'
   }
 

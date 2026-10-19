@@ -35,6 +35,41 @@ interface DevServerProcess {
   projectPath: string
   /** Set to true once the process has exited — prevents stale close handlers from corrupting state. */
   exited: boolean
+  exitCode: number | null
+  /** Ports the server printed in its startup URLs ("Local: http://localhost:3000/"). */
+  announcedPorts: Set<number>
+}
+
+/** The dev server never listened where CodePipe waits for it. */
+export class DevServerStartError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'DevServerStartError'
+  }
+}
+
+// eslint-disable-next-line no-control-regex
+const ANSI = /\x1b\[[0-9;]*[A-Za-z]/g
+const URL_PORT = /https?:\/\/(?:\[[^\]]*\]|[\w.-]+):(\d{2,5})/g
+
+/** Ports in the URLs a chunk of dev server output prints. */
+export function portsInOutput(text: string): number[] {
+  return [...text.replace(ANSI, '').matchAll(URL_PORT)].map((m) => parseInt(m[1]))
+}
+
+/** Why a dev server that never listened on `port` failed, in words the user can act on. */
+export function explainStartFailure(port: number, entry: { exited: boolean; exitCode: number | null; announcedPorts: Set<number> }): string {
+  const others = [...entry.announcedPorts].filter((p) => p !== port)
+  if (others.length > 0 && !entry.announcedPorts.has(port)) {
+    return `The dev server came up on port ${others.join(', ')}, but CodePipe waits for port ${port} (ports.json app.vite, or the port in project settings). Its config isn't applying that port — Nuxt reads devServer.port, not vite.server.port. Re-run the remote setup from project settings.`
+  }
+  if (entry.announcedPorts.has(port)) {
+    return `The dev server reported port ${port}, but nothing listened on 0.0.0.0:${port} or 127.0.0.1:${port} — it probably bound only to ::1 (localhost). Set its host to 0.0.0.0.`
+  }
+  if (entry.exited) {
+    return `The dev server exited${entry.exitCode !== null ? ` with code ${entry.exitCode}` : ''} before it listened on port ${port}. Check the CodePipe server log for its output.`
+  }
+  return `The dev server didn't listen on port ${port} within 30 seconds. Check that it binds 0.0.0.0:${port}.`
 }
 
 // ---------------------------------------------------------------------------
@@ -48,6 +83,7 @@ export class DevServerManager {
    * Start a dev server for a project.
    * If one is already running, stops it first and waits for it to exit.
    * Ensures a Tailscale Serve mapping exists, creating one if needed.
+   * Throws DevServerStartError when the server never listens on its port.
    */
   async start(projectId: string, projectPath: string, config: ProjectDevServer): Promise<DevServerInfo> {
     // Stop existing and wait for it to fully exit before spawning a new one
@@ -114,6 +150,8 @@ export class DevServerManager {
       config,
       projectPath,
       exited: false,
+      exitCode: null,
+      announcedPorts: new Set(),
     }
 
     // Only register if the process got a PID (spawn succeeded synchronously)
@@ -131,15 +169,20 @@ export class DevServerManager {
     this.processes.set(projectId, entry)
 
     child.stdout?.on('data', (data: Buffer) => {
-      log.info('dev-server', `[${projectId}] stdout: ${data.toString().trim()}`)
+      const text = data.toString()
+      for (const p of portsInOutput(text)) entry.announcedPorts.add(p)
+      log.info('dev-server', `[${projectId}] stdout: ${text.trim()}`)
     })
 
     child.stderr?.on('data', (data: Buffer) => {
-      log.info('dev-server', `[${projectId}] stderr: ${data.toString().trim()}`)
+      const text = data.toString()
+      for (const p of portsInOutput(text)) entry.announcedPorts.add(p)
+      log.info('dev-server', `[${projectId}] stderr: ${text.trim()}`)
     })
 
     child.on('close', (exitCode) => {
       entry.exited = true
+      entry.exitCode = exitCode
       log.info('dev-server', `Dev server for project ${projectId} exited with code ${exitCode}`)
       if (this.processes.get(projectId) === entry) {
         this.processes.delete(projectId)
@@ -174,13 +217,7 @@ export class DevServerManager {
       }
       this.killProcess(entry)
       // Mapping cleanup happens in the close handler
-      return {
-        status: 'stopped',
-        port: config.port,
-        tailscalePort,
-        url: buildTailscaleUrl(tailscalePort),
-        tailscaleMapped: false,
-      }
+      throw new DevServerStartError(explainStartFailure(config.port, entry))
     }
 
     return {

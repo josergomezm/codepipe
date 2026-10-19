@@ -1,86 +1,63 @@
 # CodePipe Remote Dev Setup
 
-Drop this into any project you want to develop remotely through CodePipe.
+How a project gets set up to run its dev server through CodePipe, reachable
+remotely (e.g. from a phone) over Tailscale HTTPS.
 
 ## Quick Setup
 
-### 1. Configure Vite for Tailscale HMR
+1. Add the project in CodePipe, open its **Settings** from the sidebar.
+2. Under **Dev Server**, save a config: the start command (`npm run dev:remote`
+   by convention), a local port and a Tailscale port. The Tailscale port can't
+   be 443 — that's CodePipe itself. Use the suggested free one.
+3. Click **Set up project for remote dev** (or **Set up ports.json** /
+   **Re-check setup** in the Ports card — they open the same chat). CodePipe
+   builds the prompt itself: it picks ports that are free across every
+   project on the machine, knows the framework, and hands an agent the work.
+4. When the chat is done, **Start Dev Server**. CodePipe creates the Tailscale
+   Serve mapping, sets `TAILSCALE_HOST` / `TAILSCALE_PORT`, and waits up to 30s
+   for the server to listen on its port.
 
-In your `vite.config.ts` (or equivalent), add:
+Don't hand-pick ports from a table or register `tailscale serve` yourself —
+CodePipe does both.
 
-```ts
-export default defineConfig({
-  server: {
-    host: '0.0.0.0',
-    port: YOUR_PORT,  // e.g., 5173
-    allowedHosts: true,
-    hmr: process.env.TAILSCALE_HOST
-      ? {
-          protocol: 'wss',
-          host: process.env.TAILSCALE_HOST,
-          clientPort: parseInt(process.env.TAILSCALE_PORT || '443'),
-        }
-      : true,
-  },
-})
-```
+## What the setup chat leaves in the repo
 
-### 2. Add a `dev:remote` script
+- **`ports.json`** at the repo root: the single declaration of every port.
+  `app.vite` is the dev server's local port (the key is `vite` whatever the
+  framework), `app.tailscale` the Tailscale HTTPS port, and `emulators` the
+  Firebase emulator ports when the project has them. CodePipe reads it to
+  catch collisions and applies it to the dev server config on every start.
+- **A `dev:remote` script** that runs the same dev server as `dev`. It sets no
+  env vars: CodePipe sets `TAILSCALE_HOST` and `TAILSCALE_PORT` when it starts
+  the server (and an inline `set X=… &&` in cmd bakes a trailing space into
+  the value).
+- **The dev server bound on `0.0.0.0:<app.vite>`**, configured where the
+  framework actually reads it:
 
-In `package.json`:
+  | Framework | Host & port | Remote HMR |
+  |-----------|-------------|------------|
+  | Vite / SvelteKit | `vite.config` → `server.host`, `server.port`, `strictPort: true` | `server.hmr` = `wss` / `TAILSCALE_HOST` / `app.tailscale` |
+  | Nuxt | `nuxt.config` → `devServer: { host, port }` (Nuxt ignores `vite.server.port`); `dev:remote` is `nuxt dev --public` | `vite.server.hmr` in `nuxt.config` |
+  | Next | `next dev -H 0.0.0.0 -p <port>` via a small launcher that reads `ports.json` | same-origin; add `TAILSCALE_HOST` to `allowedDevOrigins` |
 
-```json
-{
-  "scripts": {
-    "dev:remote": "set TAILSCALE_HOST=your-host.ts.net && set TAILSCALE_PORT=YOUR_TS_PORT && vite"
-  }
-}
-```
-
-Replace `your-host.ts.net` with your tailnet FQDN (find it with `tailscale status`) and `YOUR_TS_PORT` with the Tailscale HTTPS port assigned to this project (see port table below).
-
-### 3. Register Tailscale Serve (one-time)
-
-```cmd
-tailscale serve --bg --https YOUR_TS_PORT http://127.0.0.1:YOUR_PORT
-```
-
-### 4. Configure in CodePipe
-
-In the CodePipe sidebar, click the ⋯ menu on your project → **Configure Dev Server**:
-- **Start command**: `npm run dev:remote`
-- **Local port**: `YOUR_PORT`
-- **Tailscale port**: `YOUR_TS_PORT`
-
-Then use **Start Dev Server** from the same menu.
-
-## Port Allocation
-
-| Project      | Local Port | Tailscale HTTPS Port |
-|--------------|-----------|---------------------|
-| CodePipe     | 5552      | 443                 |
-| HDEC Website | 5173      | 8443                |
-| (next)       | 5174      | 8444                |
-
-Pick the next available port pair when adding a new project.
-
-## How It Works
-
-- `TAILSCALE_HOST` tells Vite's HMR client to connect via `wss://` to your Tailscale hostname
-- `TAILSCALE_PORT` sets which HTTPS port the WebSocket connects on
-- Tailscale Serve terminates TLS and proxies to your local dev port
-- Without these env vars, `npm run dev` works normally for local development
-
-## Non-Vite Projects
-
-For Next.js, Nuxt, or other frameworks:
-- Bind to `0.0.0.0` (usually `--hostname 0.0.0.0`)
-- The HMR/WebSocket config varies per framework — check its docs
-- The Tailscale Serve mapping is the same regardless of framework
+  "Remote mode" is `process.env.TAILSCALE_HOST` being set; without it the
+  project runs as it always did locally.
+- **Single-origin rule**: browser code never connects to a localhost port and
+  never imports `ports.json` — on a phone, 127.0.0.1 is the phone. Firebase
+  client-SDK emulators go through the dev server's proxy.
+- A line in **CLAUDE.md**: never hardcode a port.
 
 ## Troubleshooting
 
-- **HMR drops frequently**: Check `tailscale serve status` is running
-- **Page loads but no hot reload**: Verify `TAILSCALE_HOST` env var is set
-- **WebSocket error in console**: Make sure `protocol: 'wss'` is set (not `ws`)
-- **Connection refused**: Ensure the dev server binds to `0.0.0.0`, not `127.0.0.1`
+- **Start fails with "came up on port 3000, but CodePipe waits for port N"**:
+  the port is set somewhere the framework doesn't read (classic case: Nuxt
+  with only `vite.server.port`). Re-run the remote setup.
+- **"reported port N, but nothing listened on 0.0.0.0:N"**: the server bound
+  only to `localhost`/`::1`. Set its host to `0.0.0.0`.
+- **"Forbidden: this host is not allowed"** (Nuxt, usually while it's still
+  building): Nuxt's CLI rejects the Tailscale hostname on its loading and
+  error pages. Run `nuxt dev --public` in `dev:remote`.
+- **Page loads but no hot reload**: HMR isn't pointed at
+  `wss://<TAILSCALE_HOST>:<app.tailscale>` in remote mode.
+- **Port conflict on start**: another project holds the port. Re-check setup —
+  CodePipe moves this project to free ports and the chat updates references.
