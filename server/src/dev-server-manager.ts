@@ -231,26 +231,41 @@ export class DevServerManager {
 
   /**
    * Stop a running dev server. Kills the process and removes the Tailscale mapping.
+   *
+   * Returns true if a tracked process existed. Independent of that, this always
+   * frees the configured port: servers that fork a deep child (Nuxt's nuxi
+   * re-spawns the real listener as a grandchild) or that outlived a backend
+   * restart aren't reachable through our tracked PID, so killing by port is the
+   * only reliable path. We wait for the port to actually clear before returning
+   * so the caller isn't told "stopped" while the server is still listening.
    */
-  async stop(projectId: string): Promise<boolean> {
+  async stop(projectId: string, config?: ProjectDevServer): Promise<boolean> {
     const entry = this.processes.get(projectId)
-    if (!entry) return false
+    const wasTracked = !!entry
 
-    this.killProcess(entry)
-    this.processes.delete(projectId)
+    if (entry) {
+      this.killProcess(entry)
+      this.processes.delete(projectId)
+    }
 
-    // Also try to kill anything on the configured port as a safety net
-    // (handles case where our PID tracking lost the process)
-    this.killByPort(entry.config.port)
+    // The port to free and the Tailscale mapping to remove come from the tracked
+    // entry if we have one, otherwise from the config the caller passed in.
+    const port = entry?.config.port ?? config?.port
+    const tsPort = entry?.config.tailscalePort ?? config?.tailscalePort ?? 443
 
-    // Remove the Tailscale Serve mapping so the port isn't left dangling
-    const tsPort = entry.config.tailscalePort ?? 443
-    // Don't remove port 443 — that's CodePipe itself
+    if (port !== undefined && port > 0) {
+      // Always run the port-based kill, even with nothing tracked, then confirm
+      // the port is free — retrying the kill for anything the first pass missed.
+      await this.killByPortAndWait(port)
+    }
+
+    // Remove the Tailscale Serve mapping so the port isn't left dangling.
+    // Don't remove port 443 — that's CodePipe itself.
     if (tsPort !== 443) {
       await removeServeMapping(tsPort)
     }
 
-    return true
+    return wasTracked
   }
 
   /**
@@ -288,6 +303,10 @@ export class DevServerManager {
       this.killProcess(entry)
     })
 
+    // The tracked tree exiting doesn't mean the port is free — a detached
+    // grandchild (nuxi) can keep listening and block the restart.
+    await this.killByPortAndWait(entry.config.port)
+
     // Remove the Tailscale Serve mapping so the port isn't left dangling
     const tsPort = entry.config.tailscalePort ?? 443
     if (tsPort !== 443) {
@@ -315,53 +334,89 @@ export class DevServerManager {
 
     log.info('dev-server', `Killing dev server for project ${entry.projectId} (PID ${pid})`)
 
-    try {
-      if (process.platform === 'win32') {
-        spawn('taskkill', ['/pid', String(pid), '/f', '/t'], {
-          stdio: 'ignore',
-          ...ISOLATED_CHILD,
-        })
-      } else {
+    if (process.platform === 'win32') {
+      void this.taskkill(pid)
+    } else {
+      try {
         entry.process.kill('SIGTERM')
+      } catch {
+        // Already dead
       }
-    } catch {
-      // Already dead
     }
   }
 
   /**
-   * Fallback: kill whatever is listening on a port on localhost.
-   * Handles cases where our tracked PID is stale but the process is still running.
-   * Only targets 127.0.0.1 and 0.0.0.0 bindings to avoid killing tailscaled.
+   * PIDs of processes listening on `port` on a local interface.
+   * Skips the Tailscale interface (100.x / fd7a:…) so we never kill tailscaled.
+   * Parses netstat by column rather than fixed spacing, and matches both IPv4
+   * (0.0.0.0 / 127.0.0.1) and IPv6 loopback/any ([::] / [::1]) bindings.
    */
-  private killByPort(port: number): void {
+  private listPidsOnPort(port: number): Set<string> {
+    const pids = new Set<string>()
+    if (process.platform !== 'win32') return pids
     try {
-      if (process.platform === 'win32') {
-        const output = execSync(`netstat -aon | findstr :${port} | findstr LISTENING`, {
-          encoding: 'utf-8',
-          timeout: 3000,
-          stdio: ['pipe', 'pipe', 'pipe'],
-          ...ISOLATED_CHILD,
-        })
-        const pids = new Set<string>()
-        for (const line of output.trim().split('\n')) {
-          const trimmed = line.trim()
-          // Only match local bindings, not Tailscale interface
-          if (!trimmed.startsWith('TCP    127.0.0.1:') && !trimmed.startsWith('TCP    0.0.0.0:')) continue
-          // Verify the port is in the local address column (column format: TCP    addr:port    ...)
-          const parts = trimmed.split(/\s+/)
-          const localAddr = parts[1] // e.g. "0.0.0.0:30222"
-          if (!localAddr?.endsWith(`:${port}`)) continue
-          const pid = parts[4]
-          if (pid && pid !== '0') pids.add(pid)
-        }
-        for (const pid of pids) {
-          spawn('taskkill', ['/pid', pid, '/f', '/t'], { stdio: 'ignore', ...ISOLATED_CHILD })
-        }
+      const output = execSync(`netstat -aon | findstr :${port} | findstr LISTENING`, {
+        encoding: 'utf-8',
+        timeout: 3000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        ...ISOLATED_CHILD,
+      })
+      for (const line of output.trim().split('\n')) {
+        // Columns: Proto  LocalAddr  ForeignAddr  State  PID
+        const parts = line.trim().split(/\s+/)
+        if (parts[0] !== 'TCP') continue
+        const localAddr = parts[1] ?? '' // e.g. "0.0.0.0:2999" or "[::]:2999"
+        // The port is whatever follows the last colon in the local address.
+        const lastColon = localAddr.lastIndexOf(':')
+        if (lastColon < 0 || localAddr.slice(lastColon + 1) !== String(port)) continue
+        const host = localAddr.slice(0, lastColon)
+        // Only local bindings. Exclude the Tailscale interface explicitly.
+        const isLocal =
+          host === '0.0.0.0' ||
+          host === '127.0.0.1' ||
+          host === '[::]' ||
+          host === '[::1]'
+        if (!isLocal) continue
+        const pid = parts[4]
+        // Never kill ourselves, even if a stale config points at CodePipe's port.
+        if (pid && pid !== '0' && pid !== String(process.pid)) pids.add(pid)
       }
     } catch {
-      // Best-effort
+      // Best-effort — findstr exits non-zero when nothing matches.
     }
+    return pids
+  }
+
+  /**
+   * Kill everything on `port`, then poll until it's actually free, retrying the
+   * kill for anything that survived or was forked late — Nuxt's nuxi forks the
+   * real listener as a grandchild that a single pass can race and miss.
+   * Checks freedom with the same IPv4+IPv6 scan it kills from, so a leftover
+   * [::] listener isn't mistaken for a free port.
+   */
+  private async killByPortAndWait(port: number, timeoutMs = 5000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
+    while (true) {
+      const pids = this.listPidsOnPort(port)
+      if (pids.size === 0) return true
+      if (Date.now() >= deadline) {
+        log.warn('dev-server', `Port ${port} still listening after stop (waited ${timeoutMs}ms): PID(s) ${[...pids].join(', ')}`)
+        return false
+      }
+      log.info('dev-server', `Killing PID(s) ${[...pids].join(', ')} listening on port ${port}`)
+      await Promise.all([...pids].map((pid) => this.taskkill(pid)))
+      await new Promise((r) => setTimeout(r, 250))
+    }
+  }
+
+  /** Run `taskkill /pid <pid> /f /t` and resolve once it finishes. */
+  private taskkill(pid: string | number): Promise<void> {
+    if (process.platform !== 'win32') return Promise.resolve()
+    return new Promise((resolve) => {
+      const child = spawn('taskkill', ['/pid', String(pid), '/f', '/t'], { stdio: 'ignore', ...ISOLATED_CHILD })
+      child.on('close', () => resolve())
+      child.on('error', () => resolve())
+    })
   }
 
   /**

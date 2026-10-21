@@ -191,8 +191,8 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
         return
       }
 
-      // Stop dev server if running
-      devServerManager.stop(id)
+      // Stop dev server if running — tracked or not, so nothing is left on its port
+      await devServerManager.stop(id, project.devServer ?? undefined)
 
       await storage.removeProject(id)
       // Team-layer data is meaningless without its project — clean it up.
@@ -256,15 +256,16 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
   router.post('/:id/dev-server/stop', async (req, res) => {
     const { id } = req.params
 
-    const stopped = await devServerManager.stop(id)
-    if (!stopped) {
-      // Even if we don't have it tracked, report success —
-      // the user's intent is "make it not running" which is already true
-      res.json({ ok: true, wasRunning: false })
-      return
+    try {
+      // Pass the stored config so an untracked server (started before a
+      // backend restart, or a detached grandchild) is still killed by port.
+      const project = await storage.getProject(id)
+      const stopped = await devServerManager.stop(id, project?.devServer ?? undefined)
+      res.json({ ok: true, wasRunning: stopped })
+    } catch (err) {
+      log.error('api', `Failed to stop dev server for project ${id}`, err)
+      res.status(500).json({ error: 'Failed to stop dev server' })
     }
-
-    res.json({ ok: true, wasRunning: true })
   })
 
   // GET /api/projects/:id/dev-server/status
