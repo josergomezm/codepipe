@@ -390,15 +390,46 @@ function close() {
   <Teleport to="body">
     <div
       v-if="projectId && project"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      class="fixed inset-0 z-50 flex items-stretch justify-center bg-black/50 md:items-center md:p-4"
       @click.self="close"
     >
-      <div class="w-full max-w-md rounded-xl bg-white shadow-xl dark:bg-gray-900">
+      <div class="flex h-dvh w-full flex-col bg-white shadow-xl dark:bg-gray-900 md:h-auto md:max-h-[90vh] md:max-w-xl md:rounded-xl">
         <!-- Header -->
-        <div class="flex items-center justify-between border-b border-gray-200 px-5 py-4 dark:border-gray-800">
-          <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">{{ project.name }}</h2>
+        <div class="flex shrink-0 items-start justify-between gap-3 border-b border-gray-200 px-5 py-4 dark:border-gray-800">
+          <div class="min-w-0 flex-1">
+            <div class="text-xs font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">Project settings</div>
+            <h2 class="truncate text-lg font-semibold text-gray-900 dark:text-gray-100">{{ project.name }}</h2>
+            <div class="truncate text-xs text-gray-500 dark:text-gray-400" :title="project.path">{{ project.path }}</div>
+            <div class="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+              <span
+                class="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2 py-0.5 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
+              >
+                <span
+                  class="h-1.5 w-1.5 rounded-full"
+                  :class="isRunning ? 'bg-green-500' : 'bg-gray-400 dark:bg-gray-600'"
+                />
+                {{ !project.devServer ? 'No dev server' : isRunning ? 'Running' : 'Stopped' }}
+              </span>
+              <span
+                v-if="project.devServer"
+                class="rounded-full bg-gray-100 px-2 py-0.5 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
+              >:{{ project.devServer.port }}</span>
+              <span
+                v-if="project.standup?.enabled"
+                class="rounded-full bg-gray-100 px-2 py-0.5 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
+              >Standup {{ project.standup.hour }}:00</span>
+              <a
+                v-if="isRunning && devUrl"
+                :href="devUrl"
+                target="_blank"
+                rel="noopener"
+                class="rounded-full bg-blue-50 px-2 py-0.5 text-blue-600 hover:bg-blue-100 dark:bg-blue-900/30 dark:text-blue-400 dark:hover:bg-blue-900/50"
+              >Open ↗</a>
+            </div>
+          </div>
           <button
-            class="rounded-lg p-1 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+            aria-label="Close"
+            class="shrink-0 rounded-lg p-1 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300"
             @click="close"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-5 w-5">
@@ -408,13 +439,7 @@ function close() {
         </div>
 
         <!-- Body -->
-        <div class="flex flex-col gap-5 px-5 py-4">
-          <!-- Project path -->
-          <div>
-            <div class="text-xs font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">Path</div>
-            <div class="mt-0.5 truncate text-sm text-gray-700 dark:text-gray-300">{{ project.path }}</div>
-          </div>
-
+        <div class="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-4">
           <!-- Dev Server Status & Actions -->
           <div v-if="hasValidConfig" class="rounded-lg border border-gray-200 dark:border-gray-700">
             <div class="flex items-center justify-between px-4 py-3">
