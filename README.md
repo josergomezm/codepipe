@@ -29,6 +29,8 @@ For everyday use, start the backend with **`npm run serve`**. It runs the server
 
 > **Why the server used to stop "by itself" on Windows:** a console Ctrl+C goes to every process attached to the same console window. CLIs used to share the server's console, so when one of them — or a shell or tool it ran — sent Ctrl+C to interrupt its own work, the server received it too and shut down mid-turn (every such shutdown in the logs happened during a Kiro turn). Every process the server starts now gets its own hidden console (`server/src/child-options.ts`), so their Ctrl+C can't reach the server. `child-options.test.ts` reproduces this in a real console; run it from a normal terminal, since some environments (Git Bash, some CI) ignore console Ctrl+C and skip it.
 
+> **Agents killing node by name:** an agent restarting its emulators ran `Get-Process node,java | Stop-Process -Force`, which killed every Node process on the machine, CodePipe's server and client included. On Windows, `npm run dev`, `dev:stable` and `serve` (and the client's `dev`/`dev:remote`) now start through `server/scripts/guarded-node.mjs`. That script runs them as a renamed copy of Node, `%LOCALAPPDATA%\CodePipe\bin\codepipe-node-<version>.exe`, so name-based kills (`Get-Process node`, `taskkill /im node.exe`) miss them. The first run under a new Node version may show a Windows Firewall prompt for the new executable.
+
 When something goes wrong, the **Diagnostics** page (sidebar → Workspace) shows:
 
 - **Health:** uptime, memory, live chats, CLI processes and shells, and the worst event-loop stall, plus a 24-hour memory trend. A sample is also written to the log every 10 minutes, so slow leaks show up before they crash anything.

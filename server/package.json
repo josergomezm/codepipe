@@ -5,9 +5,9 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx watch --exclude \"./data/**\" src/index.ts",
-    "dev:stable": "tsx src/index.ts",
-    "serve": "node scripts/supervise.mjs",
+    "dev": "node scripts/guarded-node.mjs tsx watch --exclude \"./data/**\" src/index.ts",
+    "dev:stable": "node scripts/guarded-node.mjs tsx src/index.ts",
+    "serve": "node scripts/guarded-node.mjs scripts/supervise.mjs",
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "vitest run --exclude src/terminal.test.ts && vitest run src/terminal.test.ts",

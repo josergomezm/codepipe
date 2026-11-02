@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "dev:remote": "vite --mode remote",
+    "dev": "node ../server/scripts/guarded-node.mjs vite",
+    "dev:remote": "node ../server/scripts/guarded-node.mjs vite --mode remote",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview"
   },
