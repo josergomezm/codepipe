@@ -158,6 +158,20 @@ async function statusEntries(cwd: string) {
   return parsePorcelainZ((await git(cwd, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])).stdout)
 }
 
+/**
+ * Number of uncommitted files (staged, unstaged and untracked) — one
+ * `git status`, no line counts, so it's cheap enough for a sidebar badge.
+ * null when the folder isn't a git repo or can't be read.
+ */
+export async function countChanges(cwd: string): Promise<number | null> {
+  try {
+    const res = await git(cwd, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])
+    return res.code === 0 ? parsePorcelainZ(res.stdout).length : null
+  } catch {
+    return null
+  }
+}
+
 export async function getChanges(cwd: string): Promise<ChangesResult> {
   if (!(await isRepo(cwd))) return { isRepo: false }
 

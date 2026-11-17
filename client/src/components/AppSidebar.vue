@@ -6,6 +6,7 @@ import { useTeamStore } from '@/stores/team'
 import NewSessionButton from '@/components/NewSessionButton.vue'
 import TeamList from '@/components/TeamList.vue'
 import ProjectList from '@/components/ProjectList.vue'
+import UsageMeter from '@/components/UsageMeter.vue'
 import NotificationToggle from '@/components/NotificationToggle.vue'
 import DarkModeToggle from '@/components/DarkModeToggle.vue'
 
@@ -85,6 +86,7 @@ onMounted(() => {
 
     <!-- Footer -->
     <div class="border-t border-gray-200 py-2 dark:border-gray-800">
+      <UsageMeter />
       <NotificationToggle />
       <DarkModeToggle />
     </div>

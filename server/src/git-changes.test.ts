@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process'
 import { mkdtempSync, writeFileSync, rmSync, unlinkSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { parsePorcelainZ, parseNumstatZ, getChanges, getFileDiff } from './git-changes.js'
+import { parsePorcelainZ, parseNumstatZ, getChanges, getFileDiff, countChanges } from './git-changes.js'
 
 describe('parsePorcelainZ', () => {
   it('parses statuses, staging, spaces in names and renames', () => {
@@ -47,6 +47,17 @@ describe('getChanges / getFileDiff (real repo)', () => {
   })
 
   afterAll(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('counts uncommitted files, and returns null outside a repo', async () => {
+    expect(await countChanges(dir)).toBe(3)
+    const plain = mkdtempSync(join(tmpdir(), 'codepipe-norepo-'))
+    try {
+      expect(await countChanges(plain)).toBeNull()
+    } finally {
+      rmSync(plain, { recursive: true, force: true })
+    }
+    expect(await countChanges(join(plain, 'missing'))).toBeNull()
+  })
 
   it('lists modified, deleted and untracked files with counts', async () => {
     const result = await getChanges(dir)

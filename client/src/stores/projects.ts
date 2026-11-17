@@ -224,6 +224,23 @@ export const useProjectsStore = defineStore('projects', () => {
     error.value = null
   }
 
+  // Uncommitted git file counts per project (sidebar badges). Missing or
+  // null = not a repo / not loaded yet.
+  const changeCounts = ref<Record<string, number | null>>({})
+  let changeCountsInFlight = false
+
+  async function refreshChangeCounts() {
+    if (changeCountsInFlight) return
+    changeCountsInFlight = true
+    try {
+      changeCounts.value = (await api.fetchChangeCounts()).counts
+    } catch {
+      // Keep the last counts; the next refresh will retry.
+    } finally {
+      changeCountsInFlight = false
+    }
+  }
+
   return {
     projects,
     tailscaleHostname,
@@ -238,6 +255,8 @@ export const useProjectsStore = defineStore('projects', () => {
     startDevServer,
     stopDevServer,
     getProjectDevUrl,
+    changeCounts,
+    refreshChangeCounts,
     // Services
     getServices,
     hasRunningService,

@@ -8,6 +8,7 @@ import { useUiStore } from '@/stores/ui'
 import { startEvents } from '@/composables/useEvents'
 import AppSidebar from '@/components/AppSidebar.vue'
 import ActionQuickAddModal from '@/components/ActionQuickAddModal.vue'
+import UsageModal from '@/components/UsageModal.vue'
 
 const sessionsStore = useSessionsStore()
 const projectsStore = useProjectsStore()
@@ -98,5 +99,6 @@ onUnmounted(() => {
       <router-view />
     </main>
     <ActionQuickAddModal />
+    <UsageModal />
   </div>
 </template>

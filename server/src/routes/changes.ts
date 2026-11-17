@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import type { IStorageLayer } from '../storage.js'
-import { getChanges, getFileDiff } from '../git-changes.js'
+import { countChanges, getChanges, getFileDiff } from '../git-changes.js'
 import { log } from '../logger.js'
 
 // TypeScript doesn't reflect mergeParams at the type level, so we cast params
@@ -41,6 +41,28 @@ export function createChangesRoutes(storage: IStorageLayer): Router {
     } catch (err) {
       log.error('api', `Failed to diff ${path} for project ${id}`, err)
       res.status(500).json({ error: 'Failed to load diff' })
+    }
+  })
+
+  return router
+}
+
+/**
+ * Uncommitted file counts for every project, for the sidebar badges:
+ * GET /api/change-counts → { counts: { [projectId]: number | null } }
+ * (null = not a git repo).
+ */
+export function createChangeCountsRoutes(storage: IStorageLayer): Router {
+  const router = Router()
+
+  router.get('/', async (_req, res) => {
+    try {
+      const projects = await storage.listProjects()
+      const entries = await Promise.all(projects.map(async (p) => [p.id, await countChanges(p.path)] as const))
+      res.json({ counts: Object.fromEntries(entries) })
+    } catch (err) {
+      log.error('api', 'Failed to count project changes', err)
+      res.status(500).json({ error: 'Failed to count changes' })
     }
   })
 

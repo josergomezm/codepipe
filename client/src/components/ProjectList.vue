@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
@@ -61,6 +61,33 @@ const sessionsByProject = computed(() => {
   }
   return map
 })
+
+// Uncommitted-changes badges: refresh on load, on a slow poll (agents in
+// background chats edit files too), when the window regains focus, and
+// as soon as the active chat finishes a turn.
+const CHANGE_COUNT_POLL_MS = 30_000
+let changeCountTimer: ReturnType<typeof setInterval> | null = null
+function refreshChangeCounts() {
+  if (document.visibilityState === 'visible') void projectStore.refreshChangeCounts()
+}
+onMounted(() => {
+  refreshChangeCounts()
+  changeCountTimer = setInterval(refreshChangeCounts, CHANGE_COUNT_POLL_MS)
+  window.addEventListener('focus', refreshChangeCounts)
+})
+onUnmounted(() => {
+  if (changeCountTimer) clearInterval(changeCountTimer)
+  window.removeEventListener('focus', refreshChangeCounts)
+})
+watch(() => sessionStore.sessionStatus, (status, prev) => {
+  if (prev === 'typing' && status === 'idle') refreshChangeCounts()
+})
+// New projects get a count right away.
+watch(() => projectStore.projects.length, refreshChangeCounts)
+
+function changeCount(projectId: string): number {
+  return projectStore.changeCounts[projectId] ?? 0
+}
 
 function hasUnread(projectId: string): boolean {
   return sessionsByProject.value.get(projectId)?.some((s) => sessionStore.isUnread(s)) ?? false
@@ -225,6 +252,17 @@ async function stopDevServer(id: string) {
             class="shrink-0 rounded-full bg-gray-200 px-1.5 text-[10px] font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-400"
           >
             {{ sessionsByProject.get(project.id)!.length }}
+          </span>
+          <!-- Uncommitted git changes badge -->
+          <span
+            v-if="changeCount(project.id) > 0"
+            class="flex shrink-0 items-center gap-0.5 rounded-full bg-amber-100 px-1.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+            :title="`${changeCount(project.id)} uncommitted ${changeCount(project.id) === 1 ? 'file' : 'files'}`"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-2.5 w-2.5" aria-hidden="true">
+              <path d="M11.013 2.513a1.75 1.75 0 0 1 2.475 2.474L6.226 12.25a2.751 2.751 0 0 1-.892.596l-2.047.848a.75.75 0 0 1-.98-.98l.848-2.047a2.75 2.75 0 0 1 .596-.892l7.262-7.261Z" />
+            </svg>
+            {{ changeCount(project.id) }}
           </span>
           <!-- Blue dot when any chat in this project is unread -->
           <span

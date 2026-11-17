@@ -597,6 +597,36 @@ export function fetchChanges(projectId: string): Promise<ChangesResult> {
   return request<ChangesResult>(`/api/projects/${projectId}/changes`)
 }
 
+// --- Provider plan usage (each CLI's /usage) ---
+
+export interface UsageWindow {
+  label: string
+  /** 0–100; null when the CLI gives no percentage. */
+  usedPercent: number | null
+  resets?: string
+  detail?: string
+}
+
+export interface ProviderUsage {
+  provider: ProviderType
+  status: 'ok' | 'error'
+  plan?: string
+  windows: UsageWindow[]
+  notes: string[]
+  error?: string
+  checkedAt: number
+}
+
+/** `refresh` asks the server to re-run the CLIs instead of serving its cache. */
+export function fetchUsage(refresh = false): Promise<{ providers: ProviderUsage[] }> {
+  return request<{ providers: ProviderUsage[] }>(`/api/usage${refresh ? '?refresh=1' : ''}`)
+}
+
+/** Uncommitted file count per project id (null = not a git repo). */
+export function fetchChangeCounts(): Promise<{ counts: Record<string, number | null> }> {
+  return request<{ counts: Record<string, number | null> }>('/api/change-counts')
+}
+
 export function fetchFileDiff(projectId: string, path: string): Promise<FileDiff> {
   return request<FileDiff>(`/api/projects/${projectId}/changes/diff?path=${encodeURIComponent(path)}`)
 }
