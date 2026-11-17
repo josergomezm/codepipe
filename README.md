@@ -111,7 +111,7 @@ The server reads these environment variables:
 | `KIRO_CLI_BIN`    | platform name | Override the Kiro binary (absolute path or name on `PATH`). Defaults to `kiro-cli` (`kiro-cli.exe` on Windows). |
 | `AGY_CLI_BIN`     | `agy`         | Override the Antigravity CLI binary (`agy.exe` on Windows; `GEMINI_CLI_BIN` is still honoured). |
 | `CLAUDE_CLI_BIN`  | `claude`      | Override the Claude Code binary (`claude.cmd` on Windows).                 |
-| `CLAUDE_PERMISSION_MODE` | `acceptEdits` | Fallback for Claude Code's permission mode when the Providers page leaves it unset. See SECURITY.md before broadening. |
+| `CLAUDE_PERMISSION_MODE` | `auto`        | Fallback for Claude Code's permission mode when the Providers page leaves it unset. See SECURITY.md before broadening. |
 | `CLAUDE_EXTRA_ARGS` | _(unset)_   | Fallback extra flags for Claude Code (e.g. `--dangerously-skip-permissions`) when the Providers page leaves them unset. |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | _(unset)_ | Web Push keys. Generate with `npm run gen-vapid`. Push is disabled without them. |
 | `VAPID_SUBJECT`   | `mailto:admin@codepipe.local` | Contact URI sent with push (a `mailto:` or `https:` URL). |

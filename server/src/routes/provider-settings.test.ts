@@ -56,9 +56,9 @@ describe('GET /api/provider-settings', () => {
     const claude = providers.find((p) => p.spec.provider === 'claude')!
     expect(claude.spec.docsCheckedOn).toMatch(/^\d{4}-\d{2}-\d{2}$/)
     expect(claude.global).toEqual({})
-    expect(claude.resolved.values['permissionMode']).toBe('acceptEdits')
+    expect(claude.resolved.values['permissionMode']).toBe('auto')
     expect(claude.resolved.sources['permissionMode']).toBe('default')
-    expect(claude.args).toEqual(['--permission-mode', 'acceptEdits'])
+    expect(claude.args).toEqual(['--permission-mode', 'auto'])
     // No functions leaked
     expect(JSON.stringify(claude.spec)).not.toContain('args')
   })

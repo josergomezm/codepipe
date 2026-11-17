@@ -167,9 +167,9 @@ describe('ClaudeAdapter', () => {
     expect(args).not.toContain('--model')
   })
 
-  it('defaults to acceptEdits with no extra flags', () => {
+  it('defaults to auto with no extra flags', () => {
     const { args } = new ClaudeAdapter().buildMessageCommand('hi', null)
-    expect(args[args.indexOf('--permission-mode') + 1]).toBe('acceptEdits')
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('auto')
     expect(args).not.toContain('--dangerously-skip-permissions')
     expect(args).not.toContain('--disallowedTools')
   })

@@ -215,7 +215,7 @@ const CLAUDE_SPEC: ProviderSettingsSpec = {
           caution: 'Every tool runs without approval, including shell commands. See SECURITY.md.',
         },
       ],
-      default: 'acceptEdits',
+      default: 'auto',
       env: 'CLAUDE_PERMISSION_MODE',
       args: stringFlag('--permission-mode'),
     },

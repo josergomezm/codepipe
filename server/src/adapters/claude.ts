@@ -7,7 +7,7 @@
  * `--resume <session_id>`, where the session ID is captured inline from the
  * stream (the `cli_session` event), so no session-list scraping is needed.
  *
- * Tool approval: defaults to `--permission-mode acceptEdits`. The permission
+ * Tool approval: defaults to `--permission-mode auto`. The permission
  * mode, allowed/disallowed tools and extra flags come from the provider
  * launch settings (provider-settings.ts — editable in the UI, with
  * `CLAUDE_PERMISSION_MODE` / `CLAUDE_EXTRA_ARGS` as env fallbacks). See

@@ -39,12 +39,13 @@ means the agent acts without per-action confirmation:
 - **Antigravity:** launched with `--dangerously-skip-permissions` by default;
   headless mode can't prompt, and without it shell commands are silently
   denied. The Providers page can turn it off, or add `--sandbox`.
-- **Claude Code:** defaults to `--permission-mode acceptEdits`. This does **not**
-  auto-approve arbitrary Bash or network access. Fuller autonomy (another
-  permission mode, `--dangerously-skip-permissions`, allowed tools) is set on
-  the Providers page — or via the `CLAUDE_PERMISSION_MODE` / `CLAUDE_EXTRA_ARGS`
-  fallbacks — only on a machine and project you trust, since it removes
-  Claude Code's safety prompts entirely.
+- **Claude Code:** defaults to `--permission-mode auto`: Claude Code decides
+  tool approvals itself (edits, shell commands, network) with its built-in
+  safety checks instead of prompting. A stricter mode (`acceptEdits`, `plan`,
+  `dontAsk`) or full bypass (`bypassPermissions`,
+  `--dangerously-skip-permissions`) is set on the Providers page — or via the
+  `CLAUDE_PERMISSION_MODE` / `CLAUDE_EXTRA_ARGS` fallbacks. Use bypass only on a
+  machine and project you trust, since it removes every safety check.
 
 These defaults live on the **Providers** page and can be overridden per
 project (project settings) and per persona (team roster); the most specific

@@ -151,7 +151,7 @@ describe('resolveSettings', () => {
 
   it('ignores an env value that is not a valid option', () => {
     process.env['CLAUDE_PERMISSION_MODE'] = 'yolo'
-    expect(resolveSettings('claude').values['permissionMode']).toBe('acceptEdits')
+    expect(resolveSettings('claude').values['permissionMode']).toBe('auto')
   })
 
   it('layers global < project < persona, tracking the winning source', () => {
