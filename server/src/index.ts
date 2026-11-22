@@ -16,6 +16,7 @@ import { KiroAdapter } from './adapters/kiro.js'
 import { KiroAcpAdapter } from './adapters/kiro-acp.js'
 import { GeminiAdapter } from './adapters/gemini.js'
 import { createChangesRoutes, createChangeCountsRoutes } from './routes/changes.js'
+import { createFilesRoutes } from './routes/files.js'
 import { createUsageRoutes } from './routes/usage.js'
 import { UsageService } from './usage.js'
 import { TerminalManager } from './terminal-manager.js'
@@ -123,6 +124,7 @@ app.use('/api/sessions', createSessionRoutes(sessionManager, storage))
 app.use('/api/projects', createProjectRoutes(storage, devServerManager, serviceManager))
 app.use('/api/projects/:id/services', createServiceRoutes(storage, serviceManager))
 app.use('/api/projects/:id/changes', createChangesRoutes(storage))
+app.use('/api/projects/:id/files', createFilesRoutes(storage))
 app.use('/api/change-counts', createChangeCountsRoutes(storage))
 app.use('/api/usage', createUsageRoutes(new UsageService()))
 app.use('/api/browse', createBrowseRoutes())

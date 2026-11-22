@@ -890,3 +890,45 @@ export async function uploadFile(file: File): Promise<Attachment> {
   }
   return res.json() as Promise<Attachment>
 }
+
+// --- Project files (Files tab) ---
+
+export type FileKind = 'video' | 'image' | 'audio' | 'pdf' | 'markdown' | 'text' | 'other'
+
+export interface FileEntry {
+  name: string
+  /** Project-relative, forward slashes. */
+  path: string
+  type: 'dir' | 'file'
+  kind?: FileKind
+  size?: number
+  mtime: number
+}
+
+export interface DirListing {
+  path: string
+  entries: FileEntry[]
+}
+
+export interface MediaIndex {
+  files: FileEntry[]
+  total: number
+  truncated: boolean
+}
+
+export function fetchDir(projectId: string, path: string): Promise<DirListing> {
+  return request<DirListing>(`/api/projects/${projectId}/files?path=${encodeURIComponent(path)}`)
+}
+
+export function fetchMedia(projectId: string, kinds: FileKind[] = []): Promise<MediaIndex> {
+  const q = kinds.length ? `?kind=${kinds.join(',')}` : ''
+  return request<MediaIndex>(`/api/projects/${projectId}/files/media${q}`)
+}
+
+/** Same-origin URL for a project file (Range-capable; `download` forces a save). */
+export function rawFileUrl(projectId: string, path: string, opts: { download?: boolean; v?: number } = {}): string {
+  let url = `/api/projects/${projectId}/files/raw?path=${encodeURIComponent(path)}`
+  if (opts.v) url += `&v=${Math.round(opts.v)}`
+  if (opts.download) url += '&download=1'
+  return url
+}

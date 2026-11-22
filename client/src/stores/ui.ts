@@ -49,7 +49,19 @@ export const useUiStore = defineStore('ui', () => {
     quickAdd.value = null
   }
 
+  /**
+   * A request to show a project file (from a path clicked in a chat message).
+   * ChatView switches to the Files tab and FilesPanel opens it; the nonce makes
+   * clicking the same path twice still count.
+   */
+  const fileRequest = ref<{ path: string; nonce: number } | null>(null)
+
+  function openFile(path: string) {
+    fileRequest.value = { path, nonce: Date.now() }
+  }
+
   return {
+    fileRequest, openFile,
     sidebarOpen, darkMode, toggleSidebar, closeSidebar, toggleDarkMode,
     quickAdd, openQuickAdd, closeQuickAdd,
   }

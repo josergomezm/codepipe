@@ -9,6 +9,7 @@ import ChatInput from '@/components/ChatInput.vue'
 import ChatLoader from '@/components/ChatLoader.vue'
 import ModelPicker from '@/components/ModelPicker.vue'
 import ChangesPanel from '@/components/ChangesPanel.vue'
+import FilesPanel from '@/components/FilesPanel.vue'
 // xterm.js is large — load it only when a terminal tab is first opened.
 const TerminalPanel = defineAsyncComponent(() => import('@/components/TerminalPanel.vue'))
 
@@ -20,7 +21,7 @@ const { connect, disconnect, connectionError, clearConnectionError, restart } = 
 const showMenu = ref(false)
 
 // Chat / Changes / Terminal tabs, scoped to the active chat's project.
-type Tab = 'chat' | 'changes' | 'terminal'
+type Tab = 'chat' | 'changes' | 'files' | 'terminal'
 const activeTab = ref<Tab>('chat')
 /** Header icons for the tabs (Heroicons mini, 20px): chat bubble, code diff, terminal window. */
 const TABS: { id: Tab; label: string; paths: string[] }[] = [
@@ -33,6 +34,11 @@ const TABS: { id: Tab; label: string; paths: string[] }[] = [
     id: 'changes',
     label: 'Changes',
     paths: ['M6.28 5.22a.75.75 0 0 1 0 1.06L2.56 10l3.72 3.72a.75.75 0 0 1-1.06 1.06L.97 10.53a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 0 1 1.06 0Zm7.44 0a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L17.44 10l-3.72-3.72a.75.75 0 0 1 0-1.06ZM11.377 2.011a.75.75 0 0 1 .612.867l-2.5 14.5a.75.75 0 0 1-1.478-.255l2.5-14.5a.75.75 0 0 1 .866-.612Z'],
+  },
+  {
+    id: 'files',
+    label: 'Files',
+    paths: ['M3.75 3A1.75 1.75 0 0 0 2 4.75v3.26a3.235 3.235 0 0 1 1.75-.51h12.5c.644 0 1.245.188 1.75.51V6.75A1.75 1.75 0 0 0 16.25 5h-4.836a.25.25 0 0 1-.177-.073L9.823 3.513A1.75 1.75 0 0 0 8.586 3H3.75ZM3.75 9A1.75 1.75 0 0 0 2 10.75v4.5c0 .966.784 1.75 1.75 1.75h12.5A1.75 1.75 0 0 0 18 15.25v-4.5A1.75 1.75 0 0 0 16.25 9H3.75Z'],
   },
   {
     id: 'terminal',
@@ -86,8 +92,12 @@ function selectTab(tab: Tab) {
   if (tab === 'terminal' && activeProjectId.value) terminalProjects.value.add(activeProjectId.value)
 }
 
+// A file path clicked in a message: show it in the Files tab.
+watch(() => ui.fileRequest?.nonce, () => { if (ui.fileRequest) activeTab.value = 'files' })
+
 watch(activeProjectId, (id) => {
   changesCount.value = null
+  ui.fileRequest = null
   if (activeTab.value === 'terminal' && id) terminalProjects.value.add(id)
 })
 
@@ -269,6 +279,14 @@ function handleRestart() {
         :project-id="activeProjectId"
         :active="activeTab === 'changes'"
         @count="changesCount = $event"
+      />
+
+      <FilesPanel
+        v-if="activeProjectId"
+        v-show="activeTab === 'files'"
+        :project-id="activeProjectId"
+        :active="activeTab === 'files'"
+        :request="ui.fileRequest"
       />
 
       <!-- One terminal per project, kept alive while switching tabs/chats -->

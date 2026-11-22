@@ -48,3 +48,110 @@
 @utility animate-breathe {
   animation: breathe 2.5s ease-in-out infinite;
 }
+/* ------------------------------------------------------------------ */
+/* Markdown (MarkdownContent.vue). Plain CSS on purpose: chat content  */
+/* is v-html, so Tailwind utilities can't reach it.                    */
+/* ------------------------------------------------------------------ */
+.md {
+  --md-fg: rgb(17 24 39);
+  --md-muted: rgb(75 85 99);
+  --md-border: rgb(209 213 219);
+  --md-border-soft: rgb(229 231 235);
+  --md-head-bg: rgb(243 244 246);
+  --md-stripe: rgb(249 250 251);
+  --md-code-bg: rgb(229 231 235 / 0.7);
+  --md-pre-bg: rgb(17 24 39);
+  --md-pre-head: rgb(31 41 55);
+  --md-link: rgb(37 99 235);
+  --md-file: rgb(109 40 217);
+  color: var(--md-fg);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.dark .md {
+  --md-fg: rgb(243 244 246);
+  --md-muted: rgb(156 163 175);
+  --md-border: rgb(75 85 99);
+  --md-border-soft: rgb(55 65 81);
+  --md-head-bg: rgb(17 24 39 / 0.6);
+  --md-stripe: rgb(17 24 39 / 0.3);
+  --md-code-bg: rgb(17 24 39 / 0.7);
+  --md-pre-bg: rgb(3 7 18);
+  --md-pre-head: rgb(17 24 39);
+  --md-link: rgb(96 165 250);
+  --md-file: rgb(196 181 253);
+}
+.md > :first-child { margin-top: 0 !important; }
+.md > :last-child { margin-bottom: 0 !important; }
+.md p, .md ul, .md ol, .md blockquote, .md .md-table, .md .md-code, .md hr { margin: 0.6em 0; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { font-weight: 650; line-height: 1.3; margin: 1.1em 0 0.45em; }
+.md h1 { font-size: 1.3em; }
+.md h2 { font-size: 1.15em; padding-bottom: 0.25em; border-bottom: 1px solid var(--md-border-soft); }
+.md h3 { font-size: 1.05em; }
+.md h4, .md h5, .md h6 { font-size: 1em; color: var(--md-muted); }
+.md strong { font-weight: 650; }
+.md a { color: var(--md-link); text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px; }
+.md ul { list-style: disc; padding-left: 1.4em; }
+.md ol { list-style: decimal; padding-left: 1.6em; }
+.md li { margin: 0.2em 0; }
+.md li > ul, .md li > ol { margin: 0.2em 0; }
+.md li::marker { color: var(--md-muted); }
+.md blockquote { border-left: 3px solid var(--md-border); padding: 0.1em 0 0.1em 0.9em; color: var(--md-muted); }
+.md hr { border: 0; border-top: 1px solid var(--md-border-soft); margin: 1em 0; }
+.md img { max-width: 100%; height: auto; border-radius: 0.5rem; }
+
+/* Inline code */
+.md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  background: var(--md-code-bg);
+  padding: 0.1em 0.35em;
+  border-radius: 0.3em;
+}
+.md code.md-file, .md a.md-file { color: var(--md-file); cursor: pointer; }
+.md code.md-file:hover { text-decoration: underline; text-underline-offset: 2px; }
+.md a.md-file { text-decoration-style: dashed; }
+
+/* Code blocks */
+.md .md-code { border-radius: 0.6rem; overflow: hidden; background: var(--md-pre-bg); border: 1px solid var(--md-border-soft); }
+.dark .md .md-code { border-color: rgb(31 41 55); }
+.md .md-code-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.25rem 0.5rem 0.25rem 0.75rem;
+  background: var(--md-pre-head);
+  font-size: 0.7rem; color: rgb(156 163 175);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.md .md-copy { padding: 0.1rem 0.5rem; border-radius: 0.3rem; color: rgb(209 213 219); }
+.md .md-copy:hover { background: rgb(255 255 255 / 0.1); }
+.md pre { margin: 0; padding: 0.7rem 0.85rem; overflow-x: auto; color: rgb(229 231 235); font-size: 0.8rem; line-height: 1.55; }
+.md pre code { background: none; padding: 0; font-size: inherit; overflow-wrap: normal; white-space: pre; }
+
+/* Tables: framed, scrollable, header + zebra rows */
+.md .md-table {
+  overflow-x: auto;
+  border: 1px solid var(--md-border-soft);
+  border-radius: 0.6rem;
+  max-width: 100%;
+}
+.md table { border-collapse: collapse; width: 100%; font-size: 0.8125rem; line-height: 1.45; }
+.md th, .md td {
+  padding: 0.45rem 0.7rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--md-border-soft);
+  overflow-wrap: normal;
+  word-break: normal;
+  min-width: 6rem;
+}
+.md th { background: var(--md-head-bg); font-weight: 600; }
+.md td + td, .md th + th { border-left: 1px solid var(--md-border-soft); }
+.md tbody tr:nth-child(even) td { background: var(--md-stripe); }
+.md tbody tr:last-child td { border-bottom: 0; }
+.md th[style*="right"], .md td[style*="right"] { text-align: right; font-variant-numeric: tabular-nums; }
+.md th[style*="center"], .md td[style*="center"] { text-align: center; }
+
+/* Tighter variant for collapsed panels */
+.md-compact { font-size: 0.8rem; }

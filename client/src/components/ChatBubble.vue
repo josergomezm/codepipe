@@ -7,12 +7,12 @@ function usageLabel(value: string): string {
   return /^[\d.]+$/.test(value) ? `Credits: ${value}` : value
 }
 import { computed, ref } from 'vue'
-import MarkdownIt from 'markdown-it'
 import { useTeamStore } from '@/stores/team'
 import { useSessionsStore } from '@/stores/sessions'
 import { useUiStore } from '@/stores/ui'
 import PersonaAvatar from '@/components/PersonaAvatar.vue'
 import ChatToolCard from '@/components/ChatToolCard.vue'
+import MarkdownContent from '@/components/MarkdownContent.vue'
 import type { ChatMessage } from '@/api/client'
 
 const props = defineProps<{
@@ -23,28 +23,12 @@ const teamStore = useTeamStore()
 const sessionsStore = useSessionsStore()
 const ui = useUiStore()
 
-const md = new MarkdownIt({
-  html: false,
-  linkify: true,
-  breaks: true,
-})
+// Markdown only for completed assistant messages — streaming chunks show raw
+// text (no re-parse flicker), and tool calls are argument summaries, not prose.
+const showMarkdown = computed(() => props.message.role === 'assistant' && props.message.status !== 'streaming')
 
-// Open all rendered links in a new window (system browser in PWA context).
-const defaultRender = md.renderer.rules.link_open || function (tokens, idx, options, _env, self) { return self.renderToken(tokens, idx, options) }
-md.renderer.rules.link_open = function (tokens, idx, options, env, self) {
-  tokens[idx].attrSet('target', '_blank')
-  tokens[idx].attrSet('rel', 'noopener')
-  return defaultRender(tokens, idx, options, env, self)
-}
-
-// Only render markdown for completed assistant messages — avoids expensive
-// re-renders on every streaming chunk, and keeps tool calls (which are concise
-// argument summaries, not prose) out of the markdown pipeline.
-const renderedContent = computed(() => {
-  if (props.message.role !== 'assistant') return ''
-  if (props.message.status === 'streaming') return ''
-  return md.render(props.message.content)
-})
+// Tables and code blocks need room: let those bubbles use more of the width.
+const isWide = computed(() => /^\s*\|?\s*:?-{3,}:?\s*\|/m.test(props.message.content) || props.message.content.includes('```'))
 
 const isStreaming = computed(() => props.message.status === 'streaming')
 const isUser = computed(() => props.message.role === 'user')
@@ -179,14 +163,14 @@ async function copyContent() {
       v-if="deliberationOpen"
       class="mt-1.5 max-w-[90%] overflow-hidden rounded-2xl border border-gray-200 bg-gray-50 px-4 py-2.5 dark:border-gray-700 dark:bg-gray-900/50"
     >
-      <div class="prose prose-sm max-w-none break-words dark:prose-invert" v-html="renderedContent"></div>
+      <MarkdownContent v-if="showMarkdown" :source="message.content" compact @open-file="ui.openFile" />
     </div>
   </div>
 
   <!-- Assistant message: left-aligned, gray (persona-attributed in team sessions) -->
   <div v-else-if="isAssistant" class="group relative flex items-start gap-2 px-4 py-1">
     <PersonaAvatar v-if="persona" :persona="persona" size="sm" class="mt-1" />
-    <div ref="bubble" class="max-w-[75%] overflow-hidden rounded-2xl bg-gray-100 px-4 py-2.5 dark:bg-gray-800">
+    <div ref="bubble" class="min-w-0 overflow-hidden rounded-2xl bg-gray-100 px-4 py-2.5 dark:bg-gray-800" :class="isWide ? 'max-w-[calc(100%-4rem)] md:max-w-[88%]' : 'max-w-[85%] md:max-w-[75%]'">
       <div v-if="persona" class="mb-1 flex items-baseline gap-1.5">
         <span class="text-xs font-semibold text-gray-800 dark:text-gray-200">{{ persona.name }}</span>
         <span class="text-[10px] text-gray-400 dark:text-gray-500">{{ persona.role }}</span>
@@ -194,7 +178,7 @@ async function copyContent() {
       <!-- Streaming: show raw text to avoid markdown re-parsing flicker -->
       <p v-if="isStreaming" class="whitespace-pre-wrap break-words text-sm text-gray-900 dark:text-gray-100">{{ message.content }}</p>
       <!-- Complete: render full markdown -->
-      <div v-else class="prose prose-sm max-w-none break-words dark:prose-invert" v-html="renderedContent"></div>
+      <MarkdownContent v-else :source="message.content" @open-file="ui.openFile" />
       <!-- Credits footer for completed assistant messages -->
       <div v-if="!isStreaming && message.metadata?.credits"
            class="mt-2 flex items-center gap-3 border-t border-gray-200 pt-1.5 text-xs text-gray-400 dark:border-gray-700 dark:text-gray-500">
