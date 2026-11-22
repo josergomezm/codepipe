@@ -259,6 +259,41 @@ export function identifyLocalPortOwner(
   return 'another process'
 }
 
+/** Ports listening on 127.0.0.1 / 0.0.0.0, from one netstat run (Windows). */
+export function parseLocalListeningPorts(netstatOutput: string): Set<number> {
+  const ports = new Set<number>()
+  for (const line of netstatOutput.split('\n')) {
+    const parts = line.trim().split(/\s+/)
+    // Columns: Proto  LocalAddr  ForeignAddr  State  PID
+    if (parts[0] !== 'TCP' || parts[3] !== 'LISTENING') continue
+    const m = /^(127\.0\.0\.1|0\.0\.0\.0):(\d+)$/.exec(parts[1] ?? '')
+    if (m) ports.add(Number(m[2]))
+  }
+  return ports
+}
+
+let listeningSnapshot: { at: number; ports: Set<number> } | null = null
+/** Short enough for start-up polling (every 500ms); long enough to share across one request. */
+const LISTENING_SNAPSHOT_TTL_MS = 1000
+
+/**
+ * One `netstat` for every port asked about within a second. Checking each
+ * project's port with its own synchronous netstat (~100ms each) blocked the
+ * event loop for seconds on GET /api/projects — stalling every other request.
+ */
+function localListeningPortsWin(): Set<number> {
+  const now = Date.now()
+  if (listeningSnapshot && now - listeningSnapshot.at < LISTENING_SNAPSHOT_TTL_MS) return listeningSnapshot.ports
+  const output = execSync('netstat -aon -p TCP', {
+    encoding: 'utf-8',
+    timeout: 3000,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    ...ISOLATED_CHILD,
+  })
+  listeningSnapshot = { at: now, ports: parseLocalListeningPorts(output) }
+  return listeningSnapshot.ports
+}
+
 /**
  * Check if a port is currently listening on localhost (127.0.0.1 / 0.0.0.0).
  * Filters out Tailscale's own listeners (100.x.x.x) to avoid false positives.
@@ -266,19 +301,7 @@ export function identifyLocalPortOwner(
 export function isLocalPortListening(port: number): boolean {
   try {
     if (process.platform === 'win32') {
-      const output = execSync(`netstat -aon | findstr :${port} | findstr LISTENING`, {
-        encoding: 'utf-8',
-        timeout: 3000,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        ...ISOLATED_CHILD,
-      })
-      // Only count 127.0.0.1 or 0.0.0.0 bindings — not Tailscale interface (100.x.x.x)
-      return output.trim().split('\n').some((line) => {
-        const trimmed = line.trim()
-        if (!trimmed.startsWith('TCP    127.0.0.1:') && !trimmed.startsWith('TCP    0.0.0.0:')) return false
-        const localAddr = trimmed.split(/\s+/)[1]
-        return localAddr?.endsWith(`:${port}`) ?? false
-      })
+      return localListeningPortsWin().has(port)
     } else {
       const output = execSync(`ss -tlnp 2>/dev/null | grep :${port} || lsof -i :${port} -sTCP:LISTEN 2>/dev/null`, {
         encoding: 'utf-8',

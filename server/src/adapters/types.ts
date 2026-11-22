@@ -12,6 +12,18 @@ import type { SettingValues } from '../provider-settings.js'
 const AdapterCreditsSchema = z.object({
   credits: z.string().min(1),
   time: z.string().min(1),
+  /**
+   * Claude Code's raw result numbers. The session manager turns these into a
+   * per-reply cost (metadata.usage) — the CLI's own total carries over on resume.
+   */
+  claudeUsage: z.object({
+    cliTotalUsd: z.number(),
+    cliCumulativeTokens: z.number(),
+    inputTokens: z.number(),
+    cacheReadTokens: z.number(),
+    cacheWriteTokens: z.number(),
+    outputTokens: z.number(),
+  }).optional(),
 })
 
 const ChunkEventSchema = z.object({

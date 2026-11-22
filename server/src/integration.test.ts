@@ -272,21 +272,23 @@ describe('Integration tests', () => {
 
       const { ws, collectMessages } = await connectWs(sessionId)
       try {
-        // Consume initial history + status
-        await collectMessages(2)
+        // Consume initial history + status + (empty) queue
+        const initial = await collectMessages(3)
+        expect(initial[2]).toEqual({ type: 'queue', data: [] })
 
         // Send user input
         ws.send(JSON.stringify({ type: 'input', data: 'hello' }))
 
-        // Should receive a user message broadcast (message #3), then the
-        // typing status (#4) once the CLI is spawned — the spawn waits on the
-        // launch-settings lookup, so it lands a tick after the user message.
-        const msgs = await collectMessages(4)
-        const userMsg = msgs[2] as { type: string; data: { role: string; content: string } }
+        // Idle session: dispatched at once, so the user message is broadcast
+        // straight away (#4, never as queued), then the typing status (#5)
+        // once the CLI is spawned — the spawn waits on the launch-settings
+        // lookup, so it lands a tick after the user message.
+        const msgs = await collectMessages(5)
+        const userMsg = msgs[3] as { type: string; data: { role: string; content: string } }
         expect(userMsg.type).toBe('message')
         expect(userMsg.data.role).toBe('user')
         expect(userMsg.data.content).toBe('hello')
-        expect(msgs[3]).toEqual({ type: 'status', data: 'typing' })
+        expect(msgs[4]).toEqual({ type: 'status', data: 'typing' })
 
         // For non-interactive mode, child_process.spawn is called (not pty.write)
         // The mock spawn should have been called with the message as the last arg
@@ -305,12 +307,12 @@ describe('Integration tests', () => {
 
       const { ws, collectMessages } = await connectWs(sessionId)
       try {
-        await collectMessages(2)
+        await collectMessages(3)
 
         ws.send(JSON.stringify({ type: 'input', data: 'hello' }))
 
         // Wait for user message + typing status
-        await collectMessages(4)
+        await collectMessages(5)
 
         // Simulate CLI stdout
         await new Promise(r => setTimeout(r, 50))
@@ -319,8 +321,8 @@ describe('Integration tests', () => {
         }
 
         // Wait for assistant message
-        const msgs = await collectMessages(5)
-        const assistantMsg = msgs[4] as { type: string; data: { role: string; content: string } }
+        const msgs = await collectMessages(6)
+        const assistantMsg = msgs[5] as { type: string; data: { role: string; content: string } }
         expect(assistantMsg.type).toBe('message')
         expect(assistantMsg.data.role).toBe('assistant')
         expect(assistantMsg.data.content).toContain('Hello! How can I help?')

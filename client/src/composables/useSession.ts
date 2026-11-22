@@ -75,6 +75,9 @@ function connect(sessionId: string) {
         case 'status':
           store.setStatus(msg.data)
           break
+        case 'queue':
+          store.setQueue(msg.data, msg.dropped)
+          break
         case 'model_state':
           store.setModelState(msg.data)
           break
@@ -175,6 +178,15 @@ function cancel(): boolean {
   return true
 }
 
+/** Remove a queued (not yet sent) message. Returns false if not connected. */
+function unqueue(messageId: string): boolean {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false
+  const store = useSessionsStore()
+  if (!currentSessionId || currentSessionId !== store.activeSessionId) return false
+  ws.send(JSON.stringify({ type: 'unqueue', id: messageId }))
+  return true
+}
+
 /** Select the model for the active session. Returns false if not connected. */
 function setModel(model: string): boolean {
   if (!ws || ws.readyState !== WebSocket.OPEN) return false
@@ -203,6 +215,7 @@ export function useSession() {
     disconnect,
     sendMessage,
     cancel,
+    unqueue,
     setModel,
     restart,
     clearConnectionError,

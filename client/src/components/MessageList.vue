@@ -3,6 +3,7 @@ import { ref, watch, nextTick, onMounted } from 'vue'
 import { useSessionsStore } from '@/stores/sessions'
 import ChatBubble from '@/components/ChatBubble.vue'
 import TypingIndicator from '@/components/TypingIndicator.vue'
+import QueuedMessage from '@/components/QueuedMessage.vue'
 
 const store = useSessionsStore()
 const container = ref<HTMLElement | null>(null)
@@ -43,9 +44,9 @@ watch(
   },
 )
 
-// Auto-scroll when typing status changes
+// Auto-scroll when typing status changes, or a message is queued
 watch(
-  () => store.sessionStatus,
+  () => [store.sessionStatus, store.queuedMessages.length],
   async () => {
     if (!userScrolledUp) {
       await nextTick()
@@ -61,6 +62,20 @@ onMounted(() => {
 
 <template>
   <div class="relative min-h-0 flex-1 overflow-hidden">
+    <!-- Showing the saved copy while the server's version loads -->
+    <Transition leave-active-class="transition-opacity duration-300" leave-to-class="opacity-0">
+      <div
+        v-if="store.refreshing"
+        class="pointer-events-none absolute left-1/2 top-2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-white/90 px-2.5 py-1 text-[11px] text-gray-500 shadow-sm ring-1 ring-gray-200 backdrop-blur dark:bg-gray-900/90 dark:text-gray-400 dark:ring-gray-700"
+        role="status"
+      >
+        <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4Z" />
+        </svg>
+        Updating…
+      </div>
+    </Transition>
     <div
       ref="container"
       class="h-full overflow-y-auto overflow-x-hidden py-4"
@@ -72,6 +87,13 @@ onMounted(() => {
         :message="msg"
       />
       <TypingIndicator v-if="store.sessionStatus === 'typing'" />
+      <!-- Waiting for the running reply to finish: always last -->
+      <QueuedMessage
+        v-for="(msg, i) in store.queuedMessages"
+        :key="msg.id"
+        :message="msg"
+        :position="i + 1"
+      />
     </div>
 
     <!-- Scroll to bottom button -->

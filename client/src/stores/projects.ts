@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as api from '../api/client'
+import { cacheGet, cacheSet } from '../lib/cache'
 import type { Project, ProjectDevServer, DevServerInfo, ServiceWithState, ServiceConfig, ServiceState, PortRegistry, ProviderSettingsOverrides } from '../api/client'
 
 /** Projects are always listed alphabetically by name ("App 2" before "App 10"). */
@@ -17,6 +18,14 @@ export const useProjectsStore = defineStore('projects', () => {
   const portRegistry = ref<PortRegistry | null>(null)
   const error = ref<string | null>(null)
 
+  /** Show the last-known project list straight away (before fetchProjects lands). */
+  async function hydrateFromCache() {
+    const cached = await cacheGet<api.ProjectsResponse>('projects')
+    if (!cached || projects.value.length) return
+    projects.value = [...cached.projects].sort(byName)
+    tailscaleHostname.value = cached.tailscaleHostname
+  }
+
   async function fetchProjects() {
     try {
       const response = await api.fetchProjects()
@@ -25,6 +34,7 @@ export const useProjectsStore = defineStore('projects', () => {
       if (response.portRegistry) {
         portRegistry.value = response.portRegistry
       }
+      void cacheSet('projects', { projects: response.projects, tailscaleHostname: response.tailscaleHostname })
       error.value = null
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to load projects'
@@ -247,6 +257,7 @@ export const useProjectsStore = defineStore('projects', () => {
     portRegistry,
     error,
     fetchProjects,
+    hydrateFromCache,
     addProject,
     removeProject,
     updateProjectDevServer,

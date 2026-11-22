@@ -28,6 +28,7 @@ import { agentToolEnv, codepipeMcpServer, sessionGetsAgentTools } from './agent-
 import { killProcessTree, listTurnProcesses, wasStoppedByUs } from './process-tree.js'
 import { resolveSettings, type SettingLayers, type SettingValues } from './provider-settings.js'
 import type { ProviderSettingsStore } from './provider-settings-store.js'
+import { computeReplyUsage, formatUsd, type PreviousReply } from './reply-usage.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -85,6 +86,14 @@ export interface SessionContext {
 }
 
 interface QueuedInput {
+  /**
+   * The user's message for this input. It joins the transcript only when the
+   * input is dispatched, so a message sent mid-turn stays pinned at the
+   * bottom as "queued" instead of getting buried under the running reply.
+   */
+  message: ChatMessage
+  /** True once clients were told it's waiting (so its dispatch updates them). */
+  announced?: boolean
   text: string
   attachments?: Attachment[]
   /** Headless waiters for this specific input's turn. */
@@ -133,6 +142,12 @@ export interface ISessionManager {
   /** Send input and await the turn's final assistant message (headless run). */
   runTurn(sessionId: string, text: string, options?: RunTurnOptions): Promise<ChatMessage | null>
   cancelTurn(sessionId: string): void
+  /** Remove a not-yet-dispatched input. Returns false if it already started. */
+  unqueueInput(sessionId: string, messageId: string): boolean
+  /** Inputs waiting behind the in-flight turn, as their (not yet sent) messages. */
+  getQueuedMessages(sessionId: string): ChatMessage[]
+  /** True while a turn is in flight. */
+  isBusy(sessionId: string): boolean
   restartSession(sessionId: string): Promise<void>
   setModel(sessionId: string, model: string): void
   getModelState(sessionId: string): ModelState | null
@@ -168,6 +183,30 @@ export function lastMeaningfulLine(text: string): string | null {
     .filter((l) => l.length > 0 && !/^(\[INFO\]|\[DEBUG\]|▸ Credits:|\(Use `node --trace-warnings)/.test(l))
   const last = lines.at(-1)
   return last ? (last.length > 200 ? last.slice(0, 199) + '…' : last) : null
+}
+
+/** A user message, not yet in any transcript (see QueuedInput.message). */
+function newUserMessage(text: string, attachments?: Attachment[], metadata?: ChatMessage['metadata']): ChatMessage {
+  return {
+    id: randomUUID(),
+    role: 'user',
+    content: text,
+    timestamp: Date.now(),
+    status: 'complete',
+    ...(attachments?.length ? { attachments } : {}),
+    ...(metadata ? { metadata } : {}),
+  }
+}
+
+/** The latest earlier assistant reply that carried cost data, for per-reply cost. */
+function previousReply(messages: ChatMessage[], currentId: string): PreviousReply {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.id === currentId || m.role !== 'assistant') continue
+    if (m.metadata?.usage) return { usage: m.metadata.usage }
+    if (m.metadata?.credits?.startsWith('$')) return { legacyCredits: m.metadata.credits }
+  }
+  return null
 }
 
 export class SessionManager implements ISessionManager {
@@ -393,38 +432,66 @@ export class SessionManager implements ISessionManager {
       log.info('session', `handleInput: ${attachments.length} attachment(s): ${attachments.map(a => a.filename).join(', ')}`)
     }
 
-    this.recordUserMessage(ctx, sessionId, text, attachments)
-
     // Queue the input; the pump dispatches one turn at a time so a message
     // sent while the CLI is busy waits instead of killing the in-flight turn.
-    this.enqueueInput(ctx, sessionId, { text, attachments })
+    this.enqueueInput(ctx, sessionId, { message: newUserMessage(text, attachments), text, attachments })
   }
 
   private enqueueInput(ctx: SessionContext, sessionId: string, input: QueuedInput): void {
     ;(ctx.inputQueue ??= []).push(input)
+    // Dispatches right away when idle; otherwise it waits, shown as queued.
     this.pumpQueue(sessionId)
+    if (ctx.inputQueue.includes(input)) {
+      input.announced = true
+      this.broadcastQueue(sessionId)
+    }
+  }
+
+  /** Tell clients what's waiting (`dropped`: inputs discarded by Stop/Restart). */
+  private broadcastQueue(sessionId: string, dropped?: QueuedInput[]): void {
+    this.broadcast(sessionId, {
+      type: 'queue',
+      data: this.getQueuedMessages(sessionId),
+      ...(dropped?.length ? { dropped: dropped.map((q) => q.message) } : {}),
+    })
+  }
+
+  getQueuedMessages(sessionId: string): ChatMessage[] {
+    return (this.sessions.get(sessionId)?.inputQueue ?? []).map((q) => q.message)
+  }
+
+  isBusy(sessionId: string): boolean {
+    return !!this.sessions.get(sessionId)?.busy
+  }
+
+  unqueueInput(sessionId: string, messageId: string): boolean {
+    const ctx = this.sessions.get(sessionId)
+    const queue = ctx?.inputQueue
+    const i = queue?.findIndex((q) => q.message.id === messageId) ?? -1
+    if (!ctx || !queue || i < 0) return false
+    const [removed] = queue.splice(i, 1)
+    for (const w of removed.waiters ?? []) {
+      clearTimeout(w.timer)
+      w.reject(new Error('Queued input was removed'))
+    }
+    this.broadcastQueue(sessionId)
+    return true
+  }
+
+  /** Drop every queued input (Stop / Restart) and hand them back to the clients. */
+  private dropQueue(sessionId: string, ctx: SessionContext): void {
+    const dropped = ctx.inputQueue ?? []
+    ctx.inputQueue = []
+    if (dropped.length) this.broadcastQueue(sessionId, dropped)
   }
 
   /**
-   * Create, persist, and broadcast the user's message immediately — even
-   * when it will be queued behind an in-flight turn, the user sees it land.
+   * Add the user's message to the transcript — persisted and broadcast — as
+   * its input is dispatched (stamped now, so it sorts after the reply it
+   * waited on).
    */
-  private recordUserMessage(
-    ctx: SessionContext,
-    sessionId: string,
-    text: string,
-    attachments: Attachment[] | undefined,
-    metadata?: ChatMessage['metadata'],
-  ): void {
-    const userMessage: ChatMessage = {
-      id: randomUUID(),
-      role: 'user',
-      content: text,
-      timestamp: Date.now(),
-      status: 'complete',
-      ...(attachments?.length ? { attachments } : {}),
-      ...(metadata ? { metadata } : {}),
-    }
+  private recordUserMessage(ctx: SessionContext, sessionId: string, message: ChatMessage): void {
+    const userMessage: ChatMessage = { ...message, timestamp: Date.now() }
 
     ctx.session.messages.push(userMessage)
     ctx.session.updatedAt = userMessage.timestamp
@@ -473,14 +540,11 @@ export class SessionManager implements ISessionManager {
 
       // The waiter travels WITH its input through the queue, so it settles
       // with this turn's result even when other inputs are queued around it.
-      const input: QueuedInput = { text, waiters: [waiter] }
-      this.recordUserMessage(
-        ctx,
-        sessionId,
+      const input: QueuedInput = {
+        message: newUserMessage(text, undefined, options.internalPrompt ? { kind: 'prompt' } : undefined),
         text,
-        undefined,
-        options.internalPrompt ? { kind: 'prompt' } : undefined,
-      )
+        waiters: [waiter],
+      }
       this.enqueueInput(ctx, sessionId, input)
     })
   }
@@ -547,6 +611,8 @@ export class SessionManager implements ISessionManager {
     ctx.activeTurnWaiters = next.waiters ?? []
     ctx.currentTurnAssistantId = undefined
     this.finalizeCurrentMessage(sessionId)
+    this.recordUserMessage(ctx, sessionId, next.message)
+    if (next.announced) this.broadcastQueue(sessionId)
 
     if (ctx.adapter.transport === 'acp') {
       this.handleAcpInput(sessionId, ctx, next.text, next.attachments)
@@ -636,8 +702,10 @@ export class SessionManager implements ISessionManager {
     log.info('session', `cancelTurn: session ${sessionId}`)
 
     // Drop anything queued so cancel means "stop", not "stop then continue".
-    ctx.inputQueue = []
+    // Waiters first (they live on the queued inputs), then hand the dropped
+    // messages back to the clients so the text isn't lost.
     this.rejectTurnWaiters(ctx, 'Turn was cancelled')
+    this.dropQueue(sessionId, ctx)
 
     if (ctx.adapter.transport === 'acp') {
       ctx.acpDriver?.cancel()
@@ -667,9 +735,9 @@ export class SessionManager implements ISessionManager {
     log.info('session', `Restarting CLI for session ${sessionId}`)
 
     // 1. Cancel any in-flight work and drain the queue
-    ctx.inputQueue = []
-    ctx.busy = false
     this.rejectTurnWaiters(ctx, 'CLI was restarted mid-turn')
+    this.dropQueue(sessionId, ctx)
+    ctx.busy = false
 
     // 2. Kill the existing process
     if (ctx.adapter.transport === 'acp') {
@@ -1305,9 +1373,12 @@ export class SessionManager implements ISessionManager {
         case 'message_complete': {
           if (ctx.currentMessage && ctx.currentMessage.status === 'streaming') {
             if (event.metadata) {
-              ctx.currentMessage.metadata = {
-                ...ctx.currentMessage.metadata,
-                ...event.metadata,
+              const { claudeUsage, ...rest } = event.metadata
+              ctx.currentMessage.metadata = { ...ctx.currentMessage.metadata, ...rest }
+              if (claudeUsage) {
+                const usage = computeReplyUsage(claudeUsage, previousReply(ctx.session.messages, ctx.currentMessage.id))
+                ctx.currentMessage.metadata.usage = usage
+                ctx.currentMessage.metadata.credits = formatUsd(usage.costUsd)
               }
             }
             this.finalizeCurrentMessage(sessionId)

@@ -1,11 +1,4 @@
 <script setup lang="ts">
-/**
- * Kiro reports bare credit numbers ("0.15"); Claude a dollar cost ("$0.0123")
- * and Antigravity tokens ("24.7k tokens") — those already say what they are.
- */
-function usageLabel(value: string): string {
-  return /^[\d.]+$/.test(value) ? `Credits: ${value}` : value
-}
 import { computed, ref } from 'vue'
 import { useTeamStore } from '@/stores/team'
 import { useSessionsStore } from '@/stores/sessions'
@@ -13,6 +6,7 @@ import { useUiStore } from '@/stores/ui'
 import PersonaAvatar from '@/components/PersonaAvatar.vue'
 import ChatToolCard from '@/components/ChatToolCard.vue'
 import MarkdownContent from '@/components/MarkdownContent.vue'
+import ReplyUsageFooter from '@/components/ReplyUsageFooter.vue'
 import type { ChatMessage } from '@/api/client'
 
 const props = defineProps<{
@@ -179,12 +173,8 @@ async function copyContent() {
       <p v-if="isStreaming" class="whitespace-pre-wrap break-words text-sm text-gray-900 dark:text-gray-100">{{ message.content }}</p>
       <!-- Complete: render full markdown -->
       <MarkdownContent v-else :source="message.content" @open-file="ui.openFile" />
-      <!-- Credits footer for completed assistant messages -->
-      <div v-if="!isStreaming && message.metadata?.credits"
-           class="mt-2 flex items-center gap-3 border-t border-gray-200 pt-1.5 text-xs text-gray-400 dark:border-gray-700 dark:text-gray-500">
-        <span v-if="message.metadata.credits">{{ usageLabel(message.metadata.credits) }}</span>
-        <span v-if="message.metadata.time">{{ message.metadata.time }}</span>
-      </div>
+      <!-- Cost / tokens / time for completed assistant messages -->
+      <ReplyUsageFooter v-if="!isStreaming && (message.metadata?.credits || message.metadata?.usage)" :metadata="message.metadata!" />
     </div>
     <!-- Copy button: always visible on mobile, hover-reveal on desktop -->
     <button

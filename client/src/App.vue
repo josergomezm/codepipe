@@ -40,10 +40,13 @@ function onVisibilityChange() {
 }
 
 onMounted(async () => {
-  await Promise.all([
-    sessionsStore.fetchSessions(),
-    projectsStore.fetchProjects(),
-  ])
+  // Last-known sidebar first (instant), then the server's. Opening the chat
+  // waits only for the session list — never for projects, which also checks
+  // dev servers and ports.
+  await Promise.all([sessionsStore.hydrateFromCache(), projectsStore.hydrateFromCache()])
+  const sessionsReady = sessionsStore.fetchSessions()
+  void projectsStore.fetchProjects()
+  if (sessionsStore.sessions.length === 0) await sessionsReady
 
   // Deep-link: opened from a push notification (/?session=<id>).
   const fromUrl = new URLSearchParams(window.location.search).get('session')

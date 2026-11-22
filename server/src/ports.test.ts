@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { checkPortConflicts, serviceReservations, type ProjectPortInfo } from './ports.js'
+import { checkPortConflicts, parseLocalListeningPorts, serviceReservations, type ProjectPortInfo } from './ports.js'
 import type { RunningService } from './service-manager.js'
 
 // No real `tailscale serve status` in tests — no active mappings.
@@ -43,5 +43,21 @@ describe('serviceReservations', () => {
     const reserved = serviceReservations([alpha], [running('alpha', { firestore: 8080, hub: 4401 })])
     expect(reserved.map((r) => r.port).sort()).toEqual([4400, 4401, 8080])
     expect(reserved.every((r) => r.projectId === 'alpha')).toBe(true)
+  })
+})
+
+describe('parseLocalListeningPorts', () => {
+  it('keeps local TCP listeners only (not Tailscale, not established, not UDP)', () => {
+    const out = [
+      '',
+      'Active Connections',
+      '  Proto  Local Address          Foreign Address        State           PID\r',
+      '  TCP    0.0.0.0:5552           0.0.0.0:0              LISTENING       17108\r',
+      '  TCP    127.0.0.1:5551         0.0.0.0:0              LISTENING       123244\r',
+      '  TCP    100.64.0.3:443         0.0.0.0:0              LISTENING       4400\r',
+      '  TCP    127.0.0.1:5551         127.0.0.1:60123        ESTABLISHED     123244\r',
+      '  TCP    [::]:9000              [::]:0                 LISTENING       77\r',
+    ].join('\n')
+    expect([...parseLocalListeningPorts(out)].sort()).toEqual([5551, 5552])
   })
 })

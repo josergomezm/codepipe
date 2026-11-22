@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { useSession } from '@/composables/useSession'
 import { useSessionsStore } from '@/stores/sessions'
 import { uploadFile } from '@/api/client'
@@ -30,6 +30,16 @@ watch(() => sessionsStore.activeSessionId, (newId, oldId) => {
   // Restore draft for the session we're entering
   text.value = newId ? (localStorage.getItem(draftKey(newId)) ?? '') : ''
 }, { immediate: true })
+
+// Take back text the session handed over (Stop dropped queued messages, or
+// one was pulled back for editing): keep anything already typed.
+watch(() => sessionsStore.composerRestore?.nonce, () => {
+  const restored = sessionsStore.composerRestore?.text
+  if (!restored) return
+  text.value = text.value.trim() ? `${restored}\n\n${text.value}` : restored
+  sessionsStore.composerRestore = null
+  void nextTick(() => { onInput(); textarea.value?.focus() })
+})
 
 watch(text, (val) => {
   const id = sessionsStore.activeSessionId

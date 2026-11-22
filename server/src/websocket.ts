@@ -128,6 +128,8 @@ function createMessageHandler(
           const message = modelErr instanceof Error ? modelErr.message : 'Failed to set model'
           ws.send(JSON.stringify({ type: 'error', data: message }))
         }
+      } else if (msg.type === 'unqueue') {
+        sessionManager.unqueueInput(sessionId, msg.id)
       } else if (msg.type === 'restart') {
         log.debug('ws', `Routing restart for session ${sessionId}`)
         sessionManager.restartSession(sessionId).catch((restartErr) => {
@@ -174,7 +176,9 @@ function handleConnection(
     sessionManager.attachClient(sessionId, ws)
 
     ws.send(JSON.stringify({ type: 'history', data: liveSession.messages }))
-    ws.send(JSON.stringify({ type: 'status', data: 'idle' }))
+    // Real status, so a reconnect mid-turn still shows the agent working.
+    ws.send(JSON.stringify({ type: 'status', data: sessionManager.isBusy(sessionId) ? 'typing' : 'idle' }))
+    ws.send(JSON.stringify({ type: 'queue', data: sessionManager.getQueuedMessages(sessionId) }))
 
     // Only send model state when there's something to show (a known model or a
     // discovered list) — avoids noise for sessions with no model info yet.

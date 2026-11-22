@@ -99,11 +99,29 @@ export const ChatIdeaCardSchema = z.object({
 
 // --- Core Models ---
 
+/**
+ * Token/cost accounting for one reply (Claude Code). `costUsd` is this reply
+ * alone; the cli* fields are the CLI's raw, possibly carried-over numbers,
+ * kept so the next reply can be computed (see reply-usage.ts).
+ */
+export const ReplyUsageSchema = z.object({
+  costUsd: z.number().nonnegative(),
+  sessionCostUsd: z.number().nonnegative().optional(),
+  cliTotalUsd: z.number().nonnegative().optional(),
+  cliCumulativeTokens: z.number().nonnegative().optional(),
+  inputTokens: z.number().int().nonnegative(),
+  cacheReadTokens: z.number().int().nonnegative(),
+  cacheWriteTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+})
+
 export const ChatMessageMetadataSchema = z.object({
   toolName: z.string().optional(),
   thinkingContent: z.string().optional(),
   credits: z.string().optional(),
   time: z.string().optional(),
+  /** Per-reply tokens and cost, when the provider reports them. */
+  usage: ReplyUsageSchema.optional(),
   /** Persona who authored this message (team sessions). */
   personaId: z.string().uuid().optional(),
   /**
@@ -398,6 +416,11 @@ export const WSClientMessageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('restart'),
   }),
+  // Remove a queued (not yet dispatched) input, by its message id.
+  z.object({
+    type: z.literal('unqueue'),
+    id: z.string().min(1),
+  }),
 ])
 
 export const WSServerMessageSchema = z.discriminatedUnion('type', [
@@ -406,6 +429,8 @@ export const WSServerMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('history'), data: z.array(ChatMessageSchema) }),
   z.object({ type: z.literal('model_state'), data: ModelStateSchema }),
   z.object({ type: z.literal('error'), data: z.string() }),
+  // Inputs waiting behind the running turn; `dropped` = discarded by Stop/Restart.
+  z.object({ type: z.literal('queue'), data: z.array(ChatMessageSchema), dropped: z.array(ChatMessageSchema).optional() }),
 ])
 
 // --- REST API Request Bodies ---
@@ -484,6 +509,7 @@ export type SessionStatus = z.infer<typeof SessionStatusSchema>
 export type MessageRole = z.infer<typeof MessageRoleSchema>
 export type MessageStatus = z.infer<typeof MessageStatusSchema>
 export type ChatMessageMetadata = z.infer<typeof ChatMessageMetadataSchema>
+export type ReplyUsage = z.infer<typeof ReplyUsageSchema>
 export type Attachment = z.infer<typeof AttachmentSchema>
 export type ChatMessage = z.infer<typeof ChatMessageSchema>
 export type ProjectDevServer = z.infer<typeof ProjectDevServerSchema>

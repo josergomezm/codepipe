@@ -46,6 +46,8 @@ export interface ChatMessage {
     thinkingContent?: string
     credits?: string
     time?: string
+    /** Per-reply tokens and cost (Claude Code); `costUsd` is this reply alone. */
+    usage?: ReplyUsage
     /** Persona who authored this message (team sessions). */
     personaId?: string
     /**
@@ -931,4 +933,15 @@ export function rawFileUrl(projectId: string, path: string, opts: { download?: b
   if (opts.v) url += `&v=${Math.round(opts.v)}`
   if (opts.download) url += '&download=1'
   return url
+}
+
+export interface ReplyUsage {
+  costUsd: number
+  sessionCostUsd?: number
+  cliTotalUsd?: number
+  cliCumulativeTokens?: number
+  inputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  outputTokens: number
 }

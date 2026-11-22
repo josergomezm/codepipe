@@ -15,6 +15,8 @@
  */
 
 import type { AdapterEvent } from './types.js'
+
+type MessageCompleteMetadata = NonNullable<Extract<AdapterEvent, { type: 'message_complete' }>['metadata']>
 import { summarizeToolInput } from './tool-summary.js'
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -37,15 +39,42 @@ function translateAssistant(message: unknown): AdapterEvent[] {
   return events
 }
 
-/** Build `message_complete` metadata from a result event, if cost+duration are present. */
-function resultMetadata(event: Record<string, unknown>): { credits: string; time: string } | undefined {
+const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+
+/**
+ * Build `message_complete` metadata from a result event, if cost+duration are
+ * present. NB: on `--resume`, `total_cost_usd` and `modelUsage` usually
+ * include earlier runs of the conversation, while `usage` is this run only —
+ * the raw numbers go out as `claudeUsage` and the session manager works out
+ * the reply's own cost.
+ */
+function resultMetadata(event: Record<string, unknown>): MessageCompleteMetadata | undefined {
   const cost = event['total_cost_usd']
   const durationMs = event['duration_ms']
-  if (typeof cost === 'number' && typeof durationMs === 'number') {
-    const seconds = Math.max(1, Math.round(durationMs / 1000))
-    return { credits: `$${cost.toFixed(4)}`, time: `${seconds}s` }
+  if (typeof cost !== 'number' || typeof durationMs !== 'number') return undefined
+  const seconds = Math.max(1, Math.round(durationMs / 1000))
+  const metadata: MessageCompleteMetadata = { credits: `$${cost.toFixed(4)}`, time: `${seconds}s` }
+
+  const usage = event['usage']
+  if (isRecord(usage)) {
+    let cumulative = 0
+    const modelUsage = event['modelUsage']
+    if (isRecord(modelUsage)) {
+      for (const m of Object.values(modelUsage)) {
+        if (!isRecord(m)) continue
+        cumulative += num(m['inputTokens']) + num(m['outputTokens']) + num(m['cacheReadInputTokens']) + num(m['cacheCreationInputTokens'])
+      }
+    }
+    metadata.claudeUsage = {
+      cliTotalUsd: cost,
+      cliCumulativeTokens: cumulative,
+      inputTokens: num(usage['input_tokens']),
+      cacheReadTokens: num(usage['cache_read_input_tokens']),
+      cacheWriteTokens: num(usage['cache_creation_input_tokens']),
+      outputTokens: num(usage['output_tokens']),
+    }
   }
-  return undefined
+  return metadata
 }
 
 /**
