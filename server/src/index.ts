@@ -18,6 +18,8 @@ import { GeminiAdapter } from './adapters/gemini.js'
 import { createChangesRoutes, createChangeCountsRoutes } from './routes/changes.js'
 import { createFilesRoutes } from './routes/files.js'
 import { refreshAttention } from './lead/workspace-digest.js'
+import { LeadService } from './lead/lead-service.js'
+import { createLeadRoutes } from './routes/lead.js'
 import { createUsageRoutes } from './routes/usage.js'
 import { UsageService } from './usage.js'
 import { TerminalManager } from './terminal-manager.js'
@@ -74,6 +76,7 @@ const serviceManager = new ServiceManager()
 // The proactive team layer: daily standups over the per-project todo list,
 // routed through personas. Registers the team-turn hook on the session manager.
 const standupService = new StandupService(storage, sessionManager, pushService)
+const leadService = new LeadService(storage, sessionManager, './data')
 // The tools agents call from any chat (via CodePipe's MCP server). A team
 // item closed from a chat joins the next standup's agenda.
 const agentTools = new AgentToolService({
@@ -126,6 +129,7 @@ app.use('/api/projects', createProjectRoutes(storage, devServerManager, serviceM
 app.use('/api/projects/:id/services', createServiceRoutes(storage, serviceManager))
 app.use('/api/projects/:id/changes', createChangesRoutes(storage))
 app.use('/api/projects/:id/files', createFilesRoutes(storage))
+app.use('/api/lead', createLeadRoutes(leadService))
 app.use('/api/change-counts', createChangeCountsRoutes(storage))
 app.use('/api/usage', createUsageRoutes(new UsageService()))
 app.use('/api/browse', createBrowseRoutes())
@@ -184,6 +188,9 @@ if (isMainModule) {
   void storage.listProjects()
     .then((projects) => Promise.all(projects.map((p) => refreshProjectPorts(storage, p))))
     .catch((err) => log.error('server', 'Failed to refresh stored service ports', err))
+
+  // The Workspace project exists before anything files an item into it.
+  void leadService.workspaceProject().catch((err) => log.error('server', 'Failed to set up the Workspace project', err))
 
   // Recompute how idle chats ended, so their sidebar chips are right.
   void refreshAttention({ storage, liveSession: (id) => sessionManager.getSession(id) })

@@ -12,6 +12,8 @@ import {
   specToJson,
   validateProviderOverrides,
   validateSettingValues,
+  READ_ONLY_SETTINGS,
+  type SettingValues,
 } from './provider-settings.js'
 import { ProviderSettingsStore } from './provider-settings-store.js'
 
@@ -232,5 +234,41 @@ describe('ProviderSettingsStore', () => {
     expect(store.all()).toEqual({})
     const onDisk = JSON.parse(await readFile(path.join(dir, 'provider-settings.json'), 'utf8'))
     expect(onDisk.providers).toEqual({})
+  })
+})
+
+describe('READ_ONLY_SETTINGS (the enforced layer)', () => {
+  it('uses only settings each provider actually has, with valid values', () => {
+    for (const [provider, values] of Object.entries(READ_ONLY_SETTINGS)) {
+      const spec = getProviderSettingsSpec(provider as 'claude')!
+      for (const key of Object.keys(values!)) expect(spec.settings.some((s) => s.key === key), `${provider}.${key}`).toBe(true)
+      expect(validateSettingValues(provider as 'claude', values!)).toEqual({ ok: true, values })
+    }
+  })
+
+  it('pins the free-form escapes too: extra flags, agent profiles, sandbox', () => {
+    const loose = {
+      claude: { extraArgs: ['--dangerously-skip-permissions'] },
+      kiro: { extraArgs: ['--trust-all-tools'], agent: 'my-agent' },
+      gemini: { extraArgs: ['--dangerously-skip-permissions'], agent: 'my-agent', sandbox: false },
+    } satisfies Record<string, SettingValues>
+    for (const [provider, persona] of Object.entries(loose)) {
+      const values = resolveSettings(provider as 'claude', { global: persona, project: persona, persona, enforced: READ_ONLY_SETTINGS[provider as 'claude'] }).values
+      const args = settingsToArgs(provider as 'claude', values).join(' ')
+      expect(args, provider).not.toMatch(/dangerously|trust-all-tools|my-agent/)
+    }
+    expect(resolveSettings('gemini', { persona: { sandbox: false }, enforced: READ_ONLY_SETTINGS.gemini }).values['sandbox']).toBe(true)
+  })
+
+  it('wins over persona and project settings', () => {
+    const resolved = resolveSettings('claude', {
+      project: { permissionMode: 'acceptEdits' },
+      persona: { permissionMode: 'bypassPermissions', skipPermissions: true },
+      enforced: READ_ONLY_SETTINGS.claude,
+    })
+    expect(resolved.values['permissionMode']).toBe('dontAsk')
+    expect(resolved.values['skipPermissions']).toBe(false)
+    expect(resolved.sources['permissionMode']).toBe('enforced')
+    expect(settingsToArgs('claude', resolved.values)).toEqual(expect.arrayContaining(['--disallowedTools', 'Edit', 'Write', 'Bash']))
   })
 })

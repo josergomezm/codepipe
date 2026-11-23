@@ -22,6 +22,7 @@ export type ChangedCollection =
   | 'actions'
   | 'personas'
   | 'standup'
+  | 'lead'
 
 export interface EventSubscriber {
   send(payload: string): void

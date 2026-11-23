@@ -171,3 +171,36 @@ describe('choosePermissionOption', () => {
     expect(choosePermissionOption(null)).toEqual({})
   })
 })
+
+describe('choosePermissionOption (read-only sessions)', () => {
+  const options = [{ optionId: 'yes', kind: 'allow_once' }, { optionId: 'no', kind: 'reject_once' }]
+
+  it('allows reads and CodePipe tools', () => {
+    expect(choosePermissionOption({ options, toolCall: { kind: 'read', title: 'Read a.ts' } }, { readOnly: true })).toEqual({ optionId: 'yes' })
+    expect(choosePermissionOption({ options, toolCall: { kind: 'other', title: '@codepipe/read_chat' } }, { readOnly: true })).toEqual({ optionId: 'yes' })
+  })
+
+  it('rejects edits and shell commands', () => {
+    expect(choosePermissionOption({ options, toolCall: { kind: 'edit', title: 'Write a.ts' } }, { readOnly: true })).toEqual({ optionId: 'no' })
+    expect(choosePermissionOption({ options, toolCall: { kind: 'execute', title: 'rm -rf' } }, { readOnly: true })).toEqual({ optionId: 'no' })
+    // No reject option to pick: nothing chosen (the driver cancels).
+    expect(choosePermissionOption({ options: [options[0]], toolCall: { kind: 'edit' } }, { readOnly: true })).toEqual({})
+  })
+})
+
+describe('choosePermissionOption (read-only: the CodePipe exception is exact)', () => {
+  const options = [{ optionId: 'yes', kind: 'allow_once' }, { optionId: 'no', kind: 'reject_once' }]
+  const pick = (toolCall: Record<string, unknown>) => choosePermissionOption({ options, toolCall }, { readOnly: true })
+
+  it('rejects an edit or a shell command that merely mentions codepipe', () => {
+    expect(pick({ kind: 'execute', title: 'echo codepipe; rm -rf .' })).toEqual({ optionId: 'no' })
+    expect(pick({ kind: 'edit', title: 'C:/Github/codepipe/server/data/workspace/x.ts' })).toEqual({ optionId: 'no' })
+    expect(pick({ kind: 'edit', title: '@codepipe/read_chat' })).toEqual({ optionId: 'no' })
+    expect(pick({ kind: 'other', title: '@codepipe/read_chat; rm -rf .' })).toEqual({ optionId: 'no' })
+  })
+
+  it('rejects a call with no kind unless it is a CodePipe tool', () => {
+    expect(pick({ title: 'something' })).toEqual({ optionId: 'no' })
+    expect(pick({ title: 'mcp__codepipe__update_focus' })).toEqual({ optionId: 'yes' })
+  })
+})

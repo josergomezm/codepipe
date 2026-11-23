@@ -67,25 +67,29 @@ export interface DigestSources {
   liveSession?: (id: string) => Session | undefined
 }
 
+/** Your chats, newest first — each from memory when it's running, else disk. */
+export async function loadUserChats({ storage, liveSession }: DigestSources): Promise<Session[]> {
+  const metas = (await storage.listSessions()).filter(isUserChat).sort((a, b) => b.updatedAt - a.updatedAt)
+  const sessions = await Promise.all(metas.map(async (m) => liveSession?.(m.id) ?? (await storage.getSession(m.id))))
+  return sessions.filter((s): s is Session => !!s)
+}
+
 export async function buildWorkspaceDigest(
-  { storage, liveSession }: DigestSources,
+  sources: DigestSources,
   opts: { since: number; now?: number },
 ): Promise<WorkspaceDigest> {
+  const { storage } = sources
   const now = opts.now ?? Date.now()
-  const [projects, metas, closed, actions, todos] = await Promise.all([
+  const [projects, sessions, closed, actions, todos] = await Promise.all([
     storage.listProjects(),
-    storage.listSessions(),
+    loadUserChats(sources),
     storage.listClosedChats(opts.since),
     storage.listActionItems(),
     storage.listTodos(),
   ])
   const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? 'Removed project'
 
-  const sessions = await Promise.all(
-    metas.filter(isUserChat).map(async (m) => liveSession?.(m.id) ?? (await storage.getSession(m.id))),
-  )
   const chats = sessions
-    .filter((s): s is Session => !!s)
     .map((s) => ({ ...digestChat(s, now), projectName: projectName(s.projectId) }))
     .filter((c) => c.turnCount > 0)
     // Waiting on you first, then the most recently active.
@@ -100,7 +104,8 @@ export async function buildWorkspaceDigest(
   }
 
   const repos = (
-    await Promise.all(projects.map(async (p) => ({ projectId: p.id, projectName: p.name, activity: await getRepoActivity(p.path, opts.since) })))
+    // Not the internal Workspace: its folder sits inside CodePipe's own checkout.
+    await Promise.all(projects.filter((p) => !p.internal).map(async (p) => ({ projectId: p.id, projectName: p.name, activity: await getRepoActivity(p.path, opts.since) })))
   ).flatMap((r) => (r.activity.isRepo && (r.activity.commits.length || r.activity.unpushed || r.activity.uncommitted) ? [{ ...r, activity: r.activity }] : []))
 
   const trimmed = fitBudget(chats)

@@ -27,8 +27,10 @@ watch(() => sessionsStore.activeSessionId, (newId, oldId) => {
     if (draft) localStorage.setItem(draftKey(oldId), draft)
     else localStorage.removeItem(draftKey(oldId))
   }
-  // Restore draft for the session we're entering
-  text.value = newId ? (localStorage.getItem(draftKey(newId)) ?? '') : ''
+  // Restore draft for the session we're entering: yours, else a prompt the
+  // lead drafted for this chat (the server drops it once you send).
+  const drafted = newId ? sessionsStore.sessions.find((s) => s.id === newId)?.draft : undefined
+  text.value = newId ? (localStorage.getItem(draftKey(newId)) ?? drafted ?? '') : ''
 }, { immediate: true })
 
 // Take back text the session handed over (Stop dropped queued messages, or

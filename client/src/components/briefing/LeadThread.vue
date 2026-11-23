@@ -1,26 +1,27 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTeamStore } from '@/stores/team'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import { latestScheduledBrief, useLeadStore } from '@/stores/lead'
 import { dayLabel } from '@/lib/files'
-import type { Persona } from '@/api/client'
+import type { FocusItem, Persona } from '@/api/client'
 import PersonaAvatar from '@/components/PersonaAvatar.vue'
 import SheetModal from '@/components/SheetModal.vue'
 import FocusList from '@/components/briefing/FocusList.vue'
 import BriefingCard from '@/components/briefing/BriefingCard.vue'
 import {
-  WINDOW_HOURS, buildSampleBriefing, loadFocus, loadInputs, saveFocus,
-  type BriefingInputs, type FocusItem, type SampleBriefing,
+  WINDOW_HOURS, buildSampleBriefing, loadInputs,
+  type BriefingInputs, type SampleBriefing,
 } from '@/lib/briefing-preview'
 
 /**
  * PREVIEW of the lead's assistant thread: a workspace-level chat with your
  * team lead, where the daily brief lands each morning (what you worked on in
  * the last 24h vs. your Focus list, board and action items) and you reply.
- * Real inputs, sample brief, no backend — see lib/briefing-preview.ts.
+ * Your Focus list is the server's (GET/PUT /api/lead); the brief itself is
+ * still sample text built from real inputs — see lib/briefing-preview.ts.
  */
 defineProps<{ lead: Persona }>()
 
@@ -30,7 +31,11 @@ const sessionsStore = useSessionsStore()
 const router = useRouter()
 const leadInbox = useLeadStore()
 
-const focus = ref<FocusItem[]>([])
+/** Your Focus list — the server's, saved as you edit it. */
+const focus = computed<FocusItem[]>({
+  get: () => leadInbox.focus,
+  set: (next) => void leadInbox.saveFocus(next),
+})
 const highlight = ref<string | null>(null)
 const inputs = ref<BriefingInputs | null>(null)
 const today = ref<SampleBriefing | null>(null)
@@ -86,7 +91,7 @@ onMounted(async () => {
   // Open thread = read; anything the lead posts while it's open stays read.
   leadInbox.markRead()
   await Promise.all([team.fetchActions(), team.fetchTodos(), sessionsStore.fetchSessions()])
-  focus.value = loadFocus(projectsStore.projects)
+  await leadInbox.fetchStatus()
   inputs.value = await loadInputs(sessionsStore.sessions, projectsStore.projects, team.actions, team.todos)
   // This morning's run, and a shorter one from the day before above it.
   const lastBrief = latestScheduledBrief()
@@ -96,8 +101,6 @@ onMounted(async () => {
   replies.value = [{ from: 'you', text: 'Partners is my main thing this month, products are on maintenance.' }]
   await scrollToEnd()
 })
-
-watch(focus, (f) => saveFocus(f), { deep: true })
 
 /** Activity bars follow your current Focus list (the note stays as written). */
 const todayView = computed<SampleBriefing | null>(() => {

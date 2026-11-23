@@ -25,9 +25,9 @@ import { AcpSessionDriver } from './acp/driver.js'
 import type { TurnNotifier } from './push.js'
 import { log } from './logger.js'
 import { ISOLATED_CHILD } from './child-options.js'
-import { agentToolEnv, codepipeMcpServer, sessionGetsAgentTools } from './agent-tools.js'
+import { agentToolEnv, codepipeMcpServer, isReadOnlyKind, sessionGetsAgentTools } from './agent-tools.js'
 import { killProcessTree, listTurnProcesses, wasStoppedByUs } from './process-tree.js'
-import { resolveSettings, type SettingLayers, type SettingValues } from './provider-settings.js'
+import { READ_ONLY_SETTINGS, resolveSettings, type SettingLayers, type SettingValues } from './provider-settings.js'
 import type { ProviderSettingsStore } from './provider-settings-store.js'
 import { computeReplyUsage, formatUsd, type PreviousReply } from './reply-usage.js'
 import { endingHint, isUserChat } from './lead/chat-digest.js'
@@ -114,6 +114,8 @@ export interface CreateSessionOptions {
   model?: string
   /** Persona driving the session — their launch-setting overrides apply. */
   personaId?: string
+  /** A prompt to leave in the composer, unsent (see Session.draft). */
+  draft?: string
 }
 
 export interface RunTurnOptions {
@@ -234,11 +236,13 @@ export class SessionManager implements ISessionManager {
 
   /**
    * Launch settings for a session: defaults → env → global → project →
-   * persona. Read fresh per turn so a change on the settings page applies
-   * to the next message, no restart or new session needed.
+   * persona → enforced. Read fresh per turn so a change on the settings page
+   * applies to the next message, no restart or new session needed. The lead
+   * and reviewers are read-only whatever the other layers say.
    */
-  async resolveLaunchSettings(session: Pick<Session, 'provider' | 'projectId' | 'personaId'>): Promise<SettingValues> {
+  async resolveLaunchSettings(session: Pick<Session, 'provider' | 'projectId' | 'personaId' | 'kind'>): Promise<SettingValues> {
     const layers: SettingLayers = {}
+    if (isReadOnlyKind(session.kind)) layers.enforced = READ_ONLY_SETTINGS[session.provider] ?? {}
     if (this.providerSettings) layers.global = this.providerSettings.get(session.provider)
     try {
       const project = await this.storage.getProject(session.projectId)
@@ -290,6 +294,7 @@ export class SessionManager implements ISessionManager {
       ...(options.kind ? { kind: options.kind } : {}),
       ...(options.model ? { model: options.model } : {}),
       ...(options.personaId ? { personaId: options.personaId } : {}),
+      ...(options.draft ? { draft: options.draft } : {}),
     }
 
     if (adapter.transport === 'acp') {
@@ -506,8 +511,14 @@ export class SessionManager implements ISessionManager {
   private recordUserMessage(ctx: SessionContext, sessionId: string, message: ChatMessage): void {
     const userMessage: ChatMessage = { ...message, timestamp: Date.now() }
     // You answered / moved on: whatever the last turn left waiting is now
-    // being handled.
+    // being handled, and any drafted prompt has been used (or replaced).
     this.setAttention(sessionId, ctx, null)
+    if (ctx.session.draft) {
+      delete ctx.session.draft
+      this.storage.setSessionDraft(sessionId, null).catch((err) => {
+        log.warn('session', `Failed to clear the draft for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`)
+      })
+    }
 
     ctx.session.messages.push(userMessage)
     ctx.session.updatedAt = userMessage.timestamp
@@ -879,6 +890,7 @@ export class SessionManager implements ISessionManager {
       cwd: ctx.projectPath,
       profile: ctx.adapter.acpProfile,
       mcpServers: sessionGetsAgentTools(ctx.session.kind) ? [codepipeMcpServer(sessionId)] : [],
+      readOnly: isReadOnlyKind(ctx.session.kind),
       callbacks: {
         onEvent: (event) => {
           const valid = validateAdapterEvents([event], (msg) => log.warn('adapter', msg))

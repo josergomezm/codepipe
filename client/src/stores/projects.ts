@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import * as api from '../api/client'
 import { cacheGet, cacheSet } from '../lib/cache'
 import type { Project, ProjectDevServer, DevServerInfo, ServiceWithState, ServiceConfig, ServiceState, PortRegistry, ProviderSettingsOverrides } from '../api/client'
@@ -13,7 +13,10 @@ function byName(a: Project, b: Project): number {
 const serviceStateMap = ref<Map<string, ServiceWithState[]>>(new Map())
 
 export const useProjectsStore = defineStore('projects', () => {
-  const projects = ref<Project[]>([])
+  /** Every project, including CodePipe's internal Workspace. */
+  const allProjects = ref<Project[]>([])
+  /** Your projects — what lists and pickers show (no internal Workspace). */
+  const projects = computed(() => allProjects.value.filter((p) => !p.internal))
   const tailscaleHostname = ref<string | null>(null)
   const portRegistry = ref<PortRegistry | null>(null)
   const error = ref<string | null>(null)
@@ -21,15 +24,15 @@ export const useProjectsStore = defineStore('projects', () => {
   /** Show the last-known project list straight away (before fetchProjects lands). */
   async function hydrateFromCache() {
     const cached = await cacheGet<api.ProjectsResponse>('projects')
-    if (!cached || projects.value.length) return
-    projects.value = [...cached.projects].sort(byName)
+    if (!cached || allProjects.value.length) return
+    allProjects.value = [...cached.projects].sort(byName)
     tailscaleHostname.value = cached.tailscaleHostname
   }
 
   async function fetchProjects() {
     try {
       const response = await api.fetchProjects()
-      projects.value = [...response.projects].sort(byName)
+      allProjects.value = [...response.projects].sort(byName)
       tailscaleHostname.value = response.tailscaleHostname
       if (response.portRegistry) {
         portRegistry.value = response.portRegistry
@@ -44,7 +47,7 @@ export const useProjectsStore = defineStore('projects', () => {
   async function addProject(name: string, path: string): Promise<Project> {
     try {
       const project = await api.createProject(name, path)
-      projects.value = [...projects.value, project].sort(byName)
+      allProjects.value = [...allProjects.value, project].sort(byName)
       error.value = null
       return project
     } catch (e) {
@@ -56,7 +59,7 @@ export const useProjectsStore = defineStore('projects', () => {
   async function removeProject(id: string) {
     try {
       await api.deleteProject(id)
-      projects.value = projects.value.filter((p) => p.id !== id)
+      allProjects.value = allProjects.value.filter((p) => p.id !== id)
       error.value = null
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to remove project'
@@ -66,9 +69,9 @@ export const useProjectsStore = defineStore('projects', () => {
   async function updateProjectDevServer(id: string, devServer: ProjectDevServer | null) {
     try {
       const updated = await api.updateProject(id, { devServer })
-      const index = projects.value.findIndex((p) => p.id === id)
+      const index = allProjects.value.findIndex((p) => p.id === id)
       if (index !== -1) {
-        projects.value[index] = { ...projects.value[index], ...updated }
+        allProjects.value[index] = { ...allProjects.value[index], ...updated }
       }
       error.value = null
     } catch (e) {
@@ -79,9 +82,9 @@ export const useProjectsStore = defineStore('projects', () => {
   async function updateProjectProviderSettings(id: string, providerSettings: ProviderSettingsOverrides | null) {
     try {
       const updated = await api.updateProject(id, { providerSettings })
-      const index = projects.value.findIndex((p) => p.id === id)
+      const index = allProjects.value.findIndex((p) => p.id === id)
       if (index !== -1) {
-        projects.value[index] = { ...projects.value[index], ...updated, providerSettings: updated.providerSettings }
+        allProjects.value[index] = { ...allProjects.value[index], ...updated, providerSettings: updated.providerSettings }
       }
       error.value = null
     } catch (e) {
@@ -93,9 +96,9 @@ export const useProjectsStore = defineStore('projects', () => {
   async function updateProjectStandup(id: string, standup: { enabled: boolean; hour: number } | null) {
     try {
       const updated = await api.updateProject(id, { standup })
-      const index = projects.value.findIndex((p) => p.id === id)
+      const index = allProjects.value.findIndex((p) => p.id === id)
       if (index !== -1) {
-        projects.value[index] = { ...projects.value[index], ...updated, standup: updated.standup }
+        allProjects.value[index] = { ...allProjects.value[index], ...updated, standup: updated.standup }
       }
       error.value = null
     } catch (e) {
@@ -106,9 +109,9 @@ export const useProjectsStore = defineStore('projects', () => {
   async function startDevServer(id: string): Promise<DevServerInfo | null> {
     try {
       const info = await api.startDevServer(id)
-      const index = projects.value.findIndex((p) => p.id === id)
+      const index = allProjects.value.findIndex((p) => p.id === id)
       if (index !== -1) {
-        projects.value[index] = { ...projects.value[index], devServerStatus: info }
+        allProjects.value[index] = { ...allProjects.value[index], devServerStatus: info }
       }
       error.value = null
       return info
@@ -125,10 +128,10 @@ export const useProjectsStore = defineStore('projects', () => {
       // Even if the API fails, the intent is to stop — update UI anyway
     }
     // Always mark as stopped locally
-    const index = projects.value.findIndex((p) => p.id === id)
+    const index = allProjects.value.findIndex((p) => p.id === id)
     if (index !== -1) {
-      const project = projects.value[index]
-      projects.value[index] = {
+      const project = allProjects.value[index]
+      allProjects.value[index] = {
         ...project,
         devServerStatus: project.devServerStatus
           ? { ...project.devServerStatus, status: 'stopped' }
@@ -139,7 +142,7 @@ export const useProjectsStore = defineStore('projects', () => {
   }
 
   function getProjectDevUrl(projectId: string): string | null {
-    const project = projects.value.find((p) => p.id === projectId)
+    const project = allProjects.value.find((p) => p.id === projectId)
     if (!project?.devServerStatus) return null
     if (project.devServerStatus.status !== 'running') return null
     return project.devServerStatus.url
@@ -253,6 +256,7 @@ export const useProjectsStore = defineStore('projects', () => {
 
   return {
     projects,
+    allProjects,
     tailscaleHostname,
     portRegistry,
     error,

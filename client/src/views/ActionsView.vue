@@ -83,7 +83,7 @@ const exportableCount = computed(
 const waitingCount = computed(() => visibleActions.value.filter((a) => teamStore.isWaiting(a)).length)
 
 function projectName(projectId: string): string {
-  return projectStore.projects.find((p) => p.id === projectId)?.name ?? 'Removed project'
+  return projectStore.allProjects.find((p) => p.id === projectId)?.name ?? 'Removed project'
 }
 
 function toggleExtras(projectId: string) {
@@ -129,7 +129,7 @@ function toggleExtras(projectId: string) {
         class="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-blue-500 focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
       >
         <option value="">All projects</option>
-        <option v-for="p in projectStore.projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+        <option v-for="p in projectStore.allProjects" :key="p.id" :value="p.id">{{ p.name }}</option>
       </select>
     </div>
 

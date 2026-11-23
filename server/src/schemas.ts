@@ -21,7 +21,11 @@ export const SessionStatusSchema = z.enum(['live', 'archived'])
  * throwaway reviewer session — hidden from the UI and deleted once its take
  * is harvested (the take on the todo is the artifact, not the session).
  */
-export const SessionKindSchema = z.enum(['chat', 'team', 'work', 'review'])
+/**
+ * 'lead': the team lead's workspace thread (one per lead) — read-only on
+ * code, runs in the internal Workspace project. See lead/lead-service.ts.
+ */
+export const SessionKindSchema = z.enum(['chat', 'team', 'work', 'review', 'lead'])
 
 export const MessageRoleSchema = z.enum(['user', 'assistant', 'system', 'tool'])
 
@@ -205,6 +209,11 @@ export const ProjectSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1).max(100),
   path: z.string().min(1),
+  /**
+   * CodePipe's own project (the Workspace: home of the lead's thread and of
+   * action items that belong to no product). Hidden from project lists.
+   */
+  internal: z.boolean().optional(),
   devServer: ProjectDevServerSchema.optional(),
   services: z.array(ProjectServiceConfigSchema).optional(),
   standup: ProjectStandupConfigSchema.optional(),
@@ -260,6 +269,11 @@ const SessionObjectSchema = z.object({
   personaId: z.string().uuid().optional(),
   /** How the last turn ended (user chats only); absent while you're mid-conversation. */
   attention: ChatAttentionSchema.optional(),
+  /**
+   * A prompt waiting in the composer, not sent (a chat the lead opened for
+   * you with open_project_chat). Cleared when you send.
+   */
+  draft: z.string().max(20000).optional(),
 })
 
 // A model the provider can run, for the picker.
@@ -285,6 +299,48 @@ export const SessionSchema = SessionObjectSchema.refine(
 )
 
 export const SessionMetaSchema = SessionObjectSchema.omit({ messages: true })
+
+// --- Lead assistant ---
+
+/** One of your priorities, in order (up to 5). */
+export const FocusItemSchema = z.object({
+  id: z.string().uuid(),
+  label: z.string().trim().min(1).max(200),
+  /** The project it maps to, so activity can be compared with it. */
+  projectId: z.string().uuid().optional(),
+})
+
+export const MAX_FOCUS_ITEMS = 5
+
+export const FocusListSchema = z.array(FocusItemSchema).max(MAX_FOCUS_ITEMS)
+
+/** The lead's state (data/lead-state.json). */
+export const LeadStateSchema = z.object({
+  focus: FocusListSchema,
+  /** The lead's note to its next brief (save_memo). */
+  memo: z.string().max(4000).optional(),
+  memoSavedAt: z.number().int().positive().optional(),
+  /** The lead's thread, and the persona/provider it was created for. */
+  sessionId: z.string().uuid().optional(),
+  sessionPersonaId: z.string().uuid().optional(),
+  sessionProvider: ProviderTypeSchema.optional(),
+  /** When the last brief ran — git and closed chats are reported since then. */
+  lastBriefAt: z.number().int().positive().optional(),
+})
+
+export const PutFocusRequestSchema = z.object({ focus: FocusListSchema })
+
+/** GET /api/lead */
+export const LeadStatusSchema = z.object({
+  /** The persona who leads (null when there's no team yet). */
+  leadPersonaId: z.string().uuid().nullable(),
+  /** The lead's thread, when it exists for the current lead. */
+  sessionId: z.string().uuid().nullable(),
+  workspaceProjectId: z.string().uuid(),
+  focus: FocusListSchema,
+  memo: z.string().nullable(),
+  lastBriefAt: z.number().int().positive().nullable(),
+})
 
 // --- Todos (per-project ideas list) ---
 
@@ -553,6 +609,9 @@ export type Project = z.infer<typeof ProjectSchema>
 export type Session = z.infer<typeof SessionSchema>
 export type SessionMeta = z.infer<typeof SessionMetaSchema>
 export type ChatAttention = z.infer<typeof ChatAttentionSchema>
+export type FocusItem = z.infer<typeof FocusItemSchema>
+export type LeadState = z.infer<typeof LeadStateSchema>
+export type LeadStatus = z.infer<typeof LeadStatusSchema>
 export type ClosedChat = z.infer<typeof ClosedChatSchema>
 export type WSClientMessage = z.infer<typeof WSClientMessageSchema>
 export type WSServerMessage = z.infer<typeof WSServerMessageSchema>

@@ -1,6 +1,7 @@
 import { useSessionsStore } from '../stores/sessions'
 import { useProjectsStore } from '../stores/projects'
 import { useTeamStore } from '../stores/team'
+import { useLeadStore } from '../stores/lead'
 
 /**
  * Global change-hint subscription (/ws?events=1).
@@ -40,12 +41,15 @@ function refetch(collection: string) {
     case 'personas':
       void team.fetchPersonas()
       break
+    case 'lead':
+      void useLeadStore().fetchStatus()
+      break
     // 'standup' state has no store of its own — views fetch it on demand.
   }
 }
 
 function refetchAll() {
-  for (const collection of ['sessions', 'projects', 'todos', 'actions', 'personas']) {
+  for (const collection of ['sessions', 'projects', 'todos', 'actions', 'personas', 'lead']) {
     refetch(collection)
   }
 }

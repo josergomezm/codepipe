@@ -57,7 +57,9 @@ export function createChangeCountsRoutes(storage: IStorageLayer): Router {
 
   router.get('/', async (_req, res) => {
     try {
-      const projects = await storage.listProjects()
+      // The internal Workspace folder lives inside CodePipe's own checkout —
+      // its "changes" would be CodePipe's.
+      const projects = (await storage.listProjects()).filter((p) => !p.internal)
       const entries = await Promise.all(projects.map(async (p) => [p.id, await countChanges(p.path)] as const))
       res.json({ counts: Object.fromEntries(entries) })
     } catch (err) {

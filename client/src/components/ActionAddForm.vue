@@ -69,7 +69,7 @@ async function add() {
         v-model="newProjectId"
         class="w-28 shrink-0 rounded-lg border border-gray-200 bg-white px-2 py-2 text-xs text-gray-700 focus:border-blue-500 focus:outline-none sm:w-auto dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
       >
-        <option v-for="p in projectStore.projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+        <option v-for="p in projectStore.allProjects" :key="p.id" :value="p.id">{{ p.name }}</option>
       </select>
       <input
         ref="textInput"

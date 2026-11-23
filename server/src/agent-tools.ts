@@ -55,6 +55,16 @@ export function sessionGetsAgentTools(kind: SessionKind | undefined): boolean {
   return kind !== 'review'
 }
 
+/**
+ * Sessions that must never change code: reviewers (throwaway idea reviews)
+ * and the lead. Their launch settings are pinned read-only
+ * (READ_ONLY_SETTINGS) and, over ACP, their permission requests are answered
+ * read-only. The single source for both.
+ */
+export function isReadOnlyKind(kind: SessionKind | undefined): boolean {
+  return kind === 'review' || kind === 'lead'
+}
+
 /** CodePipe's MCP server for one chat. */
 export function codepipeMcpServer(sessionId: string): McpServerSpec {
   return {

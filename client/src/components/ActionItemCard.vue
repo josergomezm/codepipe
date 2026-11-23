@@ -54,7 +54,7 @@ const raiser = computed(() =>
 const idea = computed(() =>
   props.item.todoId ? teamStore.todos.find((t) => t.id === props.item.todoId) ?? null : null,
 )
-const project = computed(() => projectStore.projects.find((p) => p.id === props.item.projectId) ?? null)
+const project = computed(() => projectStore.allProjects.find((p) => p.id === props.item.projectId) ?? null)
 const snoozed = computed(() => !!props.item.snoozedUntil && props.item.snoozedUntil > Date.now())
 /** Closed during this visit — show where the answer went. */
 const justClosed = computed(() => !isOpen.value && teamStore.recentlyClosedIds.has(props.item.id))

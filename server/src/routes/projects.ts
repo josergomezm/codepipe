@@ -190,6 +190,10 @@ export function createProjectRoutes(storage: IStorageLayer, devServerManager: De
         res.status(404).json({ error: 'Project not found' })
         return
       }
+      if (project.internal) {
+        res.status(400).json({ error: 'The Workspace project is part of CodePipe and cannot be removed' })
+        return
+      }
 
       // Stop dev server if running — tracked or not, so nothing is left on its port
       await devServerManager.stop(id, project.devServer ?? undefined)

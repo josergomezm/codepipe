@@ -24,7 +24,7 @@ import type { ProviderType } from './schemas.js'
 
 export type SettingValue = string | boolean | string[]
 export type SettingValues = Record<string, SettingValue>
-export type SettingSource = 'default' | 'env' | 'global' | 'project' | 'persona'
+export type SettingSource = 'default' | 'env' | 'global' | 'project' | 'persona' | 'enforced'
 
 export interface SettingOption {
   value: string
@@ -527,6 +527,41 @@ export interface SettingLayers {
   global?: SettingValues
   project?: SettingValues
   persona?: SettingValues
+  /** Set by CodePipe for a kind of session (e.g. read-only lead); wins over everything. */
+  enforced?: SettingValues
+}
+
+/**
+ * Launch settings that keep a session read-only on code, per provider: it
+ * can read and use CodePipe's own MCP tools (added by the adapters), but not
+ * edit files or run shell commands. Applied as the `enforced` layer, so no
+ * global, project or persona setting can loosen it.
+ */
+export const READ_ONLY_SETTINGS: Partial<Record<ProviderType, SettingValues>> = {
+  // Every provider also pins extraArgs to none, so no free-form flag from
+  // another layer (or CLAUDE_EXTRA_ARGS) can loosen this.
+  claude: {
+    // Deny anything not pre-approved; approve reads (+ CodePipe's tools).
+    permissionMode: 'dontAsk',
+    skipPermissions: false,
+    allowedTools: ['Read', 'Grep', 'Glob'],
+    disallowedTools: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Agent'],
+    extraArgs: [],
+  },
+  kiro: {
+    trustAllTools: false,
+    trustTools: ['fs_read', 'glob', 'grep', '@codepipe'],
+    // A custom agent profile carries its own tool trust.
+    agent: '',
+    extraArgs: [],
+  },
+  gemini: {
+    skipPermissions: false,
+    mode: 'plan',
+    sandbox: true,
+    agent: '',
+    extraArgs: [],
+  },
 }
 
 /**
@@ -548,7 +583,7 @@ export function resolveSettings(provider: ProviderType, layers: SettingLayers = 
       value = fromEnv
       source = 'env'
     }
-    for (const layer of ['global', 'project', 'persona'] as const) {
+    for (const layer of ['global', 'project', 'persona', 'enforced'] as const) {
       const v = layers[layer]?.[setting.key]
       if (v !== undefined) {
         value = v

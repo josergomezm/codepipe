@@ -65,22 +65,44 @@ export interface AcpDriverOptions {
   spawn?: AcpSpawnFn
   /** MCP servers the agent gets for this session (CodePipe's own tools). */
   mcpServers?: McpServerSpec[]
+  /** Refuse tool calls that change things (edits, shell) — see choosePermissionOption. */
+  readOnly?: boolean
   protocolVersion?: number
   clientName?: string
   clientVersion?: string
 }
 
-/** Pick an "allow" option from an ACP permission request, falling back to the first. */
-export function choosePermissionOption(params: unknown): { optionId?: unknown } {
-  const options =
-    params && typeof params === 'object' && Array.isArray((params as { options?: unknown }).options)
-      ? ((params as { options: unknown[] }).options)
-      : []
-  const allow = options.find(
-    (o) => o && typeof o === 'object' && typeof (o as { kind?: unknown }).kind === 'string' &&
-      ((o as { kind: string }).kind).toLowerCase().startsWith('allow'),
-  ) as { optionId?: unknown } | undefined
-  const chosen = allow ?? (options[0] as { optionId?: unknown } | undefined)
+/** ACP tool kinds that don't change anything (others: edit, delete, move, execute…). */
+const READ_ONLY_TOOL_KINDS = new Set(['read', 'search', 'think', 'fetch'])
+/** Kinds a CodePipe MCP tool call can carry (never edit / execute / delete / move). */
+const MCP_TOOL_KINDS = new Set(['', 'other', 'fetch'])
+/** A CodePipe MCP tool, by its exact name — not any title that merely mentions it. */
+const CODEPIPE_TOOL = /^(?:@codepipe\/|mcp__codepipe__)[a-z_]+$/
+
+/**
+ * Answer an ACP permission request: pick an "allow" option (falling back to
+ * the first). With `readOnly`, only reads and CodePipe's own tools (which
+ * write nothing but CodePipe's data) are allowed; anything else gets a
+ * "reject" option.
+ */
+export function choosePermissionOption(params: unknown, opts: { readOnly?: boolean } = {}): { optionId?: unknown } {
+  const p = params && typeof params === 'object' ? (params as { options?: unknown; toolCall?: { kind?: unknown; title?: unknown } }) : {}
+  const options = Array.isArray(p.options) ? p.options : []
+  const byKind = (prefix: string) =>
+    options.find(
+      (o) => o && typeof o === 'object' && typeof (o as { kind?: unknown }).kind === 'string' &&
+        ((o as { kind: string }).kind).toLowerCase().startsWith(prefix),
+    ) as { optionId?: unknown } | undefined
+  if (opts.readOnly) {
+    const kind = typeof p.toolCall?.kind === 'string' ? p.toolCall.kind.toLowerCase() : ''
+    const title = typeof p.toolCall?.title === 'string' ? p.toolCall.title : ''
+    const allowed = READ_ONLY_TOOL_KINDS.has(kind) || (MCP_TOOL_KINDS.has(kind) && CODEPIPE_TOOL.test(title.trim()))
+    if (!allowed) {
+      const reject = byKind('reject')
+      return reject ? { optionId: reject.optionId } : {}
+    }
+  }
+  const chosen = byKind('allow') ?? (options[0] as { optionId?: unknown } | undefined)
   return chosen && typeof chosen === 'object' ? { optionId: chosen.optionId } : {}
 }
 
@@ -125,7 +147,9 @@ export class AcpSessionDriver {
 
     client.onRequest((req: JsonRpcRequest) => {
       if (req.method.toLowerCase().includes('permission')) {
-        return { outcome: { outcome: 'selected', ...choosePermissionOption(req.params) } }
+        const choice = choosePermissionOption(req.params, { readOnly: this.opts.readOnly })
+        // Nothing to pick (read-only and no reject option): cancel the request.
+        return choice.optionId === undefined ? { outcome: { outcome: 'cancelled' } } : { outcome: { outcome: 'selected', ...choice } }
       }
       throw new Error(`Unsupported ACP request: ${req.method}`)
     })

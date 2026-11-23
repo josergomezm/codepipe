@@ -6,7 +6,9 @@
  * Every session the user works in (chat, build, standup) gets the shared
  * tools: action items (add, list, resolve) and ideas (add). Standup ('team')
  * sessions also get the team protocol: propose_plan, complete_idea and
- * save_memo. Tool calls replace the JSON block standups used to end with —
+ * save_memo. The lead's workspace thread ('lead') gets the item tools across
+ * ALL projects, plus its own: reading your chats, your Focus list, its memo,
+ * and opening a project chat with a drafted prompt (it never edits code). Tool calls replace the JSON block standups used to end with —
  * the CLI validates the shape, each call lands as it happens, and a bad
  * argument comes back to the agent as an error it can fix and retry.
  *
@@ -15,6 +17,7 @@
  * next to each tool. Results are short plain text the agent reads back.
  */
 
+import { randomUUID } from 'crypto'
 import { z } from 'zod'
 
 import type { IStorageLayer } from './storage.js'
@@ -23,13 +26,18 @@ import {
   ActionItemKindSchema,
   ActionItemOptionSchema,
   DueDateSchema,
+  MAX_FOCUS_ITEMS,
   type ActionDraft,
   type ActionItem,
+  type FocusItem,
   type Persona,
+  type Project,
   type Session,
   type SessionKind,
   type Todo,
 } from './schemas.js'
+import { clip, clipEnd, extractTurns, isUserChat, type Turn } from './lead/chat-digest.js'
+import { loadUserChats } from './lead/workspace-digest.js'
 import { findDuplicateAction, recordActionItem } from './action-items.js'
 import {
   MAX_OPEN_ACTIONS,
@@ -78,6 +86,32 @@ interface ToolDef {
 }
 
 const WORKING_KINDS: SessionKind[] = ['chat', 'work', 'team']
+/** The item tools: every working session, plus the lead (across all projects). */
+const ITEM_KINDS: SessionKind[] = [...WORKING_KINDS, 'lead']
+
+const isLead = (ctx: ToolContext) => ctx.session.kind === 'lead'
+
+/** Which project's items a session sees: its own, or all of them for the lead. */
+const itemScope = (ctx: ToolContext): string | undefined => (isLead(ctx) ? undefined : ctx.session.projectId)
+
+/**
+ * A project by [id] prefix or name (exact, then partial; case-insensitive).
+ * The internal Workspace project only by its name.
+ */
+export function matchProject(projects: Project[], query: string): Project | null {
+  const q = query.trim().toLowerCase()
+  if (!q) return null
+  const byId = projects.filter((p) => p.id.toLowerCase().startsWith(q))
+  if (byId.length === 1) return byId[0]
+  const exact = projects.find((p) => p.name.toLowerCase() === q)
+  if (exact) return exact
+  const partial = projects.filter((p) => !p.internal && p.name.toLowerCase().includes(q))
+  return partial.length === 1 ? partial[0] : null
+}
+
+function projectNames(projects: Project[]): string {
+  return projects.filter((p) => !p.internal).map((p) => p.name).join(', ')
+}
 
 /** Error result from a zod failure, phrased for the agent to fix. */
 function invalid(error: z.ZodError): ToolResult {
@@ -116,6 +150,7 @@ const actionFields = {
 const AddActionArgs = z.object({
   ...actionFields,
   user_requested: z.boolean().optional(),
+  project: z.string().optional(),
   persona: z.string().optional(),
   todo_id: z.string().optional(),
 })
@@ -158,7 +193,7 @@ const actionProperties = {
 
 const addActionItem: ToolDef = {
   name: 'add_action_item',
-  kinds: WORKING_KINDS,
+  kinds: ITEM_KINDS,
   description: (isTeam) =>
     isTeam
       ? `Raise something only the user can do and that blocks progress — a decision, a secret, an account, a purchase. It goes straight onto their action-item list, credited to \`persona\`. At most ${MAX_OPEN_ACTIONS} team items may wait on the user at once: at the limit, close a less important one with resolve_action_item first.`
@@ -182,6 +217,10 @@ const addActionItem: ToolDef = {
             type: 'boolean',
             description: 'true when the user asked for this item; false when you are suggesting it on your own.',
           },
+          project: {
+            type: 'string',
+            description: '(Lead only) Project name or [id] it belongs to; omit for "Workspace" — work that belongs to no single product (partnerships, business, admin).',
+          },
         },
     required: isTeam ? ['text'] : ['text', 'user_requested'],
   }),
@@ -190,7 +229,13 @@ const addActionItem: ToolDef = {
     if ('error' in parsed) return parsed.error
     const a = parsed.data
     const { storage, sessionManager } = ctx.deps
-    const projectId = ctx.session.projectId
+    let projectId = ctx.session.projectId
+    if (isLead(ctx) && a.project?.trim()) {
+      const projects = await storage.listProjects()
+      const project = matchProject(projects, a.project)
+      if (!project) return { text: `No project matches "${a.project}". Projects: ${projectNames(projects)} (or omit it for Workspace).`, isError: true }
+      projectId = project.id
+    }
     const draft: ActionDraft = {
       text: a.text,
       ...(a.notes?.trim() ? { notes: a.notes.trim() } : {}),
@@ -261,8 +306,9 @@ const addActionItem: ToolDef = {
 
 const ListActionArgs = z.object({ include_closed: z.boolean().optional() })
 
-function describeItem(item: ActionItem, personas: Persona[], todos: Todo[], today: string): string {
+function describeItem(item: ActionItem, personas: Persona[], todos: Todo[], today: string, projectName?: string): string {
   const tags: string[] = [item.kind ?? 'task']
+  if (projectName) tags.unshift(projectName)
   if (item.blocking === false) tags.push('non-blocking')
   if (item.dueDate) tags.push(`due ${item.dueDate}${item.dueDate < today ? ' (overdue)' : item.dueDate === today ? ' (today)' : ''}`)
   if (item.snoozedUntil && item.snoozedUntil > Date.now()) tags.push('snoozed')
@@ -278,9 +324,9 @@ function describeItem(item: ActionItem, personas: Persona[], todos: Todo[], toda
 
 const listActionItems: ToolDef = {
   name: 'list_action_items',
-  kinds: WORKING_KINDS,
+  kinds: ITEM_KINDS,
   description: () =>
-    "List what is waiting on the user in this project (their action items), with [id]s for resolve_action_item. Set include_closed to also see what they recently answered, did or declined.",
+    "List what is waiting on the user in this project (their action items; the lead sees every project's), with [id]s for resolve_action_item. Set include_closed to also see what they recently answered, did or declined.",
   inputSchema: () => ({
     type: 'object',
     properties: {
@@ -291,17 +337,20 @@ const listActionItems: ToolDef = {
     const parsed = parseArgs(ListActionArgs, raw)
     if ('error' in parsed) return parsed.error
     const { storage } = ctx.deps
-    const [items, personas, todos] = await Promise.all([
-      storage.listActionItems(ctx.session.projectId),
+    const scope = itemScope(ctx)
+    const [items, personas, todos, projects] = await Promise.all([
+      storage.listActionItems(scope),
       storage.listPersonas(),
-      storage.listTodos(ctx.session.projectId),
+      storage.listTodos(scope),
+      storage.listProjects(),
     ])
+    const projectName = (id: string) => (scope ? undefined : projects.find((p) => p.id === id)?.name ?? 'Removed project')
     const today = new Date().toISOString().slice(0, 10)
     const open = items.filter((a) => a.status === 'open').sort((a, b) => a.createdAt - b.createdAt)
     const sections = [
       open.length
-        ? `Waiting on the user (${open.length}):\n${open.map((a) => describeItem(a, personas, todos, today)).join('\n')}`
-        : 'Nothing is waiting on the user in this project.',
+        ? `Waiting on the user (${open.length}):\n${open.map((a) => describeItem(a, personas, todos, today, projectName(a.projectId))).join('\n')}`
+        : scope ? 'Nothing is waiting on the user in this project.' : 'Nothing is waiting on the user.',
     ]
     if (parsed.data.include_closed) {
       const closed = items
@@ -327,7 +376,7 @@ const ResolveActionArgs = z.object({
 
 const resolveActionItem: ToolDef = {
   name: 'resolve_action_item',
-  kinds: WORKING_KINDS,
+  kinds: ITEM_KINDS,
   description: (isTeam) =>
     isTeam
       ? 'Close a team-raised item that no longer blocks anything — the user settled it in this conversation, or the plan changed so it is moot. Pass the [id] (a prefix is fine). The user’s own items are theirs to close.'
@@ -346,7 +395,7 @@ const resolveActionItem: ToolDef = {
     if ('error' in parsed) return parsed.error
     const { id, resolution, declined } = parsed.data
     const { storage, sessionManager } = ctx.deps
-    const open = (await storage.listActionItems(ctx.session.projectId)).filter((a) => a.status === 'open')
+    const open = (await storage.listActionItems(itemScope(ctx))).filter((a) => a.status === 'open')
     const item = matchById(open, id)
     if (!item) return { text: `No open item matches "${id}". Call list_action_items for the current [id]s.`, isError: true }
     if (ctx.isTeam && !item.personaId) {
@@ -517,9 +566,9 @@ const SaveMemoArgs = z.object({ memo: z.string().trim().min(1).max(4000) })
 
 const saveMemo: ToolDef = {
   name: 'save_memo',
-  kinds: ['team'],
+  kinds: ['team', 'lead'],
   description: () =>
-    'Save your handoff note to the next standup — it starts fresh and receives ONLY this note plus the board. Record decisions made, open questions, and anything you would otherwise forget. Under a paragraph. Replaces the previous memo.',
+    'Save your handoff note to your next run (standup or brief) — record decisions made, open questions, what you are watching, and anything you would otherwise forget. Under a paragraph. Replaces the previous memo.',
   inputSchema: () => ({
     type: 'object',
     properties: { memo: { type: 'string', description: 'The full note (replaces the previous one).' } },
@@ -529,12 +578,207 @@ const saveMemo: ToolDef = {
     const parsed = parseArgs(SaveMemoArgs, raw)
     if ('error' in parsed) return parsed.error
     const { storage } = ctx.deps
+    if (isLead(ctx)) {
+      await storage.updateLeadState((s) => {
+        s.memo = parsed.data.memo
+        s.memoSavedAt = Date.now()
+      })
+      return { text: 'Memo saved for your next brief.' }
+    }
     const projectId = ctx.session.projectId
     const state = (await storage.getStandupState(projectId)) ?? { projectId }
     state.memo = parsed.data.memo
     state.memoSavedAt = Date.now()
     await storage.setStandupState(state)
     return { text: 'Memo saved for the next standup.' }
+  },
+}
+
+// ---------------------------------------------------------------------------
+// The lead: your chats, your Focus list, project chats
+// ---------------------------------------------------------------------------
+
+const userChats = (ctx: ToolContext) =>
+  loadUserChats({ storage: ctx.deps.storage, liveSession: (id) => ctx.deps.sessionManager.getSession(id) })
+
+/** A chat by [id] prefix or title (exact, then partial; case-insensitive). */
+function matchChat(chats: Session[], query: string): Session | null {
+  const q = query.trim().toLowerCase()
+  if (!q) return null
+  const byId = chats.filter((s) => s.id.toLowerCase().startsWith(q))
+  if (byId.length === 1) return byId[0]
+  const exact = chats.filter((s) => s.title.toLowerCase() === q)
+  if (exact.length === 1) return exact[0]
+  const partial = chats.filter((s) => s.title.toLowerCase().includes(q))
+  return partial.length === 1 ? partial[0] : null
+}
+
+const TURN_CHARS = 2500
+
+function formatTurn(t: Turn, n: number): string {
+  const when = new Date(t.at).toISOString().slice(0, 16).replace('T', ' ')
+  return `Turn ${n} (${when})\nYou: ${clip(t.you, TURN_CHARS)}\nAgent: ${t.reply ? clipEnd(t.reply, TURN_CHARS) : '(no reply yet)'}`
+}
+
+const listOpenChats: ToolDef = {
+  name: 'list_open_chats',
+  kinds: ['lead'],
+  description: () =>
+    'List the user\'s open chats across all projects (finished ones get deleted, so open = still in flight), newest first, with [id]s for read_chat, how each ended, and when it last moved.',
+  inputSchema: () => ({ type: 'object', properties: {} }),
+  async run(ctx) {
+    const [chats, projects] = await Promise.all([userChats(ctx), ctx.deps.storage.listProjects()])
+    if (!chats.length) return { text: 'No open chats.' }
+    const lines = chats.map((s) => {
+      const project = projects.find((p) => p.id === s.projectId)?.name ?? 'Removed project'
+      const ended = s.attention ? `, ${s.attention.state.replace(/_/g, ' ')}${s.attention.question ? `: "${s.attention.question}"` : ''}` : ''
+      return `- [${shortId(s.id)}] "${s.title}" (${project}, ${new Date(s.updatedAt).toISOString().slice(0, 10)}${ended})`
+    })
+    return { text: `Open chats (${chats.length}):\n${lines.join('\n')}` }
+  },
+}
+
+const ReadChatArgs = z.object({
+  chat: z.string().trim().min(1),
+  from: z.enum(['start', 'end']).optional(),
+  turns: z.number().int().min(1).max(10).optional(),
+})
+
+const readChat: ToolDef = {
+  name: 'read_chat',
+  kinds: ['lead'],
+  description: () =>
+    'Read whole turns of one of the user\'s chats (their message + the agent\'s final reply) when the brief\'s excerpt isn\'t enough — e.g. what was originally asked, or what exactly is pending. from: "start" for the beginning, "end" (default) for the latest.',
+  inputSchema: () => ({
+    type: 'object',
+    properties: {
+      chat: { type: 'string', description: 'The chat\'s [id] (a prefix is fine) or its title.' },
+      from: { type: 'string', enum: ['start', 'end'], description: 'Read from the start or the end (default end).' },
+      turns: { type: 'number', description: 'How many turns (1–10, default 4).' },
+    },
+    required: ['chat'],
+  }),
+  async run(ctx, raw) {
+    const parsed = parseArgs(ReadChatArgs, raw)
+    if ('error' in parsed) return parsed.error
+    const { chat, from = 'end', turns: n = 4 } = parsed.data
+    const session = matchChat(await userChats(ctx), chat)
+    if (!session) return { text: `No open chat matches "${chat}". Call list_open_chats for the [id]s.`, isError: true }
+    const turns = extractTurns(session.messages)
+    const start = from === 'start' ? 0 : Math.max(0, turns.length - n)
+    const picked = turns.slice(start, start + n)
+    if (!picked.length) return { text: `"${session.title}" has no messages from the user yet.` }
+    return { text: `"${session.title}" — turns ${start + 1}–${start + picked.length} of ${turns.length}:\n\n${picked.map((t, i) => formatTurn(t, start + i + 1)).join('\n\n')}` }
+  },
+}
+
+const SearchChatArgs = z.object({ chat: z.string().trim().min(1), query: z.string().trim().min(2).max(200) })
+
+const searchChat: ToolDef = {
+  name: 'search_chat',
+  kinds: ['lead'],
+  description: () => 'Find the turns of one of the user\'s chats that mention something (case-insensitive) — e.g. "was the deploy ever approved?". Returns up to 5 matching turns.',
+  inputSchema: () => ({
+    type: 'object',
+    properties: {
+      chat: { type: 'string', description: 'The chat\'s [id] (a prefix is fine) or its title.' },
+      query: { type: 'string', description: 'Words to look for.' },
+    },
+    required: ['chat', 'query'],
+  }),
+  async run(ctx, raw) {
+    const parsed = parseArgs(SearchChatArgs, raw)
+    if ('error' in parsed) return parsed.error
+    const session = matchChat(await userChats(ctx), parsed.data.chat)
+    if (!session) return { text: `No open chat matches "${parsed.data.chat}". Call list_open_chats for the [id]s.`, isError: true }
+    const q = parsed.data.query.toLowerCase()
+    const turns = extractTurns(session.messages)
+    const hits = turns.map((t, i) => ({ t, n: i + 1 })).filter(({ t }) => t.you.toLowerCase().includes(q) || t.reply.toLowerCase().includes(q))
+    if (!hits.length) return { text: `No turn of "${session.title}" mentions "${parsed.data.query}".` }
+    return { text: `"${session.title}" — ${hits.length} matching turn(s)${hits.length > 5 ? ', showing the last 5' : ''}:\n\n${hits.slice(-5).map(({ t, n }) => formatTurn(t, n)).join('\n\n')}` }
+  },
+}
+
+const UpdateFocusArgs = z.object({
+  focus: z.array(z.object({ label: z.string().trim().min(1).max(200), project: z.string().optional() })).max(MAX_FOCUS_ITEMS),
+})
+
+const updateFocus: ToolDef = {
+  name: 'update_focus',
+  kinds: ['lead'],
+  description: () =>
+    `Replace the user's Focus list — their priorities, most important first (up to ${MAX_FOCUS_ITEMS}). Only after the user agreed to the change in this thread; send the whole new list.`,
+  inputSchema: () => ({
+    type: 'object',
+    properties: {
+      focus: {
+        type: 'array',
+        description: 'The full new list, in priority order.',
+        items: {
+          type: 'object',
+          properties: {
+            label: { type: 'string', description: 'The priority, in a few words.' },
+            project: { type: 'string', description: 'Project name or [id] it maps to, if any.' },
+          },
+          required: ['label'],
+        },
+      },
+    },
+    required: ['focus'],
+  }),
+  async run(ctx, raw) {
+    const parsed = parseArgs(UpdateFocusArgs, raw)
+    if ('error' in parsed) return parsed.error
+    const projects = await ctx.deps.storage.listProjects()
+    const focus: FocusItem[] = []
+    for (const item of parsed.data.focus) {
+      const project = item.project?.trim() ? matchProject(projects, item.project) : null
+      if (item.project?.trim() && !project) return { text: `No project matches "${item.project}". Projects: ${projectNames(projects)}.`, isError: true }
+      focus.push({ id: randomUUID(), label: item.label, ...(project ? { projectId: project.id } : {}) })
+    }
+    await ctx.deps.storage.updateLeadState((s) => { s.focus = focus })
+    ctx.deps.sessionManager.appendSystemMessage(ctx.session.id, `Focus updated: ${focus.map((f, i) => `${i + 1}. ${f.label}`).join(' · ') || '(empty)'}`)
+    return { text: `Focus updated (${focus.length} item${focus.length === 1 ? '' : 's'}).` }
+  },
+}
+
+const OpenProjectChatArgs = z.object({
+  project: z.string().trim().min(1),
+  title: z.string().trim().min(1).max(120),
+  prompt: z.string().trim().min(1).max(20000),
+})
+
+const openProjectChat: ToolDef = {
+  name: 'open_project_chat',
+  kinds: ['lead'],
+  description: () =>
+    'Open a new chat in one of the user\'s projects with a prompt you drafted waiting in its message box — NOT sent; the user reviews and sends it. This is how work on code happens: you never change code yourself. Write the prompt as the user would: the goal, the context the agent needs, and what done looks like.',
+  inputSchema: () => ({
+    type: 'object',
+    properties: {
+      project: { type: 'string', description: 'Project name or [id].' },
+      title: { type: 'string', description: 'Short chat title.' },
+      prompt: { type: 'string', description: 'The drafted first message.' },
+    },
+    required: ['project', 'title', 'prompt'],
+  }),
+  async run(ctx, raw) {
+    const parsed = parseArgs(OpenProjectChatArgs, raw)
+    if ('error' in parsed) return parsed.error
+    const { storage, sessionManager } = ctx.deps
+    const projects = (await storage.listProjects()).filter((p) => !p.internal)
+    const project = matchProject(projects, parsed.data.project)
+    if (!project) return { text: `No project matches "${parsed.data.project}". Projects: ${projectNames(projects)}.`, isError: true }
+    // The provider you last used in that project, else the lead's own.
+    const recent = (await storage.listSessions())
+      .filter((s) => s.projectId === project.id && isUserChat(s))
+      .sort((a, b) => b.updatedAt - a.updatedAt)[0]
+    const session = await sessionManager.createSession(recent?.provider ?? ctx.session.provider, project.id, {
+      title: parsed.data.title,
+      draft: parsed.data.prompt,
+    })
+    sessionManager.appendSystemMessage(ctx.session.id, `Opened a chat in ${project.name}: "${parsed.data.title}" — your prompt is waiting in its message box.`)
+    return { text: `Opened "${parsed.data.title}" in ${project.name} [${shortId(session.id)}] with the prompt in its message box. The user sends it when ready.` }
   },
 }
 
@@ -546,6 +790,11 @@ const TOOLS: ToolDef[] = [
   proposePlan,
   completeIdea,
   saveMemo,
+  listOpenChats,
+  readChat,
+  searchChat,
+  updateFocus,
+  openProjectChat,
 ]
 
 export class AgentToolService {

@@ -122,6 +122,8 @@ describe('which repos make the digest', () => {
 
     await storage.addProject({ name: 'Quiet', path: quietRepo })
     await storage.addProject({ name: 'Ahead', path: aheadRepo })
+    // The internal Workspace sits inside another checkout — never reported.
+    await storage.addProject({ name: 'Workspace', path: aheadRepo, internal: true })
     const d = await buildWorkspaceDigest({ storage }, { since: Date.now() - 24 * HOUR })
     expect(d.repos.map((r) => [r.projectName, r.activity.commits.length, r.activity.unpushed])).toEqual([['Ahead', 0, 1]])
   })

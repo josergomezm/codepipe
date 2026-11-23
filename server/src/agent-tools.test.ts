@@ -4,7 +4,7 @@ import { createServer, type Server } from 'http'
 import { createInterface } from 'readline'
 import type { AddressInfo } from 'net'
 
-import { CODEPIPE_MCP_SCRIPT, codepipeMcpServer, sessionGetsAgentTools } from './agent-tools.js'
+import { CODEPIPE_MCP_SCRIPT, codepipeMcpServer, isReadOnlyKind, sessionGetsAgentTools } from './agent-tools.js'
 import { ISOLATED_CHILD } from './child-options.js'
 
 let child: ChildProcess | null = null
@@ -104,5 +104,13 @@ describe('agent tool wiring', () => {
     expect(sessionGetsAgentTools('chat')).toBe(true)
     expect(sessionGetsAgentTools('team')).toBe(true)
     expect(sessionGetsAgentTools('review')).toBe(false)
+  })
+})
+
+describe('isReadOnlyKind', () => {
+  it('is reviewers and the lead — never your chats, builds or standups', () => {
+    expect(isReadOnlyKind('review')).toBe(true)
+    expect(isReadOnlyKind('lead')).toBe(true)
+    for (const kind of [undefined, 'chat', 'work', 'team'] as const) expect(isReadOnlyKind(kind)).toBe(false)
   })
 })

@@ -123,6 +123,8 @@ export interface Project {
   id: string
   name: string
   path: string
+  /** CodePipe's own Workspace project (lead thread, items with no product); hidden from project lists. */
+  internal?: boolean
   devServer?: ProjectDevServer
   devServerStatus?: DevServerInfo | null
   services?: ServiceConfig[]
@@ -221,6 +223,8 @@ export interface SessionMeta {
   kind?: SessionKind
   /** Your chats only; absent while you're mid-conversation. */
   attention?: ChatAttention
+  /** A prompt waiting in the composer, unsent (opened by the lead). Cleared when you send. */
+  draft?: string
 }
 
 // --- Team layer (todos, personas, standup) ---
@@ -964,4 +968,35 @@ export interface ProviderModels {
 /** A provider's model list for pickers outside a live session (cached server-side). */
 export function fetchProviderModels(provider: ProviderType): Promise<ProviderModels> {
   return request<ProviderModels>(`/api/provider-settings/${provider}/models`)
+}
+
+// --- Lead assistant ---
+
+/** One of your priorities, in order (server: FocusItemSchema). */
+export interface FocusItem {
+  id: string
+  label: string
+  /** The project it maps to, so activity can be compared with it. */
+  projectId?: string
+}
+
+export interface LeadStatus {
+  leadPersonaId: string | null
+  sessionId: string | null
+  workspaceProjectId: string
+  focus: FocusItem[]
+  memo: string | null
+  lastBriefAt: number | null
+}
+
+export function fetchLeadStatus(): Promise<LeadStatus> {
+  return request<LeadStatus>('/api/lead')
+}
+
+export function saveFocus(focus: FocusItem[]): Promise<{ focus: FocusItem[] }> {
+  return request<{ focus: FocusItem[] }>('/api/lead/focus', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ focus }),
+  })
 }

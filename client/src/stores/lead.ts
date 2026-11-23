@@ -1,5 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import * as api from '@/api/client'
+import type { FocusItem, LeadStatus } from '@/api/client'
 
 /**
  * Unread state for the lead's thread (the sidebar badge).
@@ -47,5 +49,25 @@ export const useLeadStore = defineStore('lead', () => {
     posted.value = [...posted.value, Date.now()]
   }
 
-  return { unreadCount, unreadLabel, markRead, notePosted }
+  /** Who leads, their thread, your Focus list (server). */
+  const status = ref<LeadStatus | null>(null)
+  const focus = computed(() => status.value?.focus ?? [])
+
+  async function fetchStatus() {
+    try { status.value = await api.fetchLeadStatus() } catch { /* keep the last known */ }
+  }
+
+  /** Save the Focus list (shown at once; the server's copy wins on reply). */
+  async function saveFocus(next: FocusItem[]) {
+    if (status.value) status.value = { ...status.value, focus: next }
+    try {
+      const saved = await api.saveFocus(next)
+      if (status.value) status.value = { ...status.value, focus: saved.focus }
+      else await fetchStatus()
+    } catch {
+      await fetchStatus()
+    }
+  }
+
+  return { unreadCount, unreadLabel, markRead, notePosted, status, focus, fetchStatus, saveFocus }
 })

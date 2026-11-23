@@ -1,7 +1,8 @@
 # Lead assistant & daily brief — plan
 
-Status: **phase 1 done** (digest, git, closed chats, sidebar chip). The
-lead's page shows a UI preview with sample data until phases 2–4 land.
+Status: **phases 1–2 done** (digest, git, closed chats, sidebar chip; the
+lead's read-only thread, Workspace project, tools, Focus on the server). The
+brief itself is still sample text until phases 3–4 land.
 Updated: 2026-11-22.
 
 ## Goal
@@ -124,8 +125,13 @@ alongside the commits, and can mark related action items resolved.
    entries (`lead/workspace-digest.ts`), git activity
    (`getRepoActivity`), and the sidebar chip ("Your turn" / "Pending"),
    recomputed for idle chats at startup.
-2. **Lead session**: Workspace project, read-only settings, lead tools,
-   Focus stored on the server.
+2. **Lead session** — **done**: the hidden Workspace project and the lead's
+   thread (`server/src/lead/lead-service.ts`); read-only launch settings
+   enforced per provider (`READ_ONLY_SETTINGS`, also applied to reviewer
+   sessions; ACP sessions reject non-read tool calls); the lead's tools
+   (`list_open_chats`, `read_chat`, `search_chat`, `update_focus`,
+   `open_project_chat`, `save_memo`, and the item tools across all
+   projects); Focus at `GET /api/lead` / `PUT /api/lead/focus`.
 3. **Brief run**: digest → lead turn → structured brief; schedule (daily at
    your hour) and "Brief me now"; push notification; unread badge from the
    lead's session.

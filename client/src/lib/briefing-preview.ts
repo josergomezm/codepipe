@@ -5,24 +5,16 @@
  * your Focus list, the board and your action items? Inputs are real (your
  * chats from the last 24h and their last messages, action items, ideas).
  * The brief itself is a SAMPLE assembled here with simple rules, standing in
- * for what the lead's CLI would write. Focus lives in localStorage. Nothing
- * is sent to the server.
+ * for what the lead's CLI would write. Nothing is sent to the server.
  */
 import * as api from '@/api/client'
-import type { ActionItem, ChatMessage, Persona, Project, SessionMeta, Todo } from '@/api/client'
+import type { ActionItem, ChatMessage, FocusItem, Persona, Project, SessionMeta, Todo } from '@/api/client'
 import { getCachedMessages } from '@/lib/cache'
 
 const HOUR = 3_600_000
 const DAY = 24 * HOUR
 /** The brief covers this window ("since yesterday's brief"). */
 export const WINDOW_HOURS = 24
-
-export interface FocusItem {
-  id: string
-  label: string
-  /** Project it maps to, for matching against activity (optional). */
-  projectId?: string
-}
 
 export interface OpenConversation {
   session: SessionMeta
@@ -65,30 +57,6 @@ export interface SampleBriefing {
   proposedActions: { id: string; text: string; bucket: string; why: string }[]
   focusSuggestions: { id: string; kind: 'add' | 'drop'; label: string; projectId?: string; why: string }[]
   deliberation: { personaId: string; text: string }[]
-}
-
-// --- Focus (localStorage) --------------------------------------------------
-
-const FOCUS_KEY = 'codepipe:preview:focus'
-
-export function loadFocus(projects: Project[]): FocusItem[] {
-  try {
-    const raw = localStorage.getItem(FOCUS_KEY)
-    const parsed: unknown = raw ? JSON.parse(raw) : null
-    const isItem = (x: unknown): x is FocusItem =>
-      !!x && typeof (x as FocusItem).id === 'string' && typeof (x as FocusItem).label === 'string'
-    if (Array.isArray(parsed) && parsed.every(isItem)) return parsed
-  } catch { /* fall through to the sample */ }
-  // Sample starting point: the products with the most ideas on the board,
-  // which is roughly what the team has been working from.
-  const pick = (name: string) => projects.find((p) => p.name === name)
-  return [pick('Dirumed App'), pick('Teremu App')]
-    .filter((p): p is Project => !!p)
-    .map((p) => ({ id: crypto.randomUUID(), label: p.name.replace(/ App$/, '') + ' — ship next release', projectId: p.id }))
-}
-
-export function saveFocus(items: FocusItem[]): void {
-  try { localStorage.setItem(FOCUS_KEY, JSON.stringify(items)) } catch { /* preview */ }
 }
 
 // --- Inputs (real) ---------------------------------------------------------

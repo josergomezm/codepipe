@@ -13,7 +13,9 @@ import {
   PersonaSchema,
   StandupStateSchema,
   ClosedChatSchema,
+  LeadStateSchema,
   type ChatAttention,
+  type LeadState,
   type ClosedChat,
   type Session,
   type SessionMeta,
@@ -44,6 +46,12 @@ export interface IStorageLayer {
   renameSession(sessionId: string, title: string): Promise<void>
   /** Set (or clear, with null) how a chat's last turn ended. */
   setSessionAttention(sessionId: string, attention: ChatAttention | null): Promise<void>
+  /** Set (or clear, with null) the unsent prompt waiting in a chat's composer. */
+  setSessionDraft(sessionId: string, draft: string | null): Promise<void>
+  /** The lead's state (Focus, memo, thread, last brief); defaults when absent. */
+  getLeadState(): Promise<LeadState>
+  /** Read-modify-write the lead's state under its lock. */
+  updateLeadState(mutate: (state: LeadState) => void): Promise<LeadState>
   /** Chats you deleted, newest first; `since` filters by closedAt. */
   listClosedChats(since?: number): Promise<ClosedChat[]>
   addClosedChat(entry: ClosedChat): Promise<void>
@@ -112,6 +120,7 @@ export class StorageLayer implements IStorageLayer {
   private readonly personasFile: string
   private readonly standupStateFile: string
   private readonly closedChatsFile: string
+  private readonly leadStateFile: string
   /**
    * Per-file locks. Every read-modify-write runs exclusively under its
    * file's lock (see runExclusive) — two concurrent updates to the same
@@ -145,6 +154,7 @@ export class StorageLayer implements IStorageLayer {
     this.personasFile = path.join(dataDir, 'personas.json')
     this.standupStateFile = path.join(dataDir, 'standup-state.json')
     this.closedChatsFile = path.join(dataDir, 'closed-chats.json')
+    this.leadStateFile = path.join(dataDir, 'lead-state.json')
     this.onChange = onChange ?? null
   }
 
@@ -238,15 +248,20 @@ export class StorageLayer implements IStorageLayer {
    * destroying the collection. Writes must never destroy.
    */
   private async loadArrayFile<T>(file: string, schema: z.ZodType<T[]>): Promise<T[]> {
+    return this.loadJsonFile(file, schema, () => [])
+  }
+
+  /** Load + validate a JSON file (cached by size/mtime); `empty()` when it doesn't exist. */
+  private async loadJsonFile<T>(file: string, schema: z.ZodType<T>, empty: () => T): Promise<T> {
     let info: { size: number; mtimeMs: number }
     try {
       info = await stat(file)
     } catch {
-      return []
+      return empty()
     }
     const cached = this.collectionCache.get(file)
     if (cached && cached.size === info.size && cached.mtimeMs === info.mtimeMs) {
-      return structuredClone(cached.data as T[])
+      return structuredClone(cached.data as T)
     }
     const raw = await readFile(file, 'utf-8')
     let parsed: unknown
@@ -774,6 +789,33 @@ export class StorageLayer implements IStorageLayer {
       if (attention) session.attention = attention
       else delete session.attention
     })
+  }
+
+  async setSessionDraft(sessionId: string, draft: string | null): Promise<void> {
+    await this.mutateSession(sessionId, (session) => {
+      if (draft) session.draft = draft
+      else delete session.draft
+    })
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lead state
+  // ---------------------------------------------------------------------------
+
+  async getLeadState(): Promise<LeadState> {
+    return this.loadJsonFile(this.leadStateFile, LeadStateSchema, () => ({ focus: [] }))
+  }
+
+  async updateLeadState(mutate: (state: LeadState) => void): Promise<LeadState> {
+    const updated = await this.runExclusive(this.leadStateFile, async () => {
+      const state = await this.getLeadState()
+      mutate(state)
+      const valid = LeadStateSchema.parse(state)
+      await this.atomicWrite(this.leadStateFile, valid)
+      return valid
+    })
+    this.notify('lead')
+    return updated
   }
 
   // ---------------------------------------------------------------------------
