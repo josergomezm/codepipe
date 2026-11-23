@@ -35,8 +35,8 @@ const loaded = ref(false)
 
 // ----- Borrowing the active chat while open -----
 
-/** The chat you had open, restored on leave. */
-const previous = sessions.activeSessionId
+/** The chat you had open when the thread took over, restored on leave. */
+let previous: string | null = null
 /**
  * Set once you leave. Every await below re-checks it: a late load must never
  * take over the chat you moved to (its messages, its socket, your composer).
@@ -45,7 +45,9 @@ let gone = false
 
 async function openThread(id: string) {
   if (gone || sessions.activeSessionId === id) return
-  await sessions.selectSession(id)
+  previous = sessions.activeSessionId
+  // Not remembered as your last chat: a reload should bring back your chat, not this.
+  await sessions.selectSession(id, { remember: false })
   // You may have left, or opened another chat, while it loaded.
   if (gone || sessions.activeSessionId !== id) return
   connect(id)
@@ -67,7 +69,11 @@ onUnmounted(() => {
   if (!threadId.value || sessions.activeSessionId !== threadId.value) return
   disconnect()
   if (previous && previous !== threadId.value) void sessions.selectSession(previous)
-  else sessions.deselectSession()
+  else {
+    // Nothing was open before: hand back your saved last chat, if any.
+    sessions.deselectSession({ forget: false })
+    sessions.restoreLastChat()
+  }
 })
 
 // ----- Toolbar -----

@@ -121,7 +121,12 @@ export const useSessionsStore = defineStore('sessions', () => {
     return msg
   }
 
-  async function selectSession(sessionId: string) {
+  /**
+   * Open a chat. `remember: false` leaves the saved "last chat" alone — for
+   * borrowing the chat machinery (the lead's thread) rather than opening a
+   * chat you'd want back after a reload.
+   */
+  async function selectSession(sessionId: string, opts: { remember?: boolean } = {}) {
     try {
       activeSessionId.value = sessionId
       freshForSession = null
@@ -130,7 +135,9 @@ export const useSessionsStore = defineStore('sessions', () => {
       loading.value = true
       refreshing.value = false
       markRead(sessionId)
-      localStorage.setItem('codepipe:activeSession', sessionId)
+      if (opts.remember !== false) {
+        try { localStorage.setItem('codepipe:activeSession', sessionId) } catch { /* private mode */ }
+      }
       navigator.serviceWorker?.controller?.postMessage({ type: 'active-session', sessionId })
 
       // Show the local copy first, if there is one; the server's version
@@ -170,13 +177,30 @@ export const useSessionsStore = defineStore('sessions', () => {
     }
   }
 
-  /** No chat open: clear the selection everywhere it is kept (incl. the service worker). */
-  function deselectSession() {
+  /**
+   * No chat open: clear the selection (and tell the service worker).
+   * `forget: false` keeps the saved "last chat" for the next visit.
+   */
+  function deselectSession(opts: { forget?: boolean } = {}) {
     activeSessionId.value = null
     activeMessages.value = []
     sessionStatus.value = 'idle'
-    try { localStorage.removeItem('codepipe:activeSession') } catch { /* private mode */ }
+    if (opts.forget !== false) {
+      try { localStorage.removeItem('codepipe:activeSession') } catch { /* private mode */ }
+    }
     navigator.serviceWorker?.controller?.postMessage({ type: 'active-session', sessionId: null })
+  }
+
+  /**
+   * Bring back the chat you last had open (survives PWA minimize/kill), if
+   * none is open — never the lead's thread, which lives on the lead's page.
+   */
+  function restoreLastChat() {
+    if (activeSessionId.value) return
+    let saved: string | null = null
+    try { saved = localStorage.getItem('codepipe:activeSession') } catch { /* private mode */ }
+    const meta = saved ? sessions.value.find((s) => s.id === saved) : undefined
+    if (meta && meta.kind !== 'lead') void selectSession(meta.id)
   }
 
   async function deleteSession(sessionId: string) {
@@ -303,6 +327,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     selectSession,
     deleteSession,
     deselectSession,
+    restoreLastChat,
     renameSession,
     upsertMessage,
     setStatus,

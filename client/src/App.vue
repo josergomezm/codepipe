@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
+import { nextTick, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSessionsStore } from '@/stores/sessions'
 import { useProjectsStore } from '@/stores/projects'
@@ -65,10 +65,17 @@ onMounted(async () => {
     // Clean the URL so a refresh doesn't keep forcing this session.
     window.history.replaceState({}, '', window.location.pathname)
   } else {
-    // Restore last active session (survives PWA minimize/kill).
-    const saved = localStorage.getItem('codepipe:activeSession')
-    if (saved && sessionsStore.sessions.some((s) => s.id === saved)) {
-      openSessionFromId(saved)
+    // Bring back your last chat quietly — on the chat page now, or the first
+    // time you go there. A workspace URL (/actions, a team member…) stays put.
+    await router.isReady()
+    if (router.currentRoute.value.name === 'chat') sessionsStore.restoreLastChat()
+    else {
+      const stop = router.afterEach((to) => {
+        if (to.name !== 'chat') return
+        stop()
+        // After the page you left has handed back the chat it borrowed.
+        void nextTick(() => sessionsStore.restoreLastChat())
+      })
     }
   }
 
