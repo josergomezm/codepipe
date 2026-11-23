@@ -292,10 +292,19 @@ export interface ActionDraft {
 /** An action-item card in a chat: an item the agent added, or one it suggests. */
 export interface ChatActionCard {
   draft: ActionDraft
-  /** closed = the agent resolved an existing item; undo reopens it (reopened). */
-  state: 'added' | 'suggested' | 'dismissed' | 'undone' | 'closed' | 'reopened'
+  /**
+   * closed = the agent resolved an existing item; undo reopens it (reopened).
+   * updated = the lead changed an existing item (see change).
+   */
+  state: 'added' | 'suggested' | 'dismissed' | 'undone' | 'closed' | 'reopened' | 'updated'
   /** The item the card is about, while it exists. */
   itemId?: string
+  /** The item's project when it isn't the chat's own (the lead's cards). */
+  projectId?: string
+  /** Who raised it (the lead's suggestions). */
+  personaId?: string
+  /** updated: what changed, in a line. */
+  change?: string
   /** closed: the answer or what was done. */
   resolution?: string
   /** closed as won't-do. */
@@ -1033,7 +1042,7 @@ export interface Brief {
   at: number
   since: number
   headline: string
-  top3: { text: string; why: string; sessionId?: string }[]
+  top3: { text: string; why: string; sessionId?: string; itemId?: string }[]
   waiting: { sessionId: string; title: string; projectName: string; question: string }[]
   focusCheck: {
     verdict: 'on_plan' | 'shifted' | 'mixed'

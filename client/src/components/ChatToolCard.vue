@@ -68,6 +68,9 @@ function actionView(card: ChatActionCard): CardView {
         details: card.resolution ? [card.resolution] : [],
         buttons: [{ label: 'View list', to: '/actions', primary: true }, { label: 'Reopen', op: 'undo' }],
       }
+    case 'updated':
+      return { ...base, tone: 'green', label: '✓ Updated on your list', struck: false, details: card.change ? [card.change] : [],
+        buttons: [{ label: 'View list', to: '/actions', primary: true }] }
     case 'reopened':
       return { ...base, tone: 'gray', label: 'Reopened on your list', struck: false, buttons: [{ label: 'View list', to: '/actions' }] }
     case 'undone':

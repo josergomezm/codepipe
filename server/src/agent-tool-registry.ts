@@ -7,8 +7,9 @@
  * tools: action items (add, list, resolve) and ideas (add). Standup ('team')
  * sessions also get the team protocol: propose_plan, complete_idea and
  * save_memo. The lead's workspace thread ('lead') gets the item tools across
- * ALL projects, plus its own: reading your chats, your Focus list, its memo,
- * and opening a project chat with a drafted prompt (it never edits code). Tool calls replace the JSON block standups used to end with —
+ * ALL projects (and update_action_item, to edit one), plus its own: reading
+ * your chats, your Focus list, its memo, and opening a project chat with a
+ * drafted prompt (it never edits code). Tool calls replace the JSON block standups used to end with —
  * the CLI validates the shape, each call lands as it happens, and a bad
  * argument comes back to the agent as an error it can fix and retry.
  *
@@ -39,7 +40,7 @@ import {
 } from './schemas.js'
 import { clip, clipEnd, digestChat, extractTurns, isUserChat, type Turn } from './lead/chat-digest.js'
 import { activityRows, loadUserChats } from './lead/workspace-digest.js'
-import { findDuplicateAction, recordActionItem } from './action-items.js'
+import { findDuplicateAction, recordActionItem, teamQueueFull } from './action-items.js'
 import {
   MAX_OPEN_ACTIONS,
   RESOLVED_ACTION_WINDOW_MS,
@@ -124,6 +125,11 @@ function parseArgs<T>(schema: z.ZodType<T>, args: Record<string, unknown>): { da
   const parsed = schema.safeParse(args)
   return parsed.success ? { data: parsed.data } : { error: invalid(parsed.error) }
 }
+
+/** YYYY-MM-DD in local time, like every date the user sees and due dates. */
+const localDay = (ms: number) => new Date(ms).toLocaleDateString('en-CA')
+/** Local midnight starting a YYYY-MM-DD day. */
+const dayStart = (date: string) => new Date(`${date}T00:00:00`).getTime()
 
 /** Short id the agent can pass back (any unambiguous prefix resolves). */
 const shortId = (id: string) => id.slice(0, 8)
@@ -284,19 +290,40 @@ const addActionItem: ToolDef = {
       if (result.status !== 'added') return { text: 'Not added.', isError: true }
       sessionManager.appendCard(ctx.session.id, `Added to your action items: ${draft.text}`, {
         kind: 'action',
-        action: { draft, state: 'added', itemId: result.item.id },
+        action: { draft, state: 'added', itemId: result.item.id, ...(projectId !== ctx.session.projectId ? { projectId } : {}) },
       })
       return {
         text: `Added to the user's action items: "${draft.text}". They see it in this chat and on their Action items page.`,
       }
     }
 
-    const duplicate = findDuplicateAction(await storage.listActionItems(projectId), draft)
-    if (duplicate) return { text: `Already on the user's list: "${duplicate.text}".` }
+    // The lead's own suggestions are credited to it: like the team's, they
+    // don't re-raise what the user just settled, and they count toward the
+    // project's team queue, so the lead can't pile items up on the user.
+    const credit = isLead(ctx) ? (await storage.listPersonas()).find((p) => p.isLead) : undefined
+    const existing = await storage.listActionItems(projectId)
+    const duplicate = findDuplicateAction(existing, { ...draft, ...(credit ? { personaId: credit.id } : {}) })
+    if (duplicate) {
+      return { text: `Already on the user's list${duplicate.status === 'open' ? '' : ' (settled recently)'}: "${duplicate.text}".` }
+    }
+    if (credit && teamQueueFull(existing)) {
+      return {
+        text: `Not suggested: ${MAX_OPEN_ACTIONS} team items already wait on the user in that project. Suggest it only if it matters more than one of them, and suggest closing that one (clean_up, in a brief).`,
+        isError: true,
+      }
+    }
     sessionManager.appendCard(
       ctx.session.id,
       `Suggested action item: ${draft.text}`,
-      { kind: 'action', action: { draft, state: 'suggested' } },
+      {
+        kind: 'action',
+        action: {
+          draft,
+          state: 'suggested',
+          ...(projectId !== ctx.session.projectId ? { projectId } : {}),
+          ...(credit ? { personaId: credit.id } : {}),
+        },
+      },
       { atTurnEnd: true },
     )
     return {
@@ -312,7 +339,7 @@ function describeItem(item: ActionItem, personas: Persona[], todos: Todo[], toda
   if (projectName) tags.unshift(projectName)
   if (item.blocking === false) tags.push('non-blocking')
   if (item.dueDate) tags.push(`due ${item.dueDate}${item.dueDate < today ? ' (overdue)' : item.dueDate === today ? ' (today)' : ''}`)
-  if (item.snoozedUntil && item.snoozedUntil > Date.now()) tags.push('snoozed')
+  if (item.snoozedUntil && item.snoozedUntil > Date.now()) tags.push(`snoozed until ${localDay(item.snoozedUntil)}`)
   const raisedBy = item.personaId ? personas.find((p) => p.id === item.personaId)?.name : null
   tags.push(raisedBy ? `raised by ${raisedBy}` : "the user's own")
   const gated = item.todoId ? todos.find((t) => t.id === item.todoId) : null
@@ -346,7 +373,7 @@ const listActionItems: ToolDef = {
       storage.listProjects(),
     ])
     const projectName = (id: string) => (scope ? undefined : projects.find((p) => p.id === id)?.name ?? 'Removed project')
-    const today = new Date().toISOString().slice(0, 10)
+    const today = localDay(Date.now())
     const open = items.filter((a) => a.status === 'open').sort((a, b) => a.createdAt - b.createdAt)
     const sections = [
       open.length
@@ -412,6 +439,7 @@ const resolveActionItem: ToolDef = {
         draft: { text: item.text },
         state: 'closed',
         itemId: item.id,
+        ...(item.projectId !== ctx.session.projectId ? { projectId: item.projectId } : {}),
         ...(resolution?.trim() ? { resolution: resolution.trim() } : {}),
         ...(declined ? { declined: true } : {}),
       },
@@ -420,6 +448,83 @@ const resolveActionItem: ToolDef = {
     // closing its own item needs no echo.
     if (!ctx.isTeam && closed.personaId) await ctx.deps.onTeamActionClosed?.(closed)
     return { text: `Closed [${shortId(item.id)}] "${item.text}"${declined ? ' as declined' : ''}.` }
+  },
+}
+
+const UpdateActionArgs = z.object({
+  id: z.string().trim().min(1),
+  text: actionFields.text.optional(),
+  notes: actionFields.notes,
+  due_date: DueDateSchema.nullable().optional(),
+  blocking: z.boolean().optional(),
+  snooze_until: DueDateSchema.nullable().optional(),
+})
+
+
+const updateActionItem: ToolDef = {
+  name: 'update_action_item',
+  kinds: ['lead'],
+  description: () =>
+    "Change one of the user's open action items: reword it, set or clear its due date, mark whether it blocks, or snooze it until a day. Only for a change the user asked for in this thread. In a brief, suggest it under clean_up instead. Pass the [id] from list_action_items (a prefix is fine) and only the fields that change.",
+  inputSchema: () => ({
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'The item’s [id] (or an unambiguous prefix).' },
+      text: actionProperties.text,
+      notes: actionProperties.notes,
+      due_date: { type: ['string', 'null'], description: 'YYYY-MM-DD, or null to clear the due date.' },
+      blocking: actionProperties.blocking,
+      snooze_until: { type: ['string', 'null'], description: 'YYYY-MM-DD: hide it until that day. null brings a snoozed item back now.' },
+    },
+    required: ['id'],
+  }),
+  async run(ctx, raw) {
+    const parsed = parseArgs(UpdateActionArgs, raw)
+    if ('error' in parsed) return parsed.error
+    const a = parsed.data
+    const { storage, sessionManager } = ctx.deps
+    const item = matchById((await storage.listActionItems()).filter((i) => i.status === 'open'), a.id)
+    if (!item) return { text: `No open item matches "${a.id}". Call list_action_items for the current [id]s.`, isError: true }
+
+    const patch: Partial<ActionItem> = {}
+    const changes: string[] = []
+    if (a.text !== undefined && a.text !== item.text) { patch.text = a.text; changes.push(`reworded (was "${item.text}")`) }
+    const notes = a.notes?.trim() || undefined
+    if (a.notes !== undefined && notes !== item.notes) { patch.notes = notes; changes.push('notes updated') }
+    if (a.due_date !== undefined && a.due_date !== (item.dueDate ?? null)) {
+      patch.dueDate = a.due_date ?? undefined
+      changes.push(a.due_date ? `due ${a.due_date}` : 'due date cleared')
+    }
+    if (a.blocking !== undefined && a.blocking !== (item.blocking !== false)) {
+      patch.blocking = a.blocking ? undefined : false
+      changes.push(a.blocking ? 'blocking' : 'non-blocking')
+    }
+    if (a.snooze_until !== undefined) {
+      const until = a.snooze_until ? dayStart(a.snooze_until) : undefined
+      if (until !== undefined && until <= Date.now()) {
+        return { text: `snooze_until must be a future day (got ${a.snooze_until}).`, isError: true }
+      }
+      const snoozed = item.snoozedUntil && item.snoozedUntil > Date.now() ? item.snoozedUntil : undefined
+      if (until !== snoozed) {
+        patch.snoozedUntil = until
+        changes.push(until ? `snoozed until ${a.snooze_until}` : 'unsnoozed')
+      }
+    }
+    if (!changes.length) return { text: 'Nothing to change — pass at least one field that differs.', isError: true }
+
+    const updated = await storage.updateActionItem(item.id, patch)
+    const change = changes.join(' · ')
+    sessionManager.appendCard(ctx.session.id, `Updated action item: ${updated.text} (${change})`, {
+      kind: 'action',
+      action: {
+        draft: { text: updated.text, ...(updated.dueDate ? { dueDate: updated.dueDate } : {}) },
+        state: 'updated',
+        itemId: item.id,
+        change,
+        ...(item.projectId !== ctx.session.projectId ? { projectId: item.projectId } : {}),
+      },
+    })
+    return { text: `Updated [${shortId(item.id)}] "${updated.text}": ${change}.` }
   },
 }
 
@@ -785,7 +890,7 @@ const openProjectChat: ToolDef = {
 
 const PostBriefArgs = z.object({
   headline: z.string().trim().min(1).max(200),
-  top3: z.array(z.object({ text: z.string().trim().min(1).max(300), why: z.string().trim().max(300), chat: z.string().optional() })).max(3),
+  top3: z.array(z.object({ text: z.string().trim().min(1).max(300), why: z.string().trim().max(300), chat: z.string().optional(), item: z.string().optional() })).max(3),
   waiting_on_you: z.array(z.object({ chat: z.string().trim().min(1), question: z.string().trim().min(1).max(400) })).max(8).optional(),
   focus_check: z.object({
     verdict: z.enum(['on_plan', 'shifted', 'mixed']),
@@ -825,6 +930,7 @@ const postBrief: ToolDef = {
             text: { type: 'string' },
             why: { type: 'string', description: 'One line: why this, ranked against Focus.' },
             chat: { type: 'string', description: 'The chat [id] it continues, if any.' },
+            item: { type: 'string', description: 'The action item [id] it is, if any.' },
           },
           required: ['text', 'why'],
         },
@@ -906,10 +1012,13 @@ const postBrief: ToolDef = {
       return { text: 'The brief for this run is already posted — continue with save_memo and your reply.', isError: true }
     }
 
+    const openItems = items.filter((i) => i.status === 'open')
     const top3 = a.top3.map((t) => {
       const s = t.chat ? chat(t.chat) : null
       if (t.chat && !s) unknown.push(`chat "${t.chat}"`)
-      return { text: t.text, why: t.why, ...(s ? { sessionId: s.id } : {}) }
+      const item = t.item ? matchById(openItems, t.item) : null
+      if (t.item && !item) unknown.push(`item "${t.item}"`)
+      return { text: t.text, why: t.why, ...(s ? { sessionId: s.id } : {}), ...(item ? { itemId: item.id } : {}) }
     })
     const waiting = (a.waiting_on_you ?? []).flatMap((w) => {
       const s = chat(w.chat)
@@ -937,7 +1046,7 @@ const postBrief: ToolDef = {
       return { text: d.text, ...(p ? { projectName: p.name } : {}) }
     })
     const cleanUp = (a.clean_up ?? []).flatMap((c) => {
-      const item = matchById(items.filter((i) => i.status === 'open'), c.item)
+      const item = matchById(openItems, c.item)
       if (!item) { unknown.push(`item "${c.item}"`); return [] }
       return [{ itemId: item.id, text: item.text, projectName: projectName(item.projectId), ageDays: Math.floor((now - item.createdAt) / 86_400_000), suggestion: c.suggestion, why: c.why }]
     })
@@ -965,6 +1074,7 @@ const TOOLS: ToolDef[] = [
   addActionItem,
   listActionItems,
   resolveActionItem,
+  updateActionItem,
   addIdea,
   proposePlan,
   completeIdea,

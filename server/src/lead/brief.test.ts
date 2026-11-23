@@ -134,7 +134,10 @@ describe('post_brief', () => {
     const leadSession = (await lead.ensureLeadSession())!
     const res = await tools.call(leadSession, 'post_brief', {
       headline: 'Partners is the day.',
-      top3: [{ text: 'Deploy the partner page', why: 'Top of Focus', chat: chat.id.slice(0, 8) }],
+      top3: [
+        { text: 'Deploy the partner page', why: 'Top of Focus', chat: chat.id.slice(0, 8) },
+        { text: 'Answer the pilot question', why: 'Blocks the launch', item: item.id.slice(0, 8) },
+      ],
       waiting_on_you: [{ chat: 'Partners MVP', question: 'Do you want me to deploy it?' }],
       focus_check: { verdict: 'shifted', note: 'All partnerships.', suggestions: [{ kind: 'add', label: 'Partners launch', project: 'partners', why: '3 days running' }] },
       done: [{ text: 'Phase 7 shipped', project: 'Partners App' }],
@@ -144,6 +147,7 @@ describe('post_brief', () => {
     const card = manager.getSession(leadSession.id)!.messages.find((m) => m.metadata?.kind === 'brief')!
     const brief = card.metadata!.brief!
     expect(brief.top3[0].sessionId).toBe(chat.id)
+    expect(brief.top3[1].itemId).toBe(item.id)
     expect(brief.waiting).toEqual([{ sessionId: chat.id, title: 'Partners MVP', projectName: 'Partners App', question: 'Do you want me to deploy it?' }])
     expect(brief.focusCheck.suggestions[0].projectId).toBe(partners.id)
     expect(brief.cleanUp[0]).toMatchObject({ itemId: item.id, text: 'Pick the commission split', projectName: 'Partners App', suggestion: 'snooze' })
@@ -155,12 +159,14 @@ describe('post_brief', () => {
     await world()
     const leadSession = (await lead.ensureLeadSession())!
     const res = await tools.call(leadSession, 'post_brief', {
-      headline: 'x', top3: [], focus_check: { verdict: 'on_plan', note: 'ok' },
+      headline: 'x', focus_check: { verdict: 'on_plan', note: 'ok' },
+      top3: [{ text: 'x', why: 'y', item: 'yyyy' }],
       waiting_on_you: [{ chat: 'nope', question: '?' }], clean_up: [{ item: 'zzzz', suggestion: 'close', why: 'x' }],
     })
     expect(res.isError).toBe(true)
     expect(res.text).toContain('chat "nope"')
     expect(res.text).toContain('item "zzzz"')
+    expect(res.text).toContain('item "yyyy"')
     expect(manager.getSession(leadSession.id)!.messages.some((m) => m.metadata?.kind === 'brief')).toBe(false)
   })
 })

@@ -83,6 +83,101 @@ async function tool(name: string, args: object) {
 const cardOp = (messageId: string, op: string) =>
   request(app).post(`/api/agent/sessions/${session.id}/messages/${messageId}/card`).send({ op })
 
+describe('the lead and action items', () => {
+  /** The lead's thread lives in this test's project (its Workspace); `other` is a product. */
+  async function leadWorld() {
+    useSession('lead')
+    const rimuru = await storage.addPersona({ name: 'Rimuru', role: 'Chancellor', personality: '', provider: 'claude', isLead: true })
+    const other = await storage.addProject({ name: 'Lunanul', path: tmpDir })
+    return { rimuru, other }
+  }
+
+  it('files a suggestion for another project there when accepted, credited to the lead; undo finds it', async () => {
+    const { rimuru, other } = await leadWorld()
+    await tool('add_action_item', { text: 'Ship onboarding', user_requested: false, project: 'Lunanul' })
+    const card = cards()[0]
+    expect(card.metadata?.action).toMatchObject({ state: 'suggested', projectId: other.id, personaId: rimuru.id })
+
+    expect((await cardOp(card.id, 'accept')).status).toBe(200)
+    const [item] = await storage.listActionItems(other.id)
+    expect(item).toMatchObject({ text: 'Ship onboarding', personaId: rimuru.id })
+    expect(await storage.listActionItems(project.id)).toHaveLength(0)
+
+    expect((await cardOp(card.id, 'undo')).status).toBe(200)
+    expect(await storage.listActionItems(other.id)).toHaveLength(0)
+  })
+
+  it('stops suggesting once the project\'s team queue is full, but what you accept is always added', async () => {
+    const { rimuru, other } = await leadWorld()
+    await tool('add_action_item', { text: 'Accepted later', user_requested: false, project: 'Lunanul' })
+    for (let i = 0; i < MAX_OPEN_ACTIONS; i++) {
+      await recordActionItem(storage, other.id, { text: `team item ${i}`, personaId: rimuru.id })
+    }
+    const refused = await tool('add_action_item', { text: 'One more', user_requested: false, project: 'Lunanul' })
+    expect(refused.isError).toBe(true)
+    expect(cards()).toHaveLength(1)
+
+    expect((await cardOp(cards()[0].id, 'accept')).status).toBe(200)
+    expect(await storage.listActionItems(other.id)).toHaveLength(MAX_OPEN_ACTIONS + 1)
+    // What you ask for yourself is yours, not the team's, and never capped.
+    expect((await tool('add_action_item', { text: 'My own', user_requested: true, project: 'Lunanul' })).isError).toBe(false)
+  })
+
+  it('does not re-suggest what you just settled, and "Add anyway" after dismissing still bypasses a full queue', async () => {
+    const { rimuru, other } = await leadWorld()
+    const declined = await storage.addActionItem({ projectId: other.id, text: 'Hire a designer' })
+    await storage.updateActionItem(declined.id, { status: 'dismissed' })
+    expect((await tool('add_action_item', { text: 'Hire a designer', user_requested: false, project: 'Lunanul' })).text).toContain('settled recently')
+    expect(cards()).toHaveLength(0)
+
+    await tool('add_action_item', { text: 'Write the FAQ', user_requested: false, project: 'Lunanul' })
+    const card = cards()[0]
+    expect((await cardOp(card.id, 'dismiss')).status).toBe(200)
+    for (let i = 0; i < MAX_OPEN_ACTIONS; i++) {
+      await recordActionItem(storage, other.id, { text: `team item ${i}`, personaId: rimuru.id })
+    }
+    expect((await cardOp(card.id, 'accept')).status).toBe(200)
+    expect((await storage.listActionItems(other.id)).find((i) => i.text === 'Write the FAQ')).toMatchObject({ personaId: rimuru.id })
+
+    // Accepting what is already open again reports it rather than claiming an add.
+    expect((await cardOp(card.id, 'undo')).status).toBe(200)
+    await storage.addActionItem({ projectId: other.id, text: 'Write the FAQ' })
+    const dup = await cardOp(card.id, 'accept')
+    expect(dup.status).toBe(409)
+    expect(dup.body.error).toContain('Already on your list')
+  })
+
+  it('update_action_item rewords, dates, marks non-blocking and snoozes — the lead only', async () => {
+    const { other } = await leadWorld()
+    const item = await storage.addActionItem({ projectId: other.id, text: 'Pick a launch date', dueDate: '2026-12-01' })
+    const id = item.id.slice(0, 8)
+
+    const res = await tool('update_action_item', { id, text: 'Pick the launch date', due_date: null, blocking: false, snooze_until: '2099-01-05' })
+    expect(res.isError).toBe(false)
+    const [updated] = await storage.listActionItems(other.id)
+    expect(updated).toMatchObject({ text: 'Pick the launch date', blocking: false, snoozedUntil: new Date('2099-01-05T00:00:00').getTime() })
+    expect(updated.dueDate).toBeUndefined()
+    expect(cards().at(-1)?.metadata?.action).toMatchObject({ state: 'updated', itemId: item.id, projectId: other.id })
+
+    await tool('update_action_item', { id, blocking: true, snooze_until: null, due_date: '2027-01-10' })
+    const [back] = await storage.listActionItems(other.id)
+    expect(back).toMatchObject({ dueDate: '2027-01-10' })
+    expect(back.blocking).toBeUndefined()
+    expect(back.snoozedUntil).toBeUndefined()
+
+    expect((await tool('update_action_item', { id, snooze_until: '2020-01-01' })).isError).toBe(true)
+    expect((await tool('update_action_item', { id })).isError).toBe(true)
+    // Values it already has change nothing.
+    expect((await tool('update_action_item', { id, blocking: true, due_date: '2027-01-10', snooze_until: null })).text).toContain('Nothing to change')
+    await storage.updateActionItem(item.id, { status: 'done' })
+    expect((await tool('update_action_item', { id, blocking: false })).isError).toBe(true)
+    expect((await tool('update_action_item', { id: 'zzzz', blocking: false })).isError).toBe(true)
+
+    useSession('chat')
+    expect((await tool('update_action_item', { id, blocking: false })).isError).toBe(true)
+  })
+})
+
 describe('tool listing', () => {
   it('gives chats the shared tools and standups the team protocol on top', async () => {
     const names = async () =>

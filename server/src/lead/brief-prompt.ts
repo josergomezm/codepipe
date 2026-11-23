@@ -5,6 +5,7 @@
  * changing code. See docs/lead-assistant-plan.md, "The brief".
  */
 import type { FocusItem, Persona, Project } from '../schemas.js'
+import { MAX_OPEN_ACTIONS } from '../standup-protocol.js'
 import type { WorkspaceDigest } from './workspace-digest.js'
 
 const DAY = 86_400_000
@@ -111,12 +112,12 @@ export function buildBriefPrompt({ digest: d, lead, projects, focus, memo, now }
     '',
     `1. If an open chat matters to a Focus item or is pending without a matching action item, and its excerpt isn't enough, read more with \`read_chat\` or \`search_chat\` (its [id]). At most 4 such reads.`,
     `2. Call \`post_brief\` exactly once — the brief the user sees:`,
-    `   - \`top3\`: today's three most important things, ranked against Focus. Link the chat when there is one.`,
+    `   - \`top3\`: today's three most important things, ranked against Focus — open action items count, not just chats. Link the chat (\`chat\`) or the action item (\`item\`) by its [id].`,
     `   - \`waiting_on_you\`: each open chat that ended on a question or a step only the user can take — quote the question.`,
     `   - \`focus_check\`: compare their messages and commits with Focus (to suggest dropping an item, give its number as \`focus_item\`). \`on_plan\` when they match; \`shifted\` when other work clearly dominated for days (check the 7-day numbers and your memo, not one day) — then suggest the Focus change; \`mixed\` when you can't tell — then ASK how they want to prioritize in \`question\`. Never change Focus yourself.`,
     `   - \`done\`: what finished since the last brief — closed chats, shipped commits.`,
     `   - \`clean_up\`: open action items that look stale or settled by what you read (close or snooze, with why).`,
-    `3. For pending work that no action item tracks, suggest one with \`add_action_item\` (user_requested: false, \`project\` set, or omitted for Workspace — business and partnership work that belongs to no product). Don't duplicate items that already exist.`,
+    `3. For pending work that no action item tracks, suggest one with \`add_action_item\` (user_requested: false, \`project\` set, or omitted for Workspace — business and partnership work that belongs to no product). Don't duplicate items that already exist. Your suggestions count toward each project's queue of ${MAX_OPEN_ACTIONS} team items: at the limit, suggest only what beats an item already waiting, and name that one under \`clean_up\`.`,
     `4. Call \`save_memo\`: what you're watching for the next brief (e.g. a shift you saw but aren't sure of yet).`,
     `5. Then reply in 1–3 plain sentences — it's what the notification shows. Don't repeat the brief.`,
     '',

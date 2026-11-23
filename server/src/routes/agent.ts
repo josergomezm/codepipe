@@ -104,8 +104,9 @@ export function createAgentRoutes(
     }
 
     async function actionCardOp(card: ChatActionCard, op: 'accept' | 'dismiss' | 'undo'): Promise<ChatActionCard | { error: string }> {
+      const projectId = card.projectId ?? session!.projectId
       const item = card.itemId
-        ? (await storage.listActionItems(session!.projectId)).find((a) => a.id === card.itemId)
+        ? (await storage.listActionItems(projectId)).find((a) => a.id === card.itemId)
         : undefined
       switch (op) {
         case 'accept': {
@@ -113,27 +114,32 @@ export function createAgentRoutes(
           if (card.state !== 'suggested' && card.state !== 'dismissed' && card.state !== 'undone') {
             return { error: 'Nothing to add' }
           }
-          const result = await recordActionItem(storage, session!.projectId, card.draft)
+          const result = await recordActionItem(storage, projectId, {
+            ...card.draft,
+            ...(card.personaId ? { personaId: card.personaId, approved: true } : {}),
+          })
           if (result.status === 'over_cap') return { error: 'Unexpected cap on a user-accepted item' }
-          return { draft: card.draft, state: 'added', itemId: result.item.id }
+          // Undo would delete that existing item, so don't claim this card added it.
+          if (result.status === 'duplicate') return { error: `Already on your list: "${result.item.text}"` }
+          return { ...card, state: 'added', itemId: result.item.id }
         }
         case 'dismiss':
           if (card.state !== 'suggested') return { error: 'Only a suggestion can be dismissed' }
-          return { draft: card.draft, state: 'dismissed' }
+          return { ...card, state: 'dismissed' }
         case 'undo': {
           if (card.state === 'closed') {
             // Reopen what the agent closed (if it still exists and is closed).
             if (!item) return { error: 'That item no longer exists' }
-            if (item.status === 'open') return { draft: card.draft, state: 'reopened', itemId: item.id }
-            await storage.updateActionItem(item.id, { status: 'open', resolution: undefined })
-            return { draft: card.draft, state: 'reopened', itemId: item.id }
+            const { resolution: _r, declined: _d, ...rest } = card
+            if (item.status !== 'open') await storage.updateActionItem(item.id, { status: 'open', resolution: undefined })
+            return { ...rest, state: 'reopened', itemId: item.id }
           }
           if (card.state !== 'added' || !card.itemId) return { error: 'Nothing to undo' }
           if (item && item.status !== 'open') {
             return { error: 'That item is already closed — reopen or delete it from Action items' }
           }
           if (item) await storage.removeActionItem(item.id)
-          return { draft: card.draft, state: 'undone' }
+          return { ...card, state: 'undone', itemId: undefined }
         }
       }
     }

@@ -61,6 +61,9 @@ const VERDICT = {
   mixed: { label: 'Your call', cls: 'bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300' },
 } as const
 
+/** A Today item that opens its chat or the action list. */
+const linkText = 'text-left text-sm font-medium text-gray-900 hover:text-violet-700 hover:underline dark:text-gray-100 dark:hover:text-violet-300'
+
 // ----- Clean up -----
 
 function itemState(itemId: string): 'open' | 'closed' | 'snoozed' {
@@ -109,8 +112,13 @@ const smallBtn = 'shrink-0 rounded px-1.5 py-0.5 text-gray-600 hover:bg-gray-100
               <div class="min-w-0">
                 <button
                   v-if="t.sessionId"
-                  class="text-left text-sm font-medium text-gray-900 hover:text-violet-700 hover:underline dark:text-gray-100 dark:hover:text-violet-300"
+                  :class="linkText"
                   @click="openChat(t.sessionId)"
+                >{{ t.text }} →</button>
+                <button
+                  v-else-if="t.itemId"
+                  :class="itemState(t.itemId) === 'closed' ? 'text-left text-sm font-medium text-gray-400 line-through dark:text-gray-500' : linkText"
+                  @click="router.push('/actions')"
                 >{{ t.text }} →</button>
                 <p v-else class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ t.text }}</p>
                 <p class="text-xs text-gray-500 dark:text-gray-400">{{ t.why }}</p>

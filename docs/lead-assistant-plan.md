@@ -116,9 +116,15 @@ alongside the commits, and can mark related action items resolved.
   **read-only** launch settings (plan mode, no edit/shell tools).
 - Lead-only tools: `list_open_chats`, `read_chat`, `search_chat`,
   `post_brief`, `update_focus`, `save_memo`, `open_project_chat(project,
-  title, prompt)`, plus `list_action_items` / `add_action_item` (project
-  or Workspace) / `resolve_action_item` across all projects. That last one creates the chat
-  with the prompt in the composer; you send it.
+  title, prompt)` (it creates the chat with the prompt in the composer; you
+  send it), plus `list_action_items` / `add_action_item` (project or
+  Workspace) / `resolve_action_item` / `update_action_item` (reword, due
+  date, blocking, snooze — only when you ask) across all projects.
+- Items the lead suggests on its own are credited to it and count toward
+  that project's team queue (`MAX_OPEN_ACTIONS`); at the limit it must name
+  which waiting item to clean up instead. Items you ask it to add are yours
+  and never capped. The brief's `top3` can point at an action item as well
+  as a chat.
 
 ## Build phases
 

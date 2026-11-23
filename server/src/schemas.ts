@@ -82,11 +82,18 @@ export const ChatActionCardSchema = z.object({
   draft: ActionDraftSchema,
   /**
    * added/suggested → dismissed/undone by the user; closed = the agent
-   * resolved an existing item (undo reopens it → reopened).
+   * resolved an existing item (undo reopens it → reopened); updated = the
+   * lead changed an existing item (see `change`).
    */
-  state: z.enum(['added', 'suggested', 'dismissed', 'undone', 'closed', 'reopened']),
+  state: z.enum(['added', 'suggested', 'dismissed', 'undone', 'closed', 'reopened', 'updated']),
   /** The item the card is about, while it exists. */
   itemId: z.string().uuid().optional(),
+  /** The item's project when it isn't the chat's own (the lead works across projects). */
+  projectId: z.string().uuid().optional(),
+  /** Who raised it: a suggestion the user accepts is credited to them. */
+  personaId: z.string().uuid().optional(),
+  /** updated: what changed, in a line. */
+  change: z.string().max(400).optional(),
   /** closed: the answer or what was done ('declined' marks a won't-do). */
   resolution: z.string().max(4000).optional(),
   declined: z.boolean().optional(),
@@ -133,6 +140,8 @@ export const BriefSchema = z.object({
     text: z.string().max(300),
     why: z.string().max(300),
     sessionId: z.string().uuid().optional(),
+    /** The open action item it is, if any. */
+    itemId: z.string().uuid().optional(),
   })).max(3),
   /** Chats that ended on a question or a step only you can take. */
   waiting: z.array(z.object({

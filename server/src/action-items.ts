@@ -14,6 +14,8 @@ export interface RecordActionInput extends ActionDraft {
   todoId?: string
   /** Persona who raised it — team-raised items are deduped harder and capped. */
   personaId?: string
+  /** The user accepted it themselves: the team's cap doesn't apply, and it dedups like the user's own. */
+  approved?: boolean
 }
 
 export type RecordActionResult =
@@ -22,6 +24,11 @@ export type RecordActionResult =
   | { status: 'duplicate'; item: ActionItem }
   /** The team's queue is full (team-raised items only). */
   | { status: 'over_cap' }
+
+/** The project already has MAX_OPEN_ACTIONS team-raised items waiting on the user. */
+export function teamQueueFull(existing: ActionItem[]): boolean {
+  return existing.filter((a) => a.status === 'open' && a.personaId).length >= MAX_OPEN_ACTIONS
+}
 
 /** Same text gating the same idea = the same item. */
 function dedupKey(text: string, todoId: string | undefined): string {
@@ -57,13 +64,11 @@ export async function recordActionItem(
   const text = input.text.trim()
   const existing = await storage.listActionItems(projectId)
 
-  const duplicate = findDuplicateAction(existing, { ...input, text })
+  // Accepted by the user: they want it again, so only an open item is a duplicate.
+  const duplicate = findDuplicateAction(existing, { ...input, text, ...(input.approved ? { personaId: undefined } : {}) })
   if (duplicate) return { status: 'duplicate', item: duplicate }
 
-  if (input.personaId) {
-    const open = trackedActions(existing).filter((a) => a.status === 'open' && a.personaId).length
-    if (open >= MAX_OPEN_ACTIONS) return { status: 'over_cap' }
-  }
+  if (input.personaId && !input.approved && teamQueueFull(existing)) return { status: 'over_cap' }
 
   // Trim to the schema's caps rather than dropping the whole item — standup
   // output is parsed leniently, so its fields arrive unbounded.
