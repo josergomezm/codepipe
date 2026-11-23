@@ -239,6 +239,12 @@ export const ModelOptionSchema = z.object({
   name: z.string().optional(),
 })
 
+/** GET /api/provider-settings/:provider/models — `listable: false` = nothing to pick, use free text. */
+export const ProviderModelsSchema = z.object({
+  listable: z.boolean(),
+  models: z.array(ModelOptionSchema),
+})
+
 export const ModelStateSchema = z.object({
   available: z.array(ModelOptionSchema),
   current: z.string().nullable(),
@@ -268,12 +274,6 @@ export const TodoProposalSchema = z.object({
   brief: z.string().optional(),
   /** Persona who proposed it. */
   personaId: z.string().uuid().optional(),
-/** GET /api/provider-settings/:provider/models — `listable: false` = nothing to pick, use free text. */
-export const ProviderModelsSchema = z.object({
-  listable: z.boolean(),
-  models: z.array(ModelOptionSchema),
-})
-
 })
 
 /**
