@@ -12,7 +12,8 @@ import { dayLabel, formatWhen } from '@/lib/files'
 /**
  * The lead's daily brief, as posted by post_brief: today's top 3, chats
  * waiting on you, the focus check (your day vs. your Focus list, with the
- * lead's suggested changes), what got done, and items to clean up.
+ * lead's suggested changes), what got done, what it updated on your items
+ * (each undoable), and items to clean up.
  * Buttons act for real; their state is read back from your Focus list and
  * action items, so a reload shows what you already did.
  */
@@ -63,6 +64,28 @@ const VERDICT = {
 
 /** A Today item that opens its chat or the action list. */
 const linkText = 'text-left text-sm font-medium text-gray-900 hover:text-violet-700 hover:underline dark:text-gray-100 dark:hover:text-violet-300'
+
+// ----- Updated -----
+
+/** The lead's 'updated' card for an update, as it stands now (undo flips it). */
+function updateReverted(messageId: string): boolean {
+  return sessions.activeMessages.find((m) => m.id === messageId)?.metadata?.action?.state === 'reverted'
+}
+
+async function undoUpdate(messageId: string) {
+  const sessionId = sessions.activeSessionId
+  if (!sessionId) return
+  busy.value = messageId
+  note.value = null
+  try {
+    await api.cardOp(sessionId, messageId, 'undo')
+    await team.fetchActions()
+  } catch (e) {
+    note.value = e instanceof Error ? e.message : 'Could not undo that update'
+  } finally {
+    busy.value = null
+  }
+}
 
 // ----- Clean up -----
 
@@ -195,6 +218,21 @@ const smallBtn = 'shrink-0 rounded px-1.5 py-0.5 text-gray-600 hover:bg-gray-100
               <span class="min-w-0">{{ d.text }}<span v-if="d.projectName" class="text-gray-400 dark:text-gray-500"> · {{ d.projectName }}</span></span>
             </li>
           </ul>
+        </section>
+
+        <!-- What the lead updated on your items this run -->
+        <section v-if="brief.updates?.length" class="px-4 py-3">
+          <h4 :class="sectionTitle">Updated</h4>
+          <div class="flex flex-col gap-1.5">
+            <div v-for="u in brief.updates" :key="u.messageId" class="flex items-start gap-2 text-xs">
+              <div class="min-w-0 flex-1">
+                <p class="text-gray-700 dark:text-gray-300" :class="{ 'line-through opacity-60': updateReverted(u.messageId) }">{{ u.text }}</p>
+                <p class="text-gray-400 dark:text-gray-500">{{ u.change }}</p>
+              </div>
+              <span v-if="updateReverted(u.messageId)" class="shrink-0 text-gray-400 dark:text-gray-500">Undone</span>
+              <button v-else :class="smallBtn" :disabled="busy === u.messageId" @click="undoUpdate(u.messageId)">Undo</button>
+            </div>
+          </div>
         </section>
 
         <!-- Clean up -->

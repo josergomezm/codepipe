@@ -7,9 +7,11 @@
  * tools: action items (add, list, resolve) and ideas (add). Standup ('team')
  * sessions also get the team protocol: propose_plan, complete_idea and
  * save_memo. The lead's workspace thread ('lead') gets the item tools across
- * ALL projects (and update_action_item, to edit one), plus its own: reading
- * your chats, your Focus list, its memo, and opening a project chat with a
- * drafted prompt (it never edits code). Tool calls replace the JSON block standups used to end with —
+ * ALL projects (and update_action_item, to edit one or log its progress),
+ * plus its own: reading your chats, your Focus list, its memo, opening a
+ * project chat with a drafted prompt, and the board's Refine / Implement
+ * (it never edits code). Tools that act on the user's word — sending a
+ * prompt, run_idea — refuse to run inside the scheduled brief. Tool calls replace the JSON block standups used to end with —
  * the CLI validates the shape, each call lands as it happens, and a bad
  * argument comes back to the agent as an error it can fix and retry.
  *
@@ -23,14 +25,20 @@ import { z } from 'zod'
 
 import type { IStorageLayer } from './storage.js'
 import type { SessionManager } from './session-manager.js'
+import type { StandupRunResult } from './standup.js'
 import {
   ActionItemKindSchema,
   ActionItemOptionSchema,
   DueDateSchema,
   MAX_FOCUS_ITEMS,
+  MAX_CHANGE_CHARS,
+  MAX_PROGRESS_CHARS,
+  MAX_PROGRESS_ENTRIES,
+  type ActionFieldValues,
   type ActionDraft,
   type Brief,
   type ActionItem,
+  type ChatMessage,
   type FocusItem,
   type Persona,
   type Project,
@@ -70,6 +78,11 @@ export interface AgentToolDeps {
    * agent resolved it) — the team hears about it at the next standup.
    */
   onTeamActionClosed?: (item: ActionItem) => Promise<void>
+  /** The board's Refine / Implement (StandupService), for the lead's run_idea. */
+  ideas?: {
+    refine: (todoId: string, feedback: string) => Promise<StandupRunResult>
+    implement: (todoId: string) => Promise<StandupRunResult>
+  }
 }
 
 interface ToolContext {
@@ -92,6 +105,24 @@ const WORKING_KINDS: SessionKind[] = ['chat', 'work', 'team']
 const ITEM_KINDS: SessionKind[] = [...WORKING_KINDS, 'lead']
 
 const isLead = (ctx: ToolContext) => ctx.session.kind === 'lead'
+
+/**
+ * The running turn is one CodePipe started (the lead's brief), not a message
+ * the user sent. Tools that act on the user's word refuse it — so "only when
+ * I tell you" holds in code, not just in the prompt.
+ */
+function inInternalTurn(ctx: ToolContext): boolean {
+  // Fails closed: no live thread is not a turn the user started.
+  if (!ctx.deps.sessionManager.getSession(ctx.session.id)) return true
+  return lastUserMessage(ctx)?.metadata?.kind === 'prompt'
+}
+
+/** The message that started the running turn. */
+function lastUserMessage(ctx: ToolContext): ChatMessage | undefined {
+  return ctx.deps.sessionManager.getSession(ctx.session.id)?.messages.filter((m) => m.role === 'user').at(-1)
+}
+
+const SUGGEST_IN_BRIEF = 'During the brief, suggest it in the brief instead; the user tells you to do it in their own message.'
 
 /** Which project's items a session sees: its own, or all of them for the lead. */
 const itemScope = (ctx: ToolContext): string | undefined => (isLead(ctx) ? undefined : ctx.session.projectId)
@@ -347,6 +378,8 @@ function describeItem(item: ActionItem, personas: Persona[], todos: Todo[], toda
   const lines = [`- [${shortId(item.id)}] (${tags.join(', ')}) ${item.text}`]
   if (item.options?.length) lines.push(`  Options: ${item.options.map((o) => o.label + (o.recommended ? ' (recommended)' : '')).join('; ')}`)
   if (item.notes) lines.push(`  Notes: ${item.notes.slice(0, 300)}`)
+  const last = item.progress?.at(-1)
+  if (last) lines.push(`  Last progress (${localDay(last.at)}): ${last.text}`)
   return lines.join('\n')
 }
 
@@ -421,6 +454,9 @@ const resolveActionItem: ToolDef = {
   async run(ctx, raw) {
     const parsed = parseArgs(ResolveActionArgs, raw)
     if ('error' in parsed) return parsed.error
+    if (isLead(ctx) && inInternalTurn(ctx)) {
+      return { text: 'Not closed: you never close items in the brief — put it under clean_up for the user\'s one tap.', isError: true }
+    }
     const { id, resolution, declined } = parsed.data
     const { storage, sessionManager } = ctx.deps
     const open = (await storage.listActionItems(itemScope(ctx))).filter((a) => a.status === 'open')
@@ -458,21 +494,29 @@ const UpdateActionArgs = z.object({
   due_date: DueDateSchema.nullable().optional(),
   blocking: z.boolean().optional(),
   snooze_until: DueDateSchema.nullable().optional(),
+  progress: z.string().trim().min(1).max(MAX_PROGRESS_CHARS).optional(),
+  chat: z.string().optional(),
 })
-
 
 const updateActionItem: ToolDef = {
   name: 'update_action_item',
   kinds: ['lead'],
   description: () =>
-    "Change one of the user's open action items: reword it, set or clear its due date, mark whether it blocks, or snooze it until a day. Only for a change the user asked for in this thread. In a brief, suggest it under clean_up instead. Pass the [id] from list_action_items (a prefix is fine) and only the fields that change.",
+    [
+      "Change one of the user's open action items. Pass the [id] from list_action_items (a prefix is fine) and only what changes.",
+      '- `progress`: one line on progress you saw (with the `chat` it happened in) — it goes on the item\'s progress log. In a brief, log progress, and reword or re-date an item when the work shows it (e.g. "Review the doc" → "Review sections 4–6").',
+      '- `blocking`, `snooze_until`, `notes`: only when the user asks in their own message.',
+      'Never close an item here: when the work shows it is done, suggest closing it (clean_up in a brief, or ask).',
+    ].join('\n'),
   inputSchema: () => ({
     type: 'object',
     properties: {
       id: { type: 'string', description: 'The item’s [id] (or an unambiguous prefix).' },
+      progress: { type: 'string', description: 'One line: what moved, e.g. "Doc v2 shared; you reviewed sections 1–3."' },
+      chat: { type: 'string', description: 'The chat [id] where the progress happened, if any.' },
       text: actionProperties.text,
-      notes: actionProperties.notes,
       due_date: { type: ['string', 'null'], description: 'YYYY-MM-DD, or null to clear the due date.' },
+      notes: actionProperties.notes,
       blocking: actionProperties.blocking,
       snooze_until: { type: ['string', 'null'], description: 'YYYY-MM-DD: hide it until that day. null brings a snoozed item back now.' },
     },
@@ -483,20 +527,33 @@ const updateActionItem: ToolDef = {
     if ('error' in parsed) return parsed.error
     const a = parsed.data
     const { storage, sessionManager } = ctx.deps
+    if (inInternalTurn(ctx) && (a.blocking !== undefined || a.snooze_until !== undefined || a.notes !== undefined)) {
+      return { text: `blocking, snooze_until and notes change only when the user asks. ${SUGGEST_IN_BRIEF}`, isError: true }
+    }
     const item = matchById((await storage.listActionItems()).filter((i) => i.status === 'open'), a.id)
     if (!item) return { text: `No open item matches "${a.id}". Call list_action_items for the current [id]s.`, isError: true }
+    const chat = a.chat?.trim() ? matchChat(await userChats(ctx), a.chat) : null
+    if (a.chat?.trim() && !chat) return { text: `No open chat matches "${a.chat}" — use an [id] from list_open_chats, or leave chat out.`, isError: true }
 
+    // The card keeps each changed field as it was and as set (null = unset), so it can undo.
     const patch: Partial<ActionItem> = {}
+    const before: ActionFieldValues = {}
+    const after: ActionFieldValues = {}
+    const set = <K extends keyof ActionFieldValues>(key: K, value: ActionItem[K]) => {
+      ;(patch as Record<string, unknown>)[key] = value
+      ;(before as Record<string, unknown>)[key] = item[key] ?? null
+      ;(after as Record<string, unknown>)[key] = value ?? null
+    }
     const changes: string[] = []
-    if (a.text !== undefined && a.text !== item.text) { patch.text = a.text; changes.push(`reworded (was "${item.text}")`) }
+    if (a.text !== undefined && a.text !== item.text) { set('text', a.text); changes.push('reworded') }
     const notes = a.notes?.trim() || undefined
-    if (a.notes !== undefined && notes !== item.notes) { patch.notes = notes; changes.push('notes updated') }
+    if (a.notes !== undefined && notes !== item.notes) { set('notes', notes); changes.push('notes updated') }
     if (a.due_date !== undefined && a.due_date !== (item.dueDate ?? null)) {
-      patch.dueDate = a.due_date ?? undefined
+      set('dueDate', a.due_date ?? undefined)
       changes.push(a.due_date ? `due ${a.due_date}` : 'due date cleared')
     }
     if (a.blocking !== undefined && a.blocking !== (item.blocking !== false)) {
-      patch.blocking = a.blocking ? undefined : false
+      set('blocking', a.blocking ? undefined : false)
       changes.push(a.blocking ? 'blocking' : 'non-blocking')
     }
     if (a.snooze_until !== undefined) {
@@ -506,14 +563,21 @@ const updateActionItem: ToolDef = {
       }
       const snoozed = item.snoozedUntil && item.snoozedUntil > Date.now() ? item.snoozedUntil : undefined
       if (until !== snoozed) {
-        patch.snoozedUntil = until
+        set('snoozedUntil', until)
         changes.push(until ? `snoozed until ${a.snooze_until}` : 'unsnoozed')
       }
+    }
+    const progressId = a.progress ? randomUUID() : undefined
+    if (a.progress && progressId) {
+      const entry = { id: progressId, at: Date.now(), text: a.progress, ...(chat ? { sessionId: chat.id } : {}) }
+      // At the cap the oldest entry goes for good (an undo doesn't bring it back).
+      patch.progress = [...(item.progress ?? []), entry].slice(-MAX_PROGRESS_ENTRIES)
+      changes.push(`progress: ${a.progress}`)
     }
     if (!changes.length) return { text: 'Nothing to change — pass at least one field that differs.', isError: true }
 
     const updated = await storage.updateActionItem(item.id, patch)
-    const change = changes.join(' · ')
+    const change = clip(changes.join(' · '), MAX_CHANGE_CHARS)
     sessionManager.appendCard(ctx.session.id, `Updated action item: ${updated.text} (${change})`, {
       kind: 'action',
       action: {
@@ -521,6 +585,9 @@ const updateActionItem: ToolDef = {
         state: 'updated',
         itemId: item.id,
         change,
+        before,
+        after,
+        ...(progressId ? { progressId } : {}),
         ...(item.projectId !== ctx.session.projectId ? { projectId: item.projectId } : {}),
       },
     })
@@ -835,6 +902,7 @@ const updateFocus: ToolDef = {
   async run(ctx, raw) {
     const parsed = parseArgs(UpdateFocusArgs, raw)
     if ('error' in parsed) return parsed.error
+    if (inInternalTurn(ctx)) return { text: `Focus not changed. ${SUGGEST_IN_BRIEF}`, isError: true }
     const projects = await ctx.deps.storage.listProjects()
     const focus: FocusItem[] = []
     for (const item of parsed.data.focus) {
@@ -852,25 +920,29 @@ const OpenProjectChatArgs = z.object({
   project: z.string().trim().min(1),
   title: z.string().trim().min(1).max(120),
   prompt: z.string().trim().min(1).max(20000),
+  send: z.boolean().optional(),
 })
 
 const openProjectChat: ToolDef = {
   name: 'open_project_chat',
   kinds: ['lead'],
   description: () =>
-    'Open a new chat in one of the user\'s projects with a prompt you drafted waiting in its message box — NOT sent; the user reviews and sends it. This is how work on code happens: you never change code yourself. Write the prompt as the user would: the goal, the context the agent needs, and what done looks like.',
+    'Open a new chat in one of the user\'s projects with a prompt you drafted. This is how work on code happens: you never change code yourself. Write the prompt as the user would: the goal, the context the agent needs, and what done looks like. By default the prompt waits unsent in the chat\'s message box for the user to review. Set send: true only when the user told you, in their own message, to go ahead — the project agent then starts on it right away.',
   inputSchema: () => ({
     type: 'object',
     properties: {
       project: { type: 'string', description: 'Project name or [id].' },
       title: { type: 'string', description: 'Short chat title.' },
       prompt: { type: 'string', description: 'The drafted first message.' },
+      send: { type: 'boolean', description: 'true = send it now (only on the user\'s go-ahead); default leaves it unsent.' },
     },
     required: ['project', 'title', 'prompt'],
   }),
   async run(ctx, raw) {
     const parsed = parseArgs(OpenProjectChatArgs, raw)
     if ('error' in parsed) return parsed.error
+    const { send } = parsed.data
+    if (send && inInternalTurn(ctx)) return { text: `Not sent. ${SUGGEST_IN_BRIEF}`, isError: true }
     const { storage, sessionManager } = ctx.deps
     const projects = (await storage.listProjects()).filter((p) => !p.internal)
     const project = matchProject(projects, parsed.data.project)
@@ -881,10 +953,100 @@ const openProjectChat: ToolDef = {
       .sort((a, b) => b.updatedAt - a.updatedAt)[0]
     const session = await sessionManager.createSession(recent?.provider ?? ctx.session.provider, project.id, {
       title: parsed.data.title,
-      draft: parsed.data.prompt,
+      ...(send ? {} : { draft: parsed.data.prompt }),
     })
+    if (send) {
+      sessionManager.handleInput(session.id, parsed.data.prompt) // a just-created session is live
+      sessionManager.appendSystemMessage(ctx.session.id, `Started a chat in ${project.name}: "${parsed.data.title}" — the prompt was sent and the agent is working on it.`)
+      return { text: `Started "${parsed.data.title}" in ${project.name} [${shortId(session.id)}] — the prompt is sent and the agent is working.` }
+    }
     sessionManager.appendSystemMessage(ctx.session.id, `Opened a chat in ${project.name}: "${parsed.data.title}" — your prompt is waiting in its message box.`)
     return { text: `Opened "${parsed.data.title}" in ${project.name} [${shortId(session.id)}] with the prompt in its message box. The user sends it when ready.` }
+  },
+}
+
+const ListIdeasArgs = z.object({ project: z.string().optional() })
+
+const IDEA_STATUS: Record<Todo['status'], string> = {
+  inbox: 'in the inbox (not reviewed yet)',
+  under_review: 'under review',
+  proposed: 'proposed — waiting for the user to approve',
+  approved: 'approved',
+  done: 'done',
+}
+
+const listIdeas: ToolDef = {
+  name: 'list_ideas',
+  kinds: ['lead'],
+  description: () =>
+    "List the ideas on every project's board (or one project's) with their [id]s, status and the team's proposal — for run_idea.",
+  inputSchema: () => ({
+    type: 'object',
+    properties: { project: { type: 'string', description: 'Project name or [id]; omit for all projects.' } },
+  }),
+  async run(ctx, raw) {
+    const parsed = parseArgs(ListIdeasArgs, raw)
+    if ('error' in parsed) return parsed.error
+    const { storage } = ctx.deps
+    const projects = (await storage.listProjects()).filter((p) => !p.internal)
+    const project = parsed.data.project?.trim() ? matchProject(projects, parsed.data.project) : null
+    if (parsed.data.project?.trim() && !project) return { text: `No project matches "${parsed.data.project}". Projects: ${projectNames(projects)}.`, isError: true }
+    const ideas = (await storage.listTodos(project?.id)).filter((t) => t.status !== 'done' && projects.some((p) => p.id === t.projectId))
+    if (!ideas.length) return { text: 'No open ideas on the board.' }
+    const lines = projects.flatMap((p) => {
+      const mine = ideas.filter((t) => t.projectId === p.id)
+      if (!mine.length) return []
+      return [`${p.name}:`, ...mine.map((t) => {
+        const bits = [`- [${shortId(t.id)}] ${t.text} — ${IDEA_STATUS[t.status]}`]
+        if (t.proposal) bits.push(`  Proposal: ${clip(t.proposal.summary, 300)}${t.proposal.effort ? ` (effort: ${t.proposal.effort})` : ''}`)
+        if (t.workSessionId) bits.push('  Being implemented already.')
+        return bits.join('\n')
+      })]
+    })
+    return { text: lines.join('\n') }
+  },
+}
+
+const RunIdeaArgs = z.object({
+  idea: z.string().trim().min(1),
+  action: z.enum(['refine', 'implement']),
+  feedback: z.string().trim().min(1).max(4000).optional(),
+})
+
+const runIdea: ToolDef = {
+  name: 'run_idea',
+  kinds: ['lead'],
+  description: () =>
+    "Do what the board's buttons do for an idea with a proposal: 'refine' sends feedback to that project's team, who revise the proposal; 'implement' approves it and starts the build. Only when the user told you to, in their own message.",
+  inputSchema: () => ({
+    type: 'object',
+    properties: {
+      idea: { type: 'string', description: 'The idea\'s [id] from list_ideas (a prefix is fine).' },
+      action: { type: 'string', enum: ['refine', 'implement'] },
+      feedback: { type: 'string', description: 'For refine: what should change in the proposal, in the user\'s words.' },
+    },
+    required: ['idea', 'action'],
+  }),
+  async run(ctx, raw) {
+    const parsed = parseArgs(RunIdeaArgs, raw)
+    if ('error' in parsed) return parsed.error
+    const { idea: ref, action, feedback } = parsed.data
+    if (inInternalTurn(ctx)) return { text: `Not run. ${SUGGEST_IN_BRIEF}`, isError: true }
+    const { storage, sessionManager, ideas } = ctx.deps
+    if (!ideas) return { text: 'The board is not available right now.', isError: true }
+    if (action === 'refine' && !feedback) return { text: 'Invalid arguments — feedback: Required for refine', isError: true }
+    const idea = matchTodo(await storage.listTodos(), ref)
+    if (!idea) return { text: `No idea matches "${ref}" — use an [id] from list_ideas.`, isError: true }
+    const result = action === 'refine' ? await ideas.refine(idea.id, feedback!) : await ideas.implement(idea.id)
+    if (!result.ran) return { text: `Not started: ${result.reason ?? 'the board refused'}.`, isError: true }
+    const projectName = (await storage.getProject(idea.projectId))?.name ?? 'its project'
+    sessionManager.appendSystemMessage(
+      ctx.session.id,
+      action === 'refine'
+        ? `Sent your feedback on "${idea.text}" to the ${projectName} team — they're revising the proposal.`
+        : `Started implementing "${idea.text}" in ${projectName}.`,
+    )
+    return { text: action === 'refine' ? `The ${projectName} team is revising "${idea.text}".` : `Implementation of "${idea.text}" started in ${projectName}.` }
   },
 }
 
@@ -1007,7 +1169,7 @@ const postBrief: ToolDef = {
 
     // One brief per run: refuse a second one since the run's prompt.
     const thread = sessionManager.getSession(ctx.session.id)?.messages ?? []
-    const promptAt = thread.filter((m) => m.role === 'user').at(-1)?.timestamp ?? 0
+    const promptAt = lastUserMessage(ctx)?.timestamp ?? 0
     if (thread.some((m) => m.metadata?.kind === 'brief' && m.timestamp >= promptAt)) {
       return { text: 'The brief for this run is already posted — continue with save_memo and your reply.', isError: true }
     }
@@ -1063,6 +1225,12 @@ const postBrief: ToolDef = {
       focusCheck: { verdict: a.focus_check.verdict, note: a.focus_check.note, ...(a.focus_check.question ? { question: a.focus_check.question } : {}), suggestions },
       done,
       cleanUp,
+      updates: thread.flatMap((m) => {
+        const card = m.metadata?.kind === 'action' ? m.metadata.action : undefined
+        return m.timestamp >= promptAt && card?.state === 'updated' && card.itemId
+          ? [{ messageId: m.id, itemId: card.itemId, text: card.draft.text, change: card.change ?? '' }]
+          : []
+      }).slice(0, 30),
       activity: activityRows(chats.map((s) => ({ ...digestChat(s, now), projectName: projectName(s.projectId) }))),
     }
     sessionManager.appendCard(ctx.session.id, `Daily brief: ${a.headline}`, { kind: 'brief', brief })
@@ -1084,6 +1252,8 @@ const TOOLS: ToolDef[] = [
   searchChat,
   updateFocus,
   openProjectChat,
+  listIdeas,
+  runIdea,
   postBrief,
 ]
 

@@ -231,6 +231,46 @@ describe('lead tools', () => {
     await vi.waitFor(async () => expect((await storage.listSessions()).find((s) => s.id === opened.id)?.draft).toBeUndefined(), { timeout: 5_000 })
   }, 20_000)
 
+  it('send the prompt right away on your go-ahead — never inside the brief', async () => {
+    const { leadSession, partners } = await setup()
+    const res = await call(leadSession, 'open_project_chat', { project: 'Partners App', title: 'Deploy now', prompt: 'Deploy it.', send: true })
+    expect(res.isError).toBeFalsy()
+    const opened = (await storage.listSessions()).find((s) => s.title === 'Deploy now')!
+    expect(opened.draft).toBeUndefined()
+    expect(manager.getSession(opened.id)!.messages[0]).toMatchObject({ role: 'user', content: 'Deploy it.' })
+    await vi.waitFor(() => expect(manager.isBusy(opened.id)).toBe(false), { timeout: 10_000 })
+
+    // The brief's own turn (an internal prompt) can't send.
+    manager.getSession(leadSession.id)!.messages.push({ ...msg('user', 'Write the brief', Date.now()), metadata: { kind: 'prompt' } })
+    const refused = await call(leadSession, 'open_project_chat', { project: partners.id, title: 'Sneaky', prompt: 'x', send: true })
+    expect(refused.isError).toBe(true)
+    expect((await storage.listSessions()).some((s) => s.title === 'Sneaky')).toBe(false)
+  }, 20_000)
+
+  it('list board ideas and refine or implement one on your word', async () => {
+    const { leadSession, partners } = await setup()
+    const idea = await storage.addTodo({ projectId: partners.id, text: 'Partner referral links' })
+    const ran: string[] = []
+    const boardTools = new AgentToolService({
+      storage, sessionManager: manager,
+      ideas: {
+        refine: async (id, feedback) => { ran.push(`refine ${id} ${feedback}`); return { ran: true } },
+        implement: async (id) => { ran.push(`implement ${id}`); return { ran: false, reason: 'This idea has no proposal yet' } },
+      },
+    })
+    expect((await boardTools.call(leadSession, 'list_ideas', {})).text).toContain(`[${idea.id.slice(0, 8)}] Partner referral links — in the inbox`)
+    expect((await boardTools.call(leadSession, 'run_idea', { idea: idea.id.slice(0, 8), action: 'refine' })).isError).toBe(true) // needs feedback
+    expect((await boardTools.call(leadSession, 'run_idea', { idea: idea.id.slice(0, 8), action: 'refine', feedback: 'Smaller scope' })).isError).toBeFalsy()
+    const impl = await boardTools.call(leadSession, 'run_idea', { idea: idea.id.slice(0, 8), action: 'implement' })
+    expect(impl.isError).toBe(true)
+    expect(impl.text).toContain('no proposal yet')
+    expect(ran).toEqual([`refine ${idea.id} Smaller scope`, `implement ${idea.id}`])
+
+    manager.getSession(leadSession.id)!.messages.push({ ...msg('user', 'Write the brief', Date.now()), metadata: { kind: 'prompt' } })
+    expect((await boardTools.call(leadSession, 'run_idea', { idea: idea.id.slice(0, 8), action: 'refine', feedback: 'x' })).isError).toBe(true)
+    expect(ran).toHaveLength(2)
+  })
+
   it('cannot open a chat in the Workspace project', async () => {
     const { leadSession } = await setup()
     expect((await call(leadSession, 'open_project_chat', { project: 'Workspace', title: 'x', prompt: 'y' })).isError).toBe(true)

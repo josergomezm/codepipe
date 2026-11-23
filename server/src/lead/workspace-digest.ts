@@ -24,7 +24,7 @@ export interface WorkspaceDigest {
   /** Repos with something to say: commits since, unpushed, or uncommitted work. */
   repos: { projectId: string; projectName: string; activity: Extract<RepoActivity, { isRepo: true }> }[]
   closed: ClosedChat[]
-  openActions: Pick<ActionItem, 'id' | 'projectId' | 'text' | 'kind' | 'dueDate' | 'blocking' | 'createdAt'>[]
+  openActions: Pick<ActionItem, 'id' | 'projectId' | 'text' | 'kind' | 'dueDate' | 'blocking' | 'createdAt' | 'progress'>[]
   ideas: { proposed: { id: string; projectId: string; text: string }[]; inboxCount: number }
   /** True when quiet chats were shortened to fit the budget. */
   trimmed: boolean
@@ -123,7 +123,7 @@ export async function buildWorkspaceDigest(
     closed,
     openActions: actions
       .filter((a) => a.status === 'open')
-      .map(({ id, projectId, text, kind, dueDate, blocking, createdAt }) => ({ id, projectId, text, kind, dueDate, blocking, createdAt })),
+      .map(({ id, projectId, text, kind, dueDate, blocking, createdAt, progress }) => ({ id, projectId, text, kind, dueDate, blocking, createdAt, progress })),
     ideas: {
       proposed: todos.filter((t) => t.status === 'proposed').map((t) => ({ id: t.id, projectId: t.projectId, text: t.text })),
       inboxCount: todos.filter((t) => t.status === 'inbox').length,

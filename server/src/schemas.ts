@@ -73,6 +73,18 @@ export const ActionDraftSchema = z.object({
   dueDate: DueDateSchema.optional(),
 })
 
+/** An 'updated' card's one-line summary of what changed (clipped to fit). */
+export const MAX_CHANGE_CHARS = 1000
+
+/** Fields an 'updated' card changed, as values (null = unset) — what they were, and what it set. */
+export const ActionFieldValuesSchema = z.object({
+  text: z.string().min(1).max(2000).optional(),
+  notes: z.string().max(10000).nullable().optional(),
+  dueDate: DueDateSchema.nullable().optional(),
+  blocking: z.boolean().nullable().optional(),
+  snoozedUntil: z.number().int().positive().nullable().optional(),
+})
+
 /**
  * An action-item card in a chat: the agent added an item (state 'added'),
  * or suggested one the user can accept ('suggested'). The draft rides along
@@ -83,9 +95,9 @@ export const ChatActionCardSchema = z.object({
   /**
    * added/suggested → dismissed/undone by the user; closed = the agent
    * resolved an existing item (undo reopens it → reopened); updated = the
-   * lead changed an existing item (see `change`).
+   * lead changed an existing item (see `change`), undone → reverted.
    */
-  state: z.enum(['added', 'suggested', 'dismissed', 'undone', 'closed', 'reopened', 'updated']),
+  state: z.enum(['added', 'suggested', 'dismissed', 'undone', 'closed', 'reopened', 'updated', 'reverted']),
   /** The item the card is about, while it exists. */
   itemId: z.string().uuid().optional(),
   /** The item's project when it isn't the chat's own (the lead works across projects). */
@@ -93,7 +105,15 @@ export const ChatActionCardSchema = z.object({
   /** Who raised it: a suggestion the user accepts is credited to them. */
   personaId: z.string().uuid().optional(),
   /** updated: what changed, in a line. */
-  change: z.string().max(400).optional(),
+  change: z.string().max(MAX_CHANGE_CHARS).optional(),
+  /**
+   * updated: the changed fields as they were and as it set them, and the
+   * progress entry it added. Undo restores a field only while it still holds
+   * what this update set, so a later edit survives.
+   */
+  before: ActionFieldValuesSchema.optional(),
+  after: ActionFieldValuesSchema.optional(),
+  progressId: z.string().uuid().optional(),
   /** closed: the answer or what was done ('declined' marks a won't-do). */
   resolution: z.string().max(4000).optional(),
   declined: z.boolean().optional(),
@@ -143,6 +163,13 @@ export const BriefSchema = z.object({
     /** The open action item it is, if any. */
     itemId: z.string().uuid().optional(),
   })).max(3),
+  /** Items the lead updated during this run (its 'updated' cards), each undoable. */
+  updates: z.array(z.object({
+    messageId: z.string().uuid(),
+    itemId: z.string().uuid(),
+    text: z.string(),
+    change: z.string(),
+  })).max(30).optional(),
   /** Chats that ended on a question or a step only you can take. */
   waiting: z.array(z.object({
     sessionId: z.string().uuid(),
@@ -487,6 +514,18 @@ export const TodoSchema = z.object({
  */
 export const ActionItemStatusSchema = z.enum(['open', 'done', 'dismissed'])
 
+export const MAX_PROGRESS_ENTRIES = 20
+export const MAX_PROGRESS_CHARS = 500
+
+/** One line on an item's progress log — the lead noting work it saw in your chats. */
+export const ActionProgressSchema = z.object({
+  id: z.string().uuid(),
+  at: z.number().int().positive(),
+  text: z.string().min(1).max(MAX_PROGRESS_CHARS),
+  /** The chat it happened in. */
+  sessionId: z.string().uuid().optional(),
+})
+
 export const ActionItemSchema = z.object({
   id: z.string().uuid(),
   projectId: z.string().uuid(),
@@ -516,6 +555,8 @@ export const ActionItemSchema = z.object({
   resolution: z.string().max(4000).optional(),
   /** Persona who raised it (absent for manually added items). */
   personaId: z.string().uuid().optional(),
+  /** Progress the lead saw, oldest first (at most MAX_PROGRESS_ENTRIES). */
+  progress: z.array(ActionProgressSchema).max(MAX_PROGRESS_ENTRIES).optional(),
   createdAt: z.number().int().positive(),
   updatedAt: z.number().int().positive(),
 })
@@ -720,6 +761,7 @@ export type ReviewerOutput = z.infer<typeof ReviewerOutputSchema>
 export type ActionItemStatus = z.infer<typeof ActionItemStatusSchema>
 export type ActionItemKind = z.infer<typeof ActionItemKindSchema>
 export type ActionItem = z.infer<typeof ActionItemSchema>
+export type ActionFieldValues = z.infer<typeof ActionFieldValuesSchema>
 export type ActionDraft = z.infer<typeof ActionDraftSchema>
 export type ChatActionCard = z.infer<typeof ChatActionCardSchema>
 export type ChatIdeaCard = z.infer<typeof ChatIdeaCardSchema>

@@ -13,7 +13,7 @@ import { AgentToolService } from '../agent-tool-registry.js'
 import { recordActionItem } from '../action-items.js'
 import { MAX_OPEN_ACTIONS } from '../standup-protocol.js'
 import type { SessionManager } from '../session-manager.js'
-import type { ActionItem, ChatMessage, Project, Session, SessionKind } from '../schemas.js'
+import { ChatActionCardSchema, type ActionItem, type ChatMessage, type Project, type Session, type SessionKind } from '../schemas.js'
 
 let tmpDir: string
 let storage: StorageLayer
@@ -145,6 +145,75 @@ describe('the lead and action items', () => {
     const dup = await cardOp(card.id, 'accept')
     expect(dup.status).toBe(409)
     expect(dup.body.error).toContain('Already on your list')
+  })
+
+  it('logs progress with the chat it happened in, and the card undoes the whole update', async () => {
+    const { other } = await leadWorld()
+    const chat = { id: randomUUID(), provider: 'claude', projectId: other.id, title: 'Q1 launch copy', createdAt: Date.now(), updatedAt: Date.now(), status: 'live', messages: [] } as Session
+    await storage.saveSession(chat)
+    const item = await storage.addActionItem({ projectId: other.id, text: 'Review the marketing doc', dueDate: '2026-12-01' })
+    const first = { id: randomUUID(), at: 1, text: 'Draft shared' }
+    await storage.updateActionItem(item.id, { progress: [first] })
+
+    const res = await tool('update_action_item', {
+      id: item.id.slice(0, 8), progress: 'Doc v2 updated; you reviewed sections 1–3.', chat: 'Q1 launch', text: 'Review sections 4–6', due_date: '2026-12-05',
+    })
+    expect(res.isError).toBe(false)
+    const [logged] = await storage.listActionItems(other.id)
+    expect(logged.text).toBe('Review sections 4–6')
+    expect(logged.progress?.map((p) => p.text)).toEqual(['Draft shared', 'Doc v2 updated; you reviewed sections 1–3.'])
+    expect(logged.progress?.at(-1)?.sessionId).toBe(chat.id)
+    expect((await tool('list_action_items', {})).text).toContain('Last progress')
+    expect((await tool('update_action_item', { id: item.id.slice(0, 8), progress: 'x', chat: 'nope' })).isError).toBe(true)
+
+    const card = cards().at(-1)!
+    expect((await cardOp(card.id, 'undo')).status).toBe(200)
+    expect(card.metadata?.action?.state).toBe('reverted')
+    const [back] = await storage.listActionItems(other.id)
+    expect(back).toMatchObject({ text: 'Review the marketing doc', dueDate: '2026-12-01', progress: [first] })
+    expect((await cardOp(card.id, 'undo')).status).toBe(409)
+  })
+
+  it('undo keeps a later edit, refuses when nothing is left, and 409s on a deleted item', async () => {
+    const { other } = await leadWorld()
+    const item = await storage.addActionItem({ projectId: other.id, text: 'A', dueDate: '2026-12-01' })
+    const id = item.id.slice(0, 8)
+    await tool('update_action_item', { id, text: 'B', due_date: '2026-12-02' })
+    const card = cards().at(-1)!
+    await tool('update_action_item', { id, text: 'C' }) // a later edit of the same field
+
+    expect((await cardOp(card.id, 'undo')).status).toBe(200)
+    expect((await storage.listActionItems(other.id))[0]).toMatchObject({ text: 'C', dueDate: '2026-12-01' })
+
+    await tool('update_action_item', { id, text: 'D' })
+    const second = cards().at(-1)!
+    await storage.updateActionItem(item.id, { text: 'E' })
+    expect((await cardOp(second.id, 'undo')).body.error).toContain('changed since')
+
+    await tool('update_action_item', { id, due_date: '2026-12-09' })
+    const third = cards().at(-1)!
+    await storage.removeActionItem(item.id)
+    expect((await cardOp(third.id, 'undo')).body.error).toContain('no longer exists')
+  })
+
+  it('clips a long change summary so the thread stays loadable', async () => {
+    const { other } = await leadWorld()
+    const item = await storage.addActionItem({ projectId: other.id, text: 'x'.repeat(1500) })
+    await tool('update_action_item', { id: item.id.slice(0, 8), text: 'y'.repeat(1500), progress: 'p'.repeat(500) })
+    expect(ChatActionCardSchema.safeParse(cards().at(-1)!.metadata?.action).success).toBe(true)
+  })
+
+  it('during the brief, logs progress and re-dates — but blocking, snooze and notes wait for the user', async () => {
+    const { other } = await leadWorld()
+    const item = await storage.addActionItem({ projectId: other.id, text: 'Sign the contract' })
+    session.messages.push({ id: randomUUID(), role: 'user', content: 'Write the brief', timestamp: Date.now(), status: 'complete', metadata: { kind: 'prompt' } })
+    const id = item.id.slice(0, 8)
+    expect((await tool('update_action_item', { id, blocking: false })).isError).toBe(true)
+    expect((await tool('update_action_item', { id, snooze_until: '2099-01-01' })).isError).toBe(true)
+    expect((await tool('update_action_item', { id, notes: 'x' })).isError).toBe(true)
+    expect((await tool('resolve_action_item', { id })).isError).toBe(true)
+    expect((await storage.listActionItems(other.id))[0].status).toBe('open')
+    expect((await tool('update_action_item', { id, progress: 'Lawyer sent comments', due_date: '2026-12-10' })).isError).toBe(false)
   })
 
   it('update_action_item rewords, dates, marks non-blocking and snoozes — the lead only', async () => {

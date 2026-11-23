@@ -1,10 +1,10 @@
 /**
  * The prompt for the lead's daily brief: the workspace digest rendered as
  * text, your Focus list and the lead's memo, plus how to report — through
- * CodePipe's tools (post_brief, add_action_item, save_memo), never by
- * changing code. See docs/lead-assistant-plan.md, "The brief".
+ * CodePipe's tools (update_action_item for progress, post_brief,
+ * add_action_item, save_memo), never by changing code. See docs/lead-assistant-plan.md, "The brief".
  */
-import type { FocusItem, Persona, Project } from '../schemas.js'
+import type { ActionItem, FocusItem, Persona, Project } from '../schemas.js'
 import { MAX_OPEN_ACTIONS } from '../standup-protocol.js'
 import type { WorkspaceDigest } from './workspace-digest.js'
 
@@ -20,6 +20,11 @@ export interface BriefPromptInput {
 }
 
 const shortId = (id: string) => id.slice(0, 8)
+/** The item's latest progress line, so the lead doesn't log the same thing twice. */
+const lastProgress = (a: Pick<ActionItem, 'progress'>) => {
+  const p = a.progress?.at(-1)
+  return p ? `\n    Last progress (${day(p.at)}): ${p.text}` : ''
+}
 /** YYYY-MM-DD in local time (like every other date the user sees). */
 const day = (ms: number) => new Date(ms).toLocaleDateString('en-CA')
 const ago = (ms: number, now: number) => {
@@ -77,7 +82,7 @@ export function buildBriefPrompt({ digest: d, lead, projects, focus, memo, now }
     : '- None.'
   const items = d.openActions.length
     ? d.openActions
-        .map((a) => `- [${shortId(a.id)}] ${projectName(a.projectId)} · ${a.kind ?? 'task'} · open ${Math.floor((now - a.createdAt) / DAY)}d${a.dueDate ? ` · due ${a.dueDate}` : ''}${a.blocking === false ? ' · non-blocking' : ''}: ${a.text}`)
+        .map((a) => `- [${shortId(a.id)}] ${projectName(a.projectId)} · ${a.kind ?? 'task'} · open ${Math.floor((now - a.createdAt) / DAY)}d${a.dueDate ? ` · due ${a.dueDate}` : ''}${a.blocking === false ? ' · non-blocking' : ''}: ${a.text}${lastProgress(a)}`)
         .join('\n')
     : '- None.'
   const ideas = [
@@ -111,17 +116,18 @@ export function buildBriefPrompt({ digest: d, lead, projects, focus, memo, now }
     `## How to report — through CodePipe's tools; text alone changes nothing`,
     '',
     `1. If an open chat matters to a Focus item or is pending without a matching action item, and its excerpt isn't enough, read more with \`read_chat\` or \`search_chat\` (its [id]). At most 4 such reads.`,
-    `2. Call \`post_brief\` exactly once — the brief the user sees:`,
+    `2. Keep the action items current: when a chat or commit shows progress on an open item, log it with \`update_action_item\` (\`progress\`: one line on what moved, \`chat\`: where), and reword or re-date the item when the work shows it ("Review the doc" → "Review sections 4–6"). Skip what its last progress already says. Never close an item: when it looks done, put it under \`clean_up\`.`,
+    `3. Call \`post_brief\` exactly once — the brief the user sees:`,
     `   - \`top3\`: today's three most important things, ranked against Focus — open action items count, not just chats. Link the chat (\`chat\`) or the action item (\`item\`) by its [id].`,
     `   - \`waiting_on_you\`: each open chat that ended on a question or a step only the user can take — quote the question.`,
     `   - \`focus_check\`: compare their messages and commits with Focus (to suggest dropping an item, give its number as \`focus_item\`). \`on_plan\` when they match; \`shifted\` when other work clearly dominated for days (check the 7-day numbers and your memo, not one day) — then suggest the Focus change; \`mixed\` when you can't tell — then ASK how they want to prioritize in \`question\`. Never change Focus yourself.`,
     `   - \`done\`: what finished since the last brief — closed chats, shipped commits.`,
     `   - \`clean_up\`: open action items that look stale or settled by what you read (close or snooze, with why).`,
-    `3. For pending work that no action item tracks, suggest one with \`add_action_item\` (user_requested: false, \`project\` set, or omitted for Workspace — business and partnership work that belongs to no product). Don't duplicate items that already exist. Your suggestions count toward each project's queue of ${MAX_OPEN_ACTIONS} team items: at the limit, suggest only what beats an item already waiting, and name that one under \`clean_up\`.`,
-    `4. Call \`save_memo\`: what you're watching for the next brief (e.g. a shift you saw but aren't sure of yet).`,
-    `5. Then reply in 1–3 plain sentences — it's what the notification shows. Don't repeat the brief.`,
+    `4. For pending work that no action item tracks, suggest one with \`add_action_item\` (user_requested: false, \`project\` set, or omitted for Workspace — business and partnership work that belongs to no product). Don't duplicate items that already exist. Your suggestions count toward each project's queue of ${MAX_OPEN_ACTIONS} team items: at the limit, suggest only what beats an item already waiting, and name that one under \`clean_up\`.`,
+    `5. Call \`save_memo\`: what you're watching for the next brief (e.g. a shift you saw but aren't sure of yet).`,
+    `6. Then reply in 1–3 plain sentences — it's what the notification shows. Don't repeat the brief.`,
     '',
-    `You never change code or files. Work happens in project chats: if something needs doing in a project, the user can ask you to open one (\`open_project_chat\`) with a drafted prompt they send themselves.`,
+    `You never change code or files. Work happens in project chats: if something needs doing in a project, the user can ask you to open one (\`open_project_chat\`) with a drafted prompt, or to refine or implement an idea on a board — you do those only when they say so, never in the brief.`,
   ]
     .filter((line, i, all) => !(line === '' && all[i - 1] === ''))
     .join('\n')

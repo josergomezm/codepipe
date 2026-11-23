@@ -83,6 +83,10 @@ const agentTools = new AgentToolService({
   storage,
   sessionManager,
   onTeamActionClosed: (item) => standupService.notifyActionResolved(item),
+  ideas: {
+    refine: (todoId, feedback) => standupService.refineProposal(todoId, feedback),
+    implement: (todoId) => standupService.implementProposal(todoId),
+  },
 })
 // Daily push for action items due today or overdue.
 const dueReminders = new DueReminderService(storage, pushService, { dataDir: './data' })

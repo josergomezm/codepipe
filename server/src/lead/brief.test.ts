@@ -132,6 +132,7 @@ describe('post_brief', () => {
   it('posts a brief card with resolved chats, items, projects and computed activity', async () => {
     const { partners, chat, item } = await world()
     const leadSession = (await lead.ensureLeadSession())!
+    await tools.call(leadSession, 'update_action_item', { id: item.id.slice(0, 8), progress: 'Discussed 70/30 in Partners MVP', chat: chat.id.slice(0, 8) })
     const res = await tools.call(leadSession, 'post_brief', {
       headline: 'Partners is the day.',
       top3: [
@@ -148,6 +149,7 @@ describe('post_brief', () => {
     const brief = card.metadata!.brief!
     expect(brief.top3[0].sessionId).toBe(chat.id)
     expect(brief.top3[1].itemId).toBe(item.id)
+    expect(brief.updates).toEqual([expect.objectContaining({ itemId: item.id, text: 'Pick the commission split', change: 'progress: Discussed 70/30 in Partners MVP' })])
     expect(brief.waiting).toEqual([{ sessionId: chat.id, title: 'Partners MVP', projectName: 'Partners App', question: 'Do you want me to deploy it?' }])
     expect(brief.focusCheck.suggestions[0].projectId).toBe(partners.id)
     expect(brief.cleanUp[0]).toMatchObject({ itemId: item.id, text: 'Pick the commission split', projectName: 'Partners App', suggestion: 'snooze' })

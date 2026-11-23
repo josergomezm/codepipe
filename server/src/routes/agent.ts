@@ -10,6 +10,7 @@ import {
   type ChatIdeaCard,
 } from '../schemas.js'
 import { recordActionItem } from '../action-items.js'
+import type { ActionItem } from '../schemas.js'
 import { log } from '../logger.js'
 
 /**
@@ -23,8 +24,8 @@ import { log } from '../logger.js'
  *
  *   POST /api/agent/sessions/:sessionId/messages/:messageId/card   { op }
  *     The user acting on a card a tool posted: accept or dismiss a suggested
- *     action item, undo an added one, reopen one the agent closed, or undo
- *     an added idea. Card state lives on the message, so it survives reloads.
+ *     action item, undo an added one, reopen one the agent closed, revert
+ *     the lead's update to one, or undo an added idea. Card state lives on the message, so it survives reloads.
  */
 export function createAgentRoutes(
   storage: IStorageLayer,
@@ -127,6 +128,24 @@ export function createAgentRoutes(
           if (card.state !== 'suggested') return { error: 'Only a suggestion can be dismissed' }
           return { ...card, state: 'dismissed' }
         case 'undo': {
+          if (card.state === 'updated') {
+            // Put back what the lead changed and drop the progress line it
+            // added — but only fields still as it set them: a later edit wins.
+            if (!item) return { error: 'That item no longer exists' }
+            const restore: Partial<ActionItem> = {}
+            const current = item as Record<string, unknown>
+            for (const [key, was] of Object.entries(card.before ?? {})) {
+              const set = (card.after as Record<string, unknown> | undefined)?.[key] ?? null
+              if ((current[key] ?? null) === set) (restore as Record<string, unknown>)[key] = was ?? undefined
+            }
+            if (card.progressId && item.progress?.some((p) => p.id === card.progressId)) {
+              const progress = item.progress.filter((p) => p.id !== card.progressId)
+              restore.progress = progress.length ? progress : undefined
+            }
+            if (!Object.keys(restore).length) return { error: 'That item has changed since — nothing of this update is left to undo' }
+            const reverted = await storage.updateActionItem(item.id, restore)
+            return { ...card, state: 'reverted', draft: { ...card.draft, text: reverted.text } }
+          }
           if (card.state === 'closed') {
             // Reopen what the agent closed (if it still exists and is closed).
             if (!item) return { error: 'That item no longer exists' }

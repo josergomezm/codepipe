@@ -8,6 +8,7 @@ import { useSessionsStore } from '@/stores/sessions'
 import PersonaAvatar from '@/components/PersonaAvatar.vue'
 import * as api from '@/api/client'
 import type { ActionItem } from '@/api/client'
+import { dayLabel } from '@/lib/files'
 
 /**
  * One action item, answerable in place: tappable options for decisions,
@@ -61,6 +62,12 @@ const snoozed = computed(() => !!props.item.snoozedUntil && props.item.snoozedUn
 /** Closed during this visit — show where the answer went. */
 const justClosed = computed(() => !isOpen.value && teamStore.recentlyClosedIds.has(props.item.id))
 const longNotes = computed(() => (props.item.notes?.length ?? 0) > 160)
+const showProgress = ref(false)
+
+function openProgressChat(sessionId: string) {
+  void sessionStore.selectSession(sessionId)
+  router.push('/')
+}
 
 /** Today as YYYY-MM-DD in local time — what a due date is compared against. */
 function localToday(): string {
@@ -410,6 +417,28 @@ function openBoard() {
           </div>
         </template>
       </div>
+
+      <!-- Progress the lead saw in your chats, newest first -->
+      <ul v-if="isOpen && item.progress?.length" class="mt-2 flex flex-col gap-1 border-l-2 border-violet-200 pl-2.5 dark:border-violet-800/60">
+        <li
+          v-for="p in (showProgress ? [...item.progress].reverse() : item.progress.slice(-1))"
+          :key="p.id"
+          class="text-xs text-gray-600 dark:text-gray-400"
+        >
+          <span class="text-gray-400 dark:text-gray-500">{{ dayLabel(p.at) }} · </span>{{ p.text }}
+          <button
+            v-if="p.sessionId && sessionStore.sessions.some((s) => s.id === p.sessionId)"
+            class="ml-1 text-violet-600 hover:underline dark:text-violet-400"
+            @click="openProgressChat(p.sessionId)"
+          >chat →</button>
+        </li>
+        <li v-if="item.progress.length > 1">
+          <button
+            class="text-[11px] text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+            @click="showProgress = !showProgress"
+          >{{ showProgress ? 'Latest only' : `All progress (${item.progress.length})` }}</button>
+        </li>
+      </ul>
 
       <!-- Step-by-step guide (tasks) -->
       <ol v-if="isOpen && item.steps?.length" class="mt-2 flex flex-col gap-1">

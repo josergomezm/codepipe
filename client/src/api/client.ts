@@ -294,9 +294,9 @@ export interface ChatActionCard {
   draft: ActionDraft
   /**
    * closed = the agent resolved an existing item; undo reopens it (reopened).
-   * updated = the lead changed an existing item (see change).
+   * updated = the lead changed an existing item (see change); undo → reverted.
    */
-  state: 'added' | 'suggested' | 'dismissed' | 'undone' | 'closed' | 'reopened' | 'updated'
+  state: 'added' | 'suggested' | 'dismissed' | 'undone' | 'closed' | 'reopened' | 'updated' | 'reverted'
   /** The item the card is about, while it exists. */
   itemId?: string
   /** The item's project when it isn't the chat's own (the lead's cards). */
@@ -305,6 +305,11 @@ export interface ChatActionCard {
   personaId?: string
   /** updated: what changed, in a line. */
   change?: string
+  /** updated: the changed fields as they were / as it set them (null = unset), for undo. */
+  before?: Record<string, string | number | boolean | null>
+  after?: Record<string, string | number | boolean | null>
+  /** updated: the progress entry it added. */
+  progressId?: string
   /** closed: the answer or what was done. */
   resolution?: string
   /** closed as won't-do. */
@@ -343,6 +348,8 @@ export interface ActionItem {
   resolution?: string
   /** Persona who raised it (absent for manually added items). */
   personaId?: string
+  /** Progress the lead saw, oldest first. */
+  progress?: { id: string; at: number; text: string; sessionId?: string }[]
   createdAt: number
   updatedAt: number
 }
@@ -1043,6 +1050,8 @@ export interface Brief {
   since: number
   headline: string
   top3: { text: string; why: string; sessionId?: string; itemId?: string }[]
+  /** Items the lead updated in this run — its 'updated' cards, each undoable. */
+  updates?: { messageId: string; itemId: string; text: string; change: string }[]
   waiting: { sessionId: string; title: string; projectName: string; question: string }[]
   focusCheck: {
     verdict: 'on_plan' | 'shifted' | 'mixed'

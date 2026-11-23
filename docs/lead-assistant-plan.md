@@ -69,7 +69,7 @@ quietest chats shrink to first message + last turn.
 One turn in the lead's session reads the digest and writes the brief as
 structured JSON (rendered by `BriefingCard`) plus a short message:
 
-- **Today**: top 3, ranked against Focus.
+- **Today**: top 3, ranked against Focus (a chat or an action item).
 - **Waiting on you**: each chat's open question, quoted, with a link.
 - **Focus check**: your 24h activity vs. Focus. When they disagree, the lead
   decides (clear, sustained shift → suggests a Focus change) or **asks how
@@ -77,6 +77,8 @@ structured JSON (rendered by `BriefingCard`) plus a short message:
 - **Done since last brief**: closed chats + commits.
 - **Suggested action items**: pending things not tracked yet (project or
   Workspace); items that look resolved → suggest closing.
+- **Updated**: progress the lead logged on items (and rewords / new due
+  dates the work showed), each with Undo.
 - **Clean up**: stale or settled action items (close or snooze).
 
 It saves a memo for next time (what it's watching, e.g. "partnerships 3
@@ -116,10 +118,20 @@ alongside the commits, and can mark related action items resolved.
   **read-only** launch settings (plan mode, no edit/shell tools).
 - Lead-only tools: `list_open_chats`, `read_chat`, `search_chat`,
   `post_brief`, `update_focus`, `save_memo`, `open_project_chat(project,
-  title, prompt)` (it creates the chat with the prompt in the composer; you
-  send it), plus `list_action_items` / `add_action_item` (project or
-  Workspace) / `resolve_action_item` / `update_action_item` (reword, due
-  date, blocking, snooze — only when you ask) across all projects.
+  title, prompt, send)` (by default the prompt waits in the chat's composer;
+  `send: true` sends it on your go-ahead), `list_ideas` / `run_idea` (the
+  board's Refine / Implement, on your word), plus `list_action_items` /
+  `add_action_item` (project or Workspace) / `resolve_action_item` /
+  `update_action_item` across all projects.
+- **Suggest, and act on your word.** Sending a prompt and `run_idea` refuse
+  inside the brief's own turn (its prompt is an internal message), so they
+  only run in a turn you started. In the brief the lead keeps your items
+  current itself: `update_action_item` logs progress it saw (a dated line
+  on the item's progress log, linked to the chat) and rewords or re-dates
+  the item when the work shows it; the brief's "Updated" section lists each
+  change with Undo (its card keeps what the fields were). Blocking, snooze
+  and notes change only when you ask. It never closes an item — a done-
+  looking one goes under clean-up for your one tap.
 - Items the lead suggests on its own are credited to it and count toward
   that project's team queue (`MAX_OPEN_ACTIONS`); at the limit it must name
   which waiting item to clean up instead. Items you ask it to add are yours
@@ -144,8 +156,8 @@ alongside the commits, and can mark related action items resolved.
    the last brief and gives the lead one turn (`lead/brief-prompt.ts`); the
    lead posts the brief with the `post_brief` tool (every chat / item /
    project reference resolved, activity computed by code, stored as a
-   `brief` card), suggests untracked work with `add_action_item`, and saves
-   its memo. `lastBriefAt` moves to the run's start only when a brief was
+   `brief` card), logs progress on items with `update_action_item`,
+   suggests untracked work with `add_action_item`, and saves its memo. `lastBriefAt` moves to the run's start only when a brief was
    posted. Scheduled daily at 9 AM by default (`PUT /api/lead/schedule`,
    weekdays-only or off), at most one scheduled attempt a day; "Brief me
    now" is `POST /api/lead/brief`. Push comes from the turn's end like any

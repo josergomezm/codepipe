@@ -70,7 +70,9 @@ function actionView(card: ChatActionCard): CardView {
       }
     case 'updated':
       return { ...base, tone: 'green', label: '✓ Updated on your list', struck: false, details: card.change ? [card.change] : [],
-        buttons: [{ label: 'View list', to: '/actions', primary: true }] }
+        buttons: [{ label: 'View list', to: '/actions', primary: true }, { label: 'Undo', op: 'undo' }] }
+    case 'reverted':
+      return { ...base, tone: 'gray', label: 'Update undone', struck: true, details: card.change ? [card.change] : [], buttons: [{ label: 'View list', to: '/actions' }] }
     case 'reopened':
       return { ...base, tone: 'gray', label: 'Reopened on your list', struck: false, buttons: [{ label: 'View list', to: '/actions' }] }
     case 'undone':
