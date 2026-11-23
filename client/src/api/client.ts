@@ -945,3 +945,14 @@ export interface ReplyUsage {
   cacheWriteTokens: number
   outputTokens: number
 }
+
+/** `listable: false` = nothing to pick from (can't enumerate, not installed) — use free text. */
+export interface ProviderModels {
+  listable: boolean
+  models: ModelOption[]
+}
+
+/** A provider's model list for pickers outside a live session (cached server-side). */
+export function fetchProviderModels(provider: ProviderType): Promise<ProviderModels> {
+  return request<ProviderModels>(`/api/provider-settings/${provider}/models`)
+}

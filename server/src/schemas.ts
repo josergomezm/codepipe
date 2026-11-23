@@ -268,6 +268,12 @@ export const TodoProposalSchema = z.object({
   brief: z.string().optional(),
   /** Persona who proposed it. */
   personaId: z.string().uuid().optional(),
+/** GET /api/provider-settings/:provider/models — `listable: false` = nothing to pick, use free text. */
+export const ProviderModelsSchema = z.object({
+  listable: z.boolean(),
+  models: z.array(ModelOptionSchema),
+})
+
 })
 
 /**
@@ -538,3 +544,4 @@ export type ChatActionCard = z.infer<typeof ChatActionCardSchema>
 export type ChatIdeaCard = z.infer<typeof ChatIdeaCardSchema>
 export type Persona = z.infer<typeof PersonaSchema>
 export type StandupState = z.infer<typeof StandupStateSchema>
+export type ProviderModels = z.infer<typeof ProviderModelsSchema>

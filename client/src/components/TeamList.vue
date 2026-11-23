@@ -3,11 +3,13 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTeamStore } from '@/stores/team'
 import { useUiStore } from '@/stores/ui'
+import { useLeadStore } from '@/stores/lead'
 import PersonaAvatar from '@/components/PersonaAvatar.vue'
 import TeamSettingsModal from '@/components/TeamSettingsModal.vue'
 
 const teamStore = useTeamStore()
 const ui = useUiStore()
+const leadInbox = useLeadStore()
 const router = useRouter()
 
 const showSettings = ref(false)
@@ -51,12 +53,21 @@ function openPersona(personaId: string) {
     >
       <PersonaAvatar :persona="persona" />
       <div class="min-w-0 flex-1">
-        <div class="truncate text-sm font-medium text-gray-700 dark:text-gray-300">
+        <div
+          class="truncate text-sm text-gray-700 dark:text-gray-300"
+          :class="persona.isLead && leadInbox.unreadCount ? 'font-semibold text-gray-900 dark:text-gray-50' : 'font-medium'"
+        >
           {{ persona.name }}
           <span v-if="persona.isLead" class="ml-1 rounded-full bg-purple-100 px-1.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/40 dark:text-purple-300">lead</span>
         </div>
-        <div class="truncate text-xs text-gray-400 dark:text-gray-500">{{ persona.role }}</div>
+        <div v-if="persona.isLead && leadInbox.unreadCount" class="truncate text-xs font-medium text-blue-600 dark:text-blue-400">{{ leadInbox.unreadLabel }}</div>
+        <div v-else class="truncate text-xs text-gray-400 dark:text-gray-500">{{ persona.role }}</div>
       </div>
+      <span
+        v-if="persona.isLead && leadInbox.unreadCount"
+        class="min-w-[18px] shrink-0 rounded-full bg-blue-600 px-1.5 text-center text-[11px] font-semibold leading-[18px] text-white"
+        :title="`${leadInbox.unreadCount} unread from ${persona.name}`"
+      >{{ leadInbox.unreadCount }}</span>
     </button>
 
     <TeamSettingsModal v-if="showSettings" @close="showSettings = false" />

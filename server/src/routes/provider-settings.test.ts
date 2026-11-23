@@ -10,6 +10,8 @@ import { ProviderSettingsStore } from '../provider-settings-store.js'
 import { createProviderSettingsRoutes } from './provider-settings.js'
 import { createProjectRoutes } from './projects.js'
 import { createPersonaRoutes } from './personas.js'
+import { registerAdapter, clearAdapters } from '../adapters/registry.js'
+import type { ICLIAdapter } from '../adapters/types.js'
 import type { DevServerManager } from '../dev-server-manager.js'
 import type { ServiceManager } from '../service-manager.js'
 
@@ -160,5 +162,32 @@ describe('project and persona overrides', () => {
 
     expect((await request(app).get('/api/provider-settings/resolve').query({ provider: 'claude', projectId: 'missing' })).status).toBe(404)
     expect((await request(app).get('/api/provider-settings/resolve').query({ provider: 'codex' })).status).toBe(400)
+  })
+})
+
+describe('GET /api/provider-settings/:provider/models', () => {
+  afterEach(() => clearAdapters())
+
+  it('lists the CLI models when the adapter can enumerate them', async () => {
+    registerAdapter('kiro', () => ({ listModels: async () => [{ id: 'auto', name: 'Auto (1x)' }] }) as unknown as ICLIAdapter)
+    const res = await request(app).get('/api/provider-settings/kiro/models')
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ listable: true, models: [{ id: 'auto', name: 'Auto (1x)' }] })
+  })
+
+  it('reports listable: false when there is nothing to pick from', async () => {
+    // Can't enumerate (Claude Code)
+    registerAdapter('claude', () => ({}) as unknown as ICLIAdapter)
+    // Not installed: the real adapters resolve [] rather than throw
+    registerAdapter('gemini', () => ({ listModels: async () => [] }) as unknown as ICLIAdapter)
+    // Throws anyway
+    registerAdapter('kiro', () => ({ listModels: async () => { throw new Error('boom') } }) as unknown as ICLIAdapter)
+    for (const p of ['claude', 'gemini', 'kiro']) {
+      expect((await request(app).get(`/api/provider-settings/${p}/models`)).body).toEqual({ listable: false, models: [] })
+    }
+  })
+
+  it('400s on an unknown provider', async () => {
+    expect((await request(app).get('/api/provider-settings/nope/models')).status).toBe(400)
   })
 })

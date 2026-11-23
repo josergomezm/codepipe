@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTeamStore } from '@/stores/team'
 import { useProjectsStore } from '@/stores/projects'
 import { useUiStore } from '@/stores/ui'
 import PersonaAvatar from '@/components/PersonaAvatar.vue'
+import LeadThread from '@/components/briefing/LeadThread.vue'
 import { providerLabel, type ActionItem, type Todo, type TodoStatus } from '@/api/client'
 
 const route = useRoute()
@@ -16,11 +17,26 @@ const ui = useUiStore()
 const personaId = computed(() => String(route.params.personaId ?? ''))
 const persona = computed(() => teamStore.personasById.get(personaId.value) ?? null)
 
+/**
+ * The lead is your assistant: their page opens on Chat (their workspace
+ * thread, where the daily brief lands). Ledger is the track record every
+ * member has. Other members get a Chat tab once they have threads.
+ */
+type Tab = 'chat' | 'ledger'
+const tab = computed<Tab>(() => (persona.value?.isLead && route.query.tab !== 'ledger' ? 'chat' : 'ledger'))
+function setTab(t: Tab) {
+  router.replace({ query: t === 'chat' ? {} : { tab: t } })
+}
+
 onMounted(() => {
   teamStore.fetchPersonas()
+})
+// The Chat tab loads what it needs itself; the ledger needs ideas and items.
+watch(tab, (t) => {
+  if (t !== 'ledger') return
   teamStore.fetchTodos()
   teamStore.fetchActions()
-})
+}, { immediate: true })
 
 const STATUS_LABELS: Record<TodoStatus, string> = {
   inbox: 'Inbox',
@@ -143,10 +159,23 @@ function openBoard(projectId: string) {
         </div>
       </template>
       <span v-else class="text-sm text-gray-500 dark:text-gray-400">Team member not found</span>
+      <div class="flex-1" />
+      <!-- Tabs -->
+      <div v-if="persona?.isLead" class="flex rounded-lg bg-gray-100 p-0.5 text-xs dark:bg-gray-800">
+        <button
+          v-for="t in (['chat', 'ledger'] as const)"
+          :key="t"
+          class="rounded-md px-2.5 py-1 font-medium transition"
+          :class="tab === t ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'"
+          @click="setTab(t)"
+        >{{ t === 'chat' ? 'Chat' : 'Ledger' }}</button>
+      </div>
     </div>
 
-    <!-- Content -->
-    <div v-if="persona" class="min-h-0 flex-1 overflow-y-auto">
+    <LeadThread v-if="persona?.isLead && tab === 'chat'" :lead="persona" />
+
+    <!-- Ledger -->
+    <div v-else-if="persona" class="min-h-0 flex-1 overflow-y-auto">
       <div class="mx-auto flex max-w-2xl flex-col gap-6 px-4 py-6">
         <!-- Performance numbers -->
         <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">

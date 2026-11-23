@@ -1,7 +1,7 @@
 import { Router } from 'express'
 
 import type { IStorageLayer } from '../storage.js'
-import { ProviderTypeSchema, type ProviderType } from '../schemas.js'
+import { ProviderTypeSchema, type ProviderModels, type ProviderType } from '../schemas.js'
 import {
   PROVIDER_SETTINGS_SPECS,
   getProviderSettingsSpec,
@@ -13,6 +13,7 @@ import {
 } from '../provider-settings.js'
 import type { ProviderSettingsStore } from '../provider-settings-store.js'
 import { log } from '../logger.js'
+import { getAdapter } from '../adapters/registry.js'
 
 /**
  * Provider launch settings: the schema (what each CLI can be configured
@@ -78,6 +79,27 @@ export function createProviderSettingsRoutes(store: ProviderSettingsStore, stora
       log.error('api', 'Failed to resolve provider settings', err)
       res.status(500).json({ error: 'Failed to resolve provider settings' })
     }
+  })
+
+  // GET /api/provider-settings/:provider/models — the CLI's model list, for
+  // pickers with no live session (e.g. a persona's model). `listable: false`
+  // when there's nothing to pick from: the CLI can't enumerate (Claude Code),
+  // isn't installed (the adapters return []), or throws — the UI falls back
+  // to a text box.
+  router.get('/:provider/models', async (req, res) => {
+    const provider = ProviderTypeSchema.safeParse(req.params.provider)
+    if (!provider.success) { res.status(400).json({ error: 'Unknown provider' }); return }
+    const adapter = getAdapter(provider.data)
+    let models: ProviderModels['models'] = []
+    if (adapter?.listModels) {
+      try {
+        models = await adapter.listModels()
+      } catch (err) {
+        log.warn('api', `listModels failed for ${provider.data}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    const body: ProviderModels = { listable: models.length > 0, models }
+    res.json(body)
   })
 
   // PUT /api/provider-settings/:provider — replace the global layer

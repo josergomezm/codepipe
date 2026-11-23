@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useTeamStore } from '@/stores/team'
 import PersonaAvatar from '@/components/PersonaAvatar.vue'
 import ProviderOverridesPanel from '@/components/ProviderOverridesPanel.vue'
+import ProviderModelSelect from '@/components/ProviderModelSelect.vue'
 import { providerLabel, PROVIDER_LABELS, SELECTABLE_PROVIDERS, type Persona, type ProviderType, type ProviderSettingsOverrides } from '@/api/client'
 
 const emit = defineEmits<{ close: [] }>()
@@ -201,19 +202,15 @@ function close() {
             <div class="grid grid-cols-2 gap-2">
               <select
                 v-model="provider"
+                @change="model = ''"
                 class="rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 focus:border-blue-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
               >
                 <option v-for="p in SELECTABLE_PROVIDERS" :key="p" :value="p">{{ PROVIDER_LABELS[p] }}</option>
               </select>
-              <input
-                v-model="model"
-                type="text"
-                placeholder="Model (optional)"
-                class="rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-900 placeholder:text-gray-400 focus:border-blue-500 focus:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
-              />
+              <ProviderModelSelect v-model="model" :provider="provider" />
             </div>
             <p class="text-[11px] text-gray-400 dark:text-gray-500">
-              Provider and model are used when this persona leads — the lead's CLI runs the whole standup.
+              Used for this persona's reviews, and for the whole standup when they lead.
             </p>
             <label class="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
               <input v-model="isLead" type="checkbox" class="rounded" />
