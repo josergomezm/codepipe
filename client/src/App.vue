@@ -10,6 +10,7 @@ import { startEvents } from '@/composables/useEvents'
 import AppSidebar from '@/components/AppSidebar.vue'
 import ActionQuickAddModal from '@/components/ActionQuickAddModal.vue'
 import UsageModal from '@/components/UsageModal.vue'
+import UndoToast from '@/components/UndoToast.vue'
 
 const sessionsStore = useSessionsStore()
 const leadStore = useLeadStore()
@@ -120,5 +121,6 @@ onUnmounted(() => {
     </main>
     <ActionQuickAddModal />
     <UsageModal />
+    <UndoToast />
   </div>
 </template>

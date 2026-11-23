@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTeamStore } from '@/stores/team'
+import { useUiStore } from '@/stores/ui'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import PersonaAvatar from '@/components/PersonaAvatar.vue'
@@ -25,6 +26,7 @@ const props = withDefaults(
 const emit = defineEmits<{ navigate: [] }>()
 
 const teamStore = useTeamStore()
+const ui = useUiStore()
 const projectStore = useProjectsStore()
 const sessionStore = useSessionsStore()
 const router = useRouter()
@@ -170,8 +172,12 @@ function snooze(days: number | null) {
   return teamStore.snoozeAction(props.item.id, until.getTime())
 }
 
-function toggleDone() {
-  teamStore.setActionStatus(props.item.id, isOpen.value ? 'done' : 'open')
+/** Tick a task done (or reopen it); ticking offers an undo, in case of a mis-tap. */
+async function toggleDone() {
+  const id = props.item.id
+  const closing = isOpen.value
+  const ok = await teamStore.setActionStatus(id, closing ? 'done' : 'open')
+  if (ok && closing) ui.offerUndo('Marked done', () => teamStore.setActionStatus(id, 'open'))
 }
 
 async function openSession(sessionId: string) {
@@ -235,8 +241,21 @@ function openBoard() {
       ? 'border-gray-200 dark:border-gray-700'
       : 'border-gray-100 bg-gray-50/60 dark:border-gray-800 dark:bg-gray-900/40'"
   >
+    <!--
+      An open decision closes by answering it (below), never by ticking —
+      a tick would close it with no answer for the team. Its marker says so.
+    -->
+    <span
+      v-if="isOpen && isDecision"
+      class="-m-2 flex h-9 w-9 shrink-0 items-center justify-center"
+      title="Answer below to close this"
+      aria-hidden="true"
+    >
+      <span class="flex h-5 w-5 items-center justify-center rounded-full border-2 border-dashed border-purple-300 text-[11px] font-bold text-purple-500 dark:border-purple-700 dark:text-purple-400">?</span>
+    </span>
     <!-- Done check: a round, roomy target (the hit area is larger than the circle) -->
     <button
+      v-else
       type="button"
       role="checkbox"
       :aria-checked="!isOpen"

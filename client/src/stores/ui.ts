@@ -60,7 +60,19 @@ export const useUiStore = defineStore('ui', () => {
     fileRequest.value = { path, nonce: Date.now() }
   }
 
+  /** A one-tap action that can be taken back (see UndoToast.vue). */
+  const undo = ref<{ id: number; text: string; run: () => unknown } | null>(null)
+
+  function offerUndo(text: string, run: () => unknown) {
+    undo.value = { id: Date.now(), text, run }
+  }
+
+  function dismissUndo() {
+    undo.value = null
+  }
+
   return {
+    undo, offerUndo, dismissUndo,
     fileRequest, openFile,
     sidebarOpen, darkMode, toggleSidebar, closeSidebar, toggleDarkMode,
     quickAdd, openQuickAdd, closeQuickAdd,
