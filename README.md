@@ -135,6 +135,7 @@ The server reads these environment variables:
 - **Changes tab** — every uncommitted file in the chat's project (staged, unstaged, untracked) with +/- counts and an inline diff; refreshes when the agent finishes a turn
 - **Terminal tab** — a real shell (PowerShell on Windows, `$SHELL` elsewhere; override with `CODEPIPE_SHELL`) in the project folder. It keeps running across tabs, reloads and devices, and replays its scrollback when you reconnect; a key bar adds Tab/Esc/Ctrl+C/arrows on phones
 - **Stop button** to cancel an in-flight turn, and input **queueing** so messages sent mid-turn run in order instead of interrupting
+- **"Your turn" / "Pending" chips** on chats in the sidebar — when an agent's last reply asks you something, or leaves work uncommitted, undeployed or blocked
 - **Per-session model selection** — a dynamic dropdown for providers that advertise their models (Kiro, Antigravity), a free-text override for those that don't (Claude Code)
 - **Installable PWA** with **push notifications** when an agent finishes — use it on your phone like Slack
 - Remote access over Tailscale (HTTPS, private tailnet, no public exposure)

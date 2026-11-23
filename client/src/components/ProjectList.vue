@@ -482,6 +482,17 @@ async function stopDevServer(id: string) {
             />
           </template>
 
+          <!-- How the last turn ended: it asked you something, or left work pending -->
+          <span
+            v-if="session.attention?.state === 'waiting_on_you'"
+            class="shrink-0 rounded bg-amber-100 px-1 py-0.5 text-[9px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+            :title="session.attention.question ?? 'It asked you something'"
+          >Your turn</span>
+          <span
+            v-else-if="session.attention?.state === 'pending_action'"
+            class="shrink-0 rounded bg-sky-100 px-1 py-0.5 text-[9px] font-medium text-sky-700 dark:bg-sky-900/40 dark:text-sky-300"
+            title="Left work pending — uncommitted, not deployed, or blocked"
+          >Pending</span>
           <span
             v-if="session.kind === 'team'"
             class="shrink-0 rounded bg-purple-100 px-1 py-0.5 text-[9px] font-medium text-purple-700 dark:bg-purple-900/40 dark:text-purple-300"

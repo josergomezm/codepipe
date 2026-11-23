@@ -150,8 +150,13 @@ async function baseRef(cwd: string): Promise<string> {
 }
 
 async function isRepo(cwd: string): Promise<boolean> {
-  const inside = await git(cwd, ['rev-parse', '--is-inside-work-tree'])
-  return inside.code === 0 && inside.stdout.trim() === 'true'
+  try {
+    const inside = await git(cwd, ['rev-parse', '--is-inside-work-tree'])
+    return inside.code === 0 && inside.stdout.trim() === 'true'
+  } catch {
+    // git couldn't start here — typically the folder no longer exists.
+    return false
+  }
 }
 
 async function statusEntries(cwd: string) {
@@ -268,5 +273,66 @@ export async function getFileDiff(cwd: string, path: string): Promise<FileDiff |
     diff: truncated ? out.slice(0, MAX_DIFF_BYTES) : out,
     truncated,
     binary: /^Binary files .* differ$/m.test(out),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Activity since a point in time (the lead's brief)
+// ---------------------------------------------------------------------------
+
+export interface RepoCommit {
+  hash: string
+  subject: string
+  /** Commit time, ms. */
+  at: number
+}
+
+export type RepoActivity =
+  | { isRepo: false }
+  | {
+      isRepo: true
+      branch: string | null
+      /** Commits on HEAD since `since`, newest first (capped). */
+      commits: RepoCommit[]
+      /** Commits not on the upstream yet; null when the branch has no upstream. */
+      unpushed: number | null
+      /** Uncommitted files (staged, unstaged, untracked). */
+      uncommitted: number
+    }
+
+/** Most commits listed per repo; the brief needs the shape, not the log. */
+const MAX_ACTIVITY_COMMITS = 30
+
+/** `git log --format=%h<US>%ct<US>%s` lines → commits. */
+export function parseLogLines(out: string): RepoCommit[] {
+  return out
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [hash, ct, ...subject] = line.split('\x1f')
+      return { hash, at: Number(ct) * 1000, subject: subject.join('\x1f') }
+    })
+    .filter((c) => c.hash && Number.isFinite(c.at))
+}
+
+/**
+ * What happened in a repo since `since` (ms): commits on HEAD, how many are
+ * unpushed, and how many files are uncommitted. All read-only.
+ */
+export async function getRepoActivity(cwd: string, since: number): Promise<RepoActivity> {
+  if (!(await isRepo(cwd))) return { isRepo: false }
+  const [log, branch, ahead, uncommitted] = await Promise.all([
+    git(cwd, ['log', `--since=@${Math.floor(since / 1000)}`, `--max-count=${MAX_ACTIVITY_COMMITS}`, '--no-merges', '--format=%h%x1f%ct%x1f%s']),
+    git(cwd, ['branch', '--show-current']),
+    // Fails (non-zero) when there's no upstream — reported as null.
+    git(cwd, ['rev-list', '--count', '@{upstream}..HEAD']),
+    countChanges(cwd),
+  ])
+  return {
+    isRepo: true,
+    branch: branch.code === 0 ? branch.stdout.trim() || null : null,
+    commits: log.code === 0 ? parseLogLines(log.stdout) : [],
+    unpushed: ahead.code === 0 ? Number(ahead.stdout.trim()) || 0 : null,
+    uncommitted: uncommitted ?? 0,
   }
 }

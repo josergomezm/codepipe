@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process'
 import { mkdtempSync, writeFileSync, rmSync, unlinkSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { parsePorcelainZ, parseNumstatZ, getChanges, getFileDiff, countChanges } from './git-changes.js'
+import { parsePorcelainZ, parseNumstatZ, getChanges, getFileDiff, countChanges, getRepoActivity, parseLogLines } from './git-changes.js'
 
 describe('parsePorcelainZ', () => {
   it('parses statuses, staging, spaces in names and renames', () => {
@@ -108,6 +108,80 @@ describe('getChanges / getFileDiff (real repo)', () => {
       expect(await getChanges(plain)).toEqual({ isRepo: false })
     } finally {
       rmSync(plain, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('parseLogLines', () => {
+  it('returns nothing for empty output, and drops malformed lines', () => {
+    expect(parseLogLines('')).toEqual([])
+    expect(parseLogLines('no separators here\nabc1234\x1fnot-a-time\x1fSubject\n')).toEqual([])
+  })
+
+  it('splits hash, time and subject (subjects may contain anything)', () => {
+    const out = ['abc1234\x1f1795000000\x1fPhase 7: approval | quiz', 'def5678\x1f1794000000\x1fDocs', ''].join('\n')
+    expect(parseLogLines(out)).toEqual([
+      { hash: 'abc1234', at: 1795000000000, subject: 'Phase 7: approval | quiz' },
+      { hash: 'def5678', at: 1794000000000, subject: 'Docs' },
+    ])
+  })
+})
+
+describe('getRepoActivity (real repos)', () => {
+  let origin: string
+  let dir: string
+  const run = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, stdio: 'pipe' })
+
+  beforeAll(() => {
+    origin = mkdtempSync(join(tmpdir(), 'codepipe-origin-'))
+    run(origin, 'init', '-q', '--bare')
+    dir = mkdtempSync(join(tmpdir(), 'codepipe-activity-'))
+    run(dir, 'init', '-q')
+    writeFileSync(join(dir, 'a.txt'), 'a\n')
+    run(dir, 'add', '.')
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'old work'], {
+      cwd: dir, stdio: 'pipe', env: { ...process.env, GIT_COMMITTER_DATE: '2020-01-01T00:00:00Z', GIT_AUTHOR_DATE: '2020-01-01T00:00:00Z' },
+    })
+    run(dir, 'remote', 'add', 'origin', origin)
+    run(dir, 'push', '-q', '-u', 'origin', 'HEAD')
+    writeFileSync(join(dir, 'b.txt'), 'b\n')
+    run(dir, 'add', '.')
+    // Committer date drives --since, so set it for "new" work explicitly.
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'new work'], {
+      cwd: dir, stdio: 'pipe', env: { ...process.env, GIT_COMMITTER_DATE: new Date().toISOString() },
+    })
+    writeFileSync(join(dir, 'c.txt'), 'uncommitted\n')
+  })
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(origin, { recursive: true, force: true })
+  })
+
+  it('reports commits since, unpushed and uncommitted', async () => {
+    const activity = await getRepoActivity(dir, Date.now() - 3_600_000)
+    expect(activity).toMatchObject({ isRepo: true, unpushed: 1, uncommitted: 1 })
+    if (!activity.isRepo) throw new Error('expected a repo')
+    expect(activity.commits.map((c) => c.subject)).toEqual(['new work'])
+  })
+
+  it('reports unpushed as null without an upstream, and non-repos', async () => {
+    const solo = mkdtempSync(join(tmpdir(), 'codepipe-solo-'))
+    try {
+      run(solo, 'init', '-q')
+      writeFileSync(join(solo, 'x.txt'), 'x\n')
+      run(solo, 'add', '.')
+      run(solo, 'commit', '-qm', 'x')
+      expect(await getRepoActivity(solo, 0)).toMatchObject({ isRepo: true, unpushed: null, uncommitted: 0 })
+      const plain = mkdtempSync(join(tmpdir(), 'codepipe-plain-'))
+      expect(await getRepoActivity(plain, 0)).toEqual({ isRepo: false })
+      // A project whose folder was removed: not a repo, not a crash.
+      expect(await getRepoActivity(join(plain, 'gone'), 0)).toEqual({ isRepo: false })
+      expect(await getChanges(join(plain, 'gone'))).toEqual({ isRepo: false })
+      rmSync(plain, { recursive: true, force: true })
+    } finally {
+      rmSync(solo, { recursive: true, force: true })
     }
   })
 })

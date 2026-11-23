@@ -12,6 +12,9 @@ import {
   ActionItemSchema,
   PersonaSchema,
   StandupStateSchema,
+  ClosedChatSchema,
+  type ChatAttention,
+  type ClosedChat,
   type Session,
   type SessionMeta,
   type ChatMessage,
@@ -39,6 +42,11 @@ export interface IStorageLayer {
   appendMessage(sessionId: string, message: ChatMessage): Promise<void>
   updateSessionStatus(sessionId: string, status: SessionStatus): Promise<void>
   renameSession(sessionId: string, title: string): Promise<void>
+  /** Set (or clear, with null) how a chat's last turn ended. */
+  setSessionAttention(sessionId: string, attention: ChatAttention | null): Promise<void>
+  /** Chats you deleted, newest first; `since` filters by closedAt. */
+  listClosedChats(since?: number): Promise<ClosedChat[]>
+  addClosedChat(entry: ClosedChat): Promise<void>
   // Projects
   listProjects(): Promise<Project[]>
   addProject(project: Omit<Project, 'id'>): Promise<Project>
@@ -90,6 +98,9 @@ const TodoArraySchema = z.array(TodoSchema)
 const ActionItemArraySchema = z.array(ActionItemSchema)
 const PersonaArraySchema = z.array(PersonaSchema)
 const StandupStateArraySchema = z.array(StandupStateSchema)
+const ClosedChatArraySchema = z.array(ClosedChatSchema)
+/** Closed-chat entries older than this are dropped on the next write. */
+const CLOSED_CHATS_KEEP_MS = 60 * 24 * 60 * 60 * 1000
 
 export class StorageLayer implements IStorageLayer {
   private readonly dataDir: string
@@ -100,6 +111,7 @@ export class StorageLayer implements IStorageLayer {
   private readonly actionItemsFile: string
   private readonly personasFile: string
   private readonly standupStateFile: string
+  private readonly closedChatsFile: string
   /**
    * Per-file locks. Every read-modify-write runs exclusively under its
    * file's lock (see runExclusive) — two concurrent updates to the same
@@ -132,6 +144,7 @@ export class StorageLayer implements IStorageLayer {
     this.actionItemsFile = path.join(dataDir, 'action-items.json')
     this.personasFile = path.join(dataDir, 'personas.json')
     this.standupStateFile = path.join(dataDir, 'standup-state.json')
+    this.closedChatsFile = path.join(dataDir, 'closed-chats.json')
     this.onChange = onChange ?? null
   }
 
@@ -753,6 +766,33 @@ export class StorageLayer implements IStorageLayer {
     await this.mutateSession(sessionId, (session) => {
       session.title = title
       session.updatedAt = Date.now()
+    })
+  }
+
+  async setSessionAttention(sessionId: string, attention: ChatAttention | null): Promise<void> {
+    await this.mutateSession(sessionId, (session) => {
+      if (attention) session.attention = attention
+      else delete session.attention
+    })
+  }
+
+  // ---------------------------------------------------------------------------
+  // Closed chats (the lead's "done" signal)
+  // ---------------------------------------------------------------------------
+
+  private async loadClosedChats(): Promise<ClosedChat[]> {
+    return this.loadArrayFile(this.closedChatsFile, ClosedChatArraySchema)
+  }
+
+  async listClosedChats(since = 0): Promise<ClosedChat[]> {
+    return (await this.loadClosedChats()).filter((c) => c.closedAt > since).sort((a, b) => b.closedAt - a.closedAt)
+  }
+
+  async addClosedChat(entry: ClosedChat): Promise<void> {
+    await this.runExclusive(this.closedChatsFile, async () => {
+      const cutoff = Date.now() - CLOSED_CHATS_KEEP_MS
+      const kept = (await this.loadClosedChats()).filter((c) => c.closedAt > cutoff && c.sessionId !== entry.sessionId)
+      await this.atomicWrite(this.closedChatsFile, [...kept, ClosedChatSchema.parse(entry)])
     })
   }
 }

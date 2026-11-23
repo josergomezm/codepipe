@@ -17,6 +17,7 @@ import { KiroAcpAdapter } from './adapters/kiro-acp.js'
 import { GeminiAdapter } from './adapters/gemini.js'
 import { createChangesRoutes, createChangeCountsRoutes } from './routes/changes.js'
 import { createFilesRoutes } from './routes/files.js'
+import { refreshAttention } from './lead/workspace-digest.js'
 import { createUsageRoutes } from './routes/usage.js'
 import { UsageService } from './usage.js'
 import { TerminalManager } from './terminal-manager.js'
@@ -183,6 +184,11 @@ if (isMainModule) {
   void storage.listProjects()
     .then((projects) => Promise.all(projects.map((p) => refreshProjectPorts(storage, p))))
     .catch((err) => log.error('server', 'Failed to refresh stored service ports', err))
+
+  // Recompute how idle chats ended, so their sidebar chips are right.
+  void refreshAttention({ storage, liveSession: (id) => sessionManager.getSession(id) })
+    .then((n) => { if (n) log.info('server', `Updated how ${n} chat(s) ended`) })
+    .catch((err) => log.error('server', 'Failed to refresh chat attention', err))
 
   standupService.start()
   dueReminders.start()

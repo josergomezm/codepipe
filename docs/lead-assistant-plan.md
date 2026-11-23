@@ -1,6 +1,7 @@
 # Lead assistant & daily brief — plan
 
-Status: **planned** (UI preview exists: lead's page → Chat tab, sample data).
+Status: **phase 1 done** (digest, git, closed chats, sidebar chip). The
+lead's page shows a UI preview with sample data until phases 2–4 land.
 Updated: 2026-11-22.
 
 ## Goal
@@ -89,8 +90,9 @@ tracked yet. At most ~4 per brief.
 ## Closed chats (the "done" signal)
 
 When you delete a chat, CodePipe first records a one-line **closed entry**
-for the lead: title, project, the original request (excerpt), and the last
-reply (excerpt). It's a script, no AI, and it's the last moment that
+for the lead: title, project, the original request (excerpt), the last
+reply (excerpt), and how it ended (the same hint as the sidebar chip).
+Entries are kept 60 days (`data/closed-chats.json`). It's a script, no AI, and it's the last moment that
 information exists. The next brief lists them under *Done since last brief*
 alongside the commits, and can mark related action items resolved.
 
@@ -117,9 +119,11 @@ alongside the commits, and can mark related action items resolved.
 
 ## Build phases
 
-1. **Digest + chip** (no AI): turn extraction, ending hints, git since the
-   last brief, closed-chat entries on delete. Ships the **"waiting on you"
-   chip** on chats in the sidebar. Tests against real transcripts and repos.
+1. **Digest + chip** (no AI) — **done**: turn extraction, ending hints
+   (`server/src/lead/chat-digest.ts`), the workspace digest and closed-chat
+   entries (`lead/workspace-digest.ts`), git activity
+   (`getRepoActivity`), and the sidebar chip ("Your turn" / "Pending"),
+   recomputed for idle chats at startup.
 2. **Lead session**: Workspace project, read-only settings, lead tools,
    Focus stored on the server.
 3. **Brief run**: digest → lead turn → structured brief; schedule (daily at

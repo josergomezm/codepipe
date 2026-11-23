@@ -5,6 +5,7 @@ import type { IStorageLayer } from '../storage.js'
 import { CreateSessionRequestSchema, RenameSessionRequestSchema, RunTurnRequestSchema } from '../schemas.js'
 import type { SessionMeta } from '../schemas.js'
 import { log } from '../logger.js'
+import { noteClosedChat } from '../lead/workspace-digest.js'
 
 /**
  * Create an Express Router for session CRUD endpoints.
@@ -127,6 +128,10 @@ export function createSessionRoutes(
     const { id } = req.params
 
     try {
+      // Deleting a chat is how you mark it done — keep a line for the lead.
+      await noteClosedChat({ storage, liveSession: (sid) => sessionManager.getSession(sid) }, id).catch((err) => {
+        log.warn('api', `Could not record closed chat ${id}: ${err instanceof Error ? err.message : String(err)}`)
+      })
       await sessionManager.deleteSession(id)
       await storage.unlinkTodosFromWorkSession(id)
       res.json({ ok: true })

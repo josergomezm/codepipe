@@ -202,6 +202,13 @@ export interface Session {
   kind?: SessionKind
 }
 
+/** How a chat's last turn ended (server: ChatAttentionSchema). */
+export interface ChatAttention {
+  state: 'waiting_on_you' | 'pending_action' | 'done'
+  /** The question it ended on (waiting_on_you). */
+  question?: string
+}
+
 export interface SessionMeta {
   id: string
   provider: ProviderType
@@ -212,6 +219,8 @@ export interface SessionMeta {
   status: SessionStatus
   model?: string
   kind?: SessionKind
+  /** Your chats only; absent while you're mid-conversation. */
+  attention?: ChatAttention
 }
 
 // --- Team layer (todos, personas, standup) ---

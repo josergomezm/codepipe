@@ -212,6 +212,33 @@ export const ProjectSchema = z.object({
   providerSettings: ProviderSettingsOverridesSchema.optional(),
 })
 
+/**
+ * How a chat stopped, read from its last reply (lead/chat-digest.ts): it asked
+ * you something, or left something uncommitted / undeployed / blocked, or
+ * says it shipped. Drives the sidebar chip; cleared when you send again.
+ */
+export const ChatAttentionSchema = z.object({
+  state: z.enum(['waiting_on_you', 'pending_action', 'done']),
+  /** The question it ended on (waiting_on_you). */
+  question: z.string().max(400).optional(),
+})
+
+/**
+ * A chat you deleted — kept as one line for the lead, since deleting is how
+ * you mark work done. Written just before the chat is removed.
+ */
+export const ClosedChatSchema = z.object({
+  sessionId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  title: z.string(),
+  /** Your first message (excerpt). */
+  request: z.string(),
+  /** The agent's last reply (excerpt). */
+  lastReply: z.string(),
+  attention: ChatAttentionSchema.optional(),
+  closedAt: z.number().int().positive(),
+})
+
 // Base session object without the refinement — needed so .omit() works
 // (.refine() returns ZodEffects which doesn't support .omit())
 const SessionObjectSchema = z.object({
@@ -231,6 +258,8 @@ const SessionObjectSchema = z.object({
   kind: SessionKindSchema.optional(),
   /** Persona driving this session (team runs) — their launch overrides apply. */
   personaId: z.string().uuid().optional(),
+  /** How the last turn ended (user chats only); absent while you're mid-conversation. */
+  attention: ChatAttentionSchema.optional(),
 })
 
 // A model the provider can run, for the picker.
@@ -523,9 +552,12 @@ export type ProjectServiceConfig = z.infer<typeof ProjectServiceConfigSchema>
 export type Project = z.infer<typeof ProjectSchema>
 export type Session = z.infer<typeof SessionSchema>
 export type SessionMeta = z.infer<typeof SessionMetaSchema>
+export type ChatAttention = z.infer<typeof ChatAttentionSchema>
+export type ClosedChat = z.infer<typeof ClosedChatSchema>
 export type WSClientMessage = z.infer<typeof WSClientMessageSchema>
 export type WSServerMessage = z.infer<typeof WSServerMessageSchema>
 export type ModelOption = z.infer<typeof ModelOptionSchema>
+export type ProviderModels = z.infer<typeof ProviderModelsSchema>
 export type ModelState = z.infer<typeof ModelStateSchema>
 export type CreateSessionRequest = z.infer<typeof CreateSessionRequestSchema>
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequestSchema>
@@ -544,4 +576,3 @@ export type ChatActionCard = z.infer<typeof ChatActionCardSchema>
 export type ChatIdeaCard = z.infer<typeof ChatIdeaCardSchema>
 export type Persona = z.infer<typeof PersonaSchema>
 export type StandupState = z.infer<typeof StandupStateSchema>
-export type ProviderModels = z.infer<typeof ProviderModelsSchema>

@@ -8,6 +8,7 @@ import type {
   SessionMeta,
   SessionKind,
   ChatMessage,
+  ChatAttention,
   ChatActionCard,
   ChatIdeaCard,
   Attachment,
@@ -29,6 +30,7 @@ import { killProcessTree, listTurnProcesses, wasStoppedByUs } from './process-tr
 import { resolveSettings, type SettingLayers, type SettingValues } from './provider-settings.js'
 import type { ProviderSettingsStore } from './provider-settings-store.js'
 import { computeReplyUsage, formatUsd, type PreviousReply } from './reply-usage.js'
+import { endingHint, isUserChat } from './lead/chat-digest.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -447,6 +449,17 @@ export class SessionManager implements ISessionManager {
     }
   }
 
+  /** Record how a chat's last turn ended, in memory and on disk (no-op when unchanged). */
+  private setAttention(sessionId: string, ctx: SessionContext, attention: ChatAttention | null): void {
+    const current = ctx.session.attention ?? null
+    if (JSON.stringify(current) === JSON.stringify(attention)) return
+    if (attention) ctx.session.attention = attention
+    else delete ctx.session.attention
+    this.storage.setSessionAttention(sessionId, attention).catch((err) => {
+      log.warn('session', `Failed to persist attention for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`)
+    })
+  }
+
   /** Tell clients what's waiting (`dropped`: inputs discarded by Stop/Restart). */
   private broadcastQueue(sessionId: string, dropped?: QueuedInput[]): void {
     this.broadcast(sessionId, {
@@ -492,6 +505,9 @@ export class SessionManager implements ISessionManager {
    */
   private recordUserMessage(ctx: SessionContext, sessionId: string, message: ChatMessage): void {
     const userMessage: ChatMessage = { ...message, timestamp: Date.now() }
+    // You answered / moved on: whatever the last turn left waiting is now
+    // being handled.
+    this.setAttention(sessionId, ctx, null)
 
     ctx.session.messages.push(userMessage)
     ctx.session.updatedAt = userMessage.timestamp
@@ -644,6 +660,11 @@ export class SessionManager implements ISessionManager {
     // Settle THIS turn's headless waiters with its final message —
     // correlation is per turn, never gated on the rest of the queue.
     this.settleTurnWaiters(ctx, last)
+
+    // Your chats: note how the turn ended (asked you something, left work
+    // pending…) for the sidebar chip and the lead. Not while more input is
+    // queued — the conversation is still going.
+    if (isUserChat(ctx.session) && queueDrained) this.setAttention(sessionId, ctx, last ? endingHint(last.content) : null)
 
     // Team sessions route every completed turn through the persona layer
     // (which owns notifications) — again per turn, so a reply that lands
