@@ -170,19 +170,22 @@ export const useSessionsStore = defineStore('sessions', () => {
     }
   }
 
+  /** No chat open: clear the selection everywhere it is kept (incl. the service worker). */
+  function deselectSession() {
+    activeSessionId.value = null
+    activeMessages.value = []
+    sessionStatus.value = 'idle'
+    try { localStorage.removeItem('codepipe:activeSession') } catch { /* private mode */ }
+    navigator.serviceWorker?.controller?.postMessage({ type: 'active-session', sessionId: null })
+  }
+
   async function deleteSession(sessionId: string) {
     try {
       await api.deleteSession(sessionId)
       sessions.value = sessions.value.filter((s) => s.id !== sessionId)
       void cacheSet('sessions', sessions.value)
       void forgetCachedMessages(sessionId)
-      if (activeSessionId.value === sessionId) {
-        activeSessionId.value = null
-        activeMessages.value = []
-        sessionStatus.value = 'idle'
-        localStorage.removeItem('codepipe:activeSession')
-        navigator.serviceWorker?.controller?.postMessage({ type: 'active-session', sessionId: null })
-      }
+      if (activeSessionId.value === sessionId) deselectSession()
       error.value = null
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to delete session'
@@ -299,6 +302,7 @@ export const useSessionsStore = defineStore('sessions', () => {
     consumePendingMessage,
     selectSession,
     deleteSession,
+    deselectSession,
     renameSession,
     upsertMessage,
     setStatus,

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { translateStreamJsonLine } from './claude-stream-json.js'
 import { join } from 'path'
 import { ClaudeAdapter, resolveClaudeBinary } from './claude.js'
+import { READ_ONLY_SETTINGS, resolveSettings } from '../provider-settings.js'
 
 describe('translateStreamJsonLine', () => {
   it('captures the session ID and model from a system/init event', () => {
@@ -222,5 +223,20 @@ describe('ClaudeAdapter', () => {
       { path: '/a/b.ts', mimeType: 'text/x-typescript' },
     ])
     expect(args[args.length - 1]).toBe('@/a/b.ts look at these')
+  })
+})
+
+describe('read-only settings with a long message spilled to a file', () => {
+  it('grants read access to the file, and still denies every write tool', () => {
+    const settings = resolveSettings('claude', { enforced: READ_ONLY_SETTINGS.claude }).values
+    const { args } = new ClaudeAdapter().buildMessageCommand(
+      'My message was too long…', null, [{ path: join('tmp', 'codepipe-messages', 'm.md'), mimeType: 'text/markdown' }],
+      null, [], settings,
+    )
+    expect(args).toContain('--add-dir')
+    expect(args[args.indexOf('--add-dir') + 1]).toBe(join('tmp', 'codepipe-messages'))
+    const denied = args.slice(args.indexOf('--disallowedTools') + 1)
+    for (const tool of ['Edit', 'Write', 'Bash', 'PowerShell']) expect(denied).toContain(tool)
+    expect(args).toEqual(expect.arrayContaining(['--permission-mode', 'dontAsk']))
   })
 })

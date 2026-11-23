@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import type { FocusItem, Project } from '@/api/client'
+import { MAX_FOCUS_ITEMS as MAX, type FocusItem, type Project } from '@/api/client'
 
 /**
  * Your ranked priorities (at most 5), edited inside the Focus sheet. The lead
@@ -10,7 +10,6 @@ import type { FocusItem, Project } from '@/api/client'
 const props = defineProps<{ projects: Project[]; highlight?: string | null }>()
 const items = defineModel<FocusItem[]>({ required: true })
 
-const MAX = 5
 const adding = ref(false)
 const label = ref('')
 const projectId = ref('')

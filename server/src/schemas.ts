@@ -119,6 +119,61 @@ export const ReplyUsageSchema = z.object({
   outputTokens: z.number().int().nonnegative(),
 })
 
+/**
+ * The lead's daily brief, posted to its thread by the post_brief tool
+ * (metadata.kind 'brief'). The lead writes the judgment; code fills in the
+ * numbers (activity) and resolves every reference to a real chat / item.
+ */
+export const BriefSchema = z.object({
+  at: z.number().int().positive(),
+  /** Git and closed chats were reported since this time. */
+  since: z.number().int().nonnegative(),
+  headline: z.string().max(200),
+  top3: z.array(z.object({
+    text: z.string().max(300),
+    why: z.string().max(300),
+    sessionId: z.string().uuid().optional(),
+  })).max(3),
+  /** Chats that ended on a question or a step only you can take. */
+  waiting: z.array(z.object({
+    sessionId: z.string().uuid(),
+    title: z.string(),
+    projectName: z.string(),
+    question: z.string().max(400),
+  })).max(8),
+  focusCheck: z.object({
+    /** on_plan: your day matched Focus; shifted: a sustained shift; mixed: the lead asks you. */
+    verdict: z.enum(['on_plan', 'shifted', 'mixed']),
+    note: z.string().max(600),
+    /** When mixed: how the lead asks you to prioritize. */
+    question: z.string().max(300).optional(),
+    suggestions: z.array(z.object({
+      kind: z.enum(['add', 'drop']),
+      label: z.string().max(200),
+      projectId: z.string().uuid().optional(),
+      /** For 'drop': the Focus item it would remove. */
+      focusItemId: z.string().uuid().optional(),
+      why: z.string().max(200),
+    })).max(3),
+  }),
+  done: z.array(z.object({ text: z.string().max(300), projectName: z.string().optional() })).max(10),
+  cleanUp: z.array(z.object({
+    itemId: z.string().uuid(),
+    text: z.string(),
+    projectName: z.string(),
+    ageDays: z.number().int().nonnegative(),
+    suggestion: z.enum(['close', 'snooze']),
+    why: z.string().max(200),
+  })).max(6),
+  /** Your messages per project, last 24h / 7d — computed, not written by the lead. */
+  activity: z.array(z.object({
+    projectId: z.string().uuid(),
+    projectName: z.string(),
+    mine24: z.number().int().nonnegative(),
+    mine7: z.number().int().nonnegative(),
+  })),
+})
+
 export const ChatMessageMetadataSchema = z.object({
   toolName: z.string().optional(),
   thinkingContent: z.string().optional(),
@@ -133,11 +188,13 @@ export const ChatMessageMetadataSchema = z.object({
    * machine-built dispatch prompt (standup/refine/implement). Both are
    * collapsed behind a disclosure in the UI.
    */
-  kind: z.enum(['deliberation', 'prompt', 'action', 'idea']).optional(),
+  kind: z.enum(['deliberation', 'prompt', 'action', 'idea', 'brief']).optional(),
   /** kind 'action': an action-item card (see ChatActionCardSchema). */
   action: ChatActionCardSchema.optional(),
   /** kind 'idea': an idea card (see ChatIdeaCardSchema). */
   idea: ChatIdeaCardSchema.optional(),
+  /** kind 'brief': the lead's daily brief (see BriefSchema). */
+  brief: BriefSchema.optional(),
 })
 
 export const AttachmentSchema = z.object({
@@ -314,6 +371,15 @@ export const MAX_FOCUS_ITEMS = 5
 
 export const FocusListSchema = z.array(FocusItemSchema).max(MAX_FOCUS_ITEMS)
 
+/** When the daily brief runs on its own (local time). */
+export const BriefScheduleSchema = z.object({
+  enabled: z.boolean(),
+  hour: z.number().int().min(0).max(23),
+  weekdaysOnly: z.boolean(),
+})
+
+export const DEFAULT_BRIEF_SCHEDULE = { enabled: true, hour: 9, weekdaysOnly: false } as const
+
 /** The lead's state (data/lead-state.json). */
 export const LeadStateSchema = z.object({
   focus: FocusListSchema,
@@ -326,9 +392,19 @@ export const LeadStateSchema = z.object({
   sessionProvider: ProviderTypeSchema.optional(),
   /** When the last brief ran — git and closed chats are reported since then. */
   lastBriefAt: z.number().int().positive().optional(),
+  /**
+   * When a scheduled brief was last attempted — at most one attempt a day,
+   * so a failing run never retries every minute.
+   */
+  lastAttemptAt: z.number().int().positive().optional(),
+  /** When the last brief run ended (posted or not) — its write tells clients the run is over. */
+  lastRunEndedAt: z.number().int().positive().optional(),
+  schedule: BriefScheduleSchema.optional(),
 })
 
 export const PutFocusRequestSchema = z.object({ focus: FocusListSchema })
+
+export const PutBriefScheduleRequestSchema = z.object({ schedule: BriefScheduleSchema })
 
 /** GET /api/lead */
 export const LeadStatusSchema = z.object({
@@ -340,6 +416,9 @@ export const LeadStatusSchema = z.object({
   focus: FocusListSchema,
   memo: z.string().nullable(),
   lastBriefAt: z.number().int().positive().nullable(),
+  schedule: BriefScheduleSchema,
+  /** A brief is being written right now. */
+  briefRunning: z.boolean(),
 })
 
 // --- Todos (per-project ideas list) ---
@@ -612,6 +691,8 @@ export type ChatAttention = z.infer<typeof ChatAttentionSchema>
 export type FocusItem = z.infer<typeof FocusItemSchema>
 export type LeadState = z.infer<typeof LeadStateSchema>
 export type LeadStatus = z.infer<typeof LeadStatusSchema>
+export type Brief = z.infer<typeof BriefSchema>
+export type BriefSchedule = z.infer<typeof BriefScheduleSchema>
 export type ClosedChat = z.infer<typeof ClosedChatSchema>
 export type WSClientMessage = z.infer<typeof WSClientMessageSchema>
 export type WSServerMessage = z.infer<typeof WSServerMessageSchema>

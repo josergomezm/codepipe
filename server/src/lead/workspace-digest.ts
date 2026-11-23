@@ -61,6 +61,18 @@ function fitBudget(chats: WorkspaceDigest['chats']): boolean {
   return true
 }
 
+/** Your messages per project (24h / 7d), busiest first — projects with any in 7 days. */
+export function activityRows(chats: (Pick<ChatDigest, 'projectId' | 'mine24' | 'mine7'> & { projectName: string })[]): WorkspaceDigest['activity'] {
+  const byProject = new Map<string, WorkspaceDigest['activity'][number]>()
+  for (const c of chats) {
+    const row = byProject.get(c.projectId) ?? { projectId: c.projectId, projectName: c.projectName, mine24: 0, mine7: 0 }
+    row.mine24 += c.mine24
+    row.mine7 += c.mine7
+    byProject.set(c.projectId, row)
+  }
+  return [...byProject.values()].filter((r) => r.mine7 > 0).sort((a, b) => b.mine24 - a.mine24 || b.mine7 - a.mine7)
+}
+
 export interface DigestSources {
   storage: IStorageLayer
   /** Live in-memory copy of a session, fresher than disk while it runs. */
@@ -95,14 +107,6 @@ export async function buildWorkspaceDigest(
     // Waiting on you first, then the most recently active.
     .sort((a, b) => Number(b.attention?.state === 'waiting_on_you') - Number(a.attention?.state === 'waiting_on_you') || b.lastActivityAt - a.lastActivityAt)
 
-  const byProject = new Map<string, WorkspaceDigest['activity'][number]>()
-  for (const c of chats) {
-    const row = byProject.get(c.projectId) ?? { projectId: c.projectId, projectName: c.projectName, mine24: 0, mine7: 0 }
-    row.mine24 += c.mine24
-    row.mine7 += c.mine7
-    byProject.set(c.projectId, row)
-  }
-
   const repos = (
     // Not the internal Workspace: its folder sits inside CodePipe's own checkout.
     await Promise.all(projects.filter((p) => !p.internal).map(async (p) => ({ projectId: p.id, projectName: p.name, activity: await getRepoActivity(p.path, opts.since) })))
@@ -114,7 +118,7 @@ export async function buildWorkspaceDigest(
     generatedAt: now,
     since: opts.since,
     chats,
-    activity: [...byProject.values()].filter((r) => r.mine7 > 0).sort((a, b) => b.mine24 - a.mine24 || b.mine7 - a.mine7),
+    activity: activityRows(chats),
     repos,
     closed,
     openActions: actions

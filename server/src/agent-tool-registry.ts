@@ -28,6 +28,7 @@ import {
   DueDateSchema,
   MAX_FOCUS_ITEMS,
   type ActionDraft,
+  type Brief,
   type ActionItem,
   type FocusItem,
   type Persona,
@@ -36,8 +37,8 @@ import {
   type SessionKind,
   type Todo,
 } from './schemas.js'
-import { clip, clipEnd, extractTurns, isUserChat, type Turn } from './lead/chat-digest.js'
-import { loadUserChats } from './lead/workspace-digest.js'
+import { clip, clipEnd, digestChat, extractTurns, isUserChat, type Turn } from './lead/chat-digest.js'
+import { activityRows, loadUserChats } from './lead/workspace-digest.js'
 import { findDuplicateAction, recordActionItem } from './action-items.js'
 import {
   MAX_OPEN_ACTIONS,
@@ -782,6 +783,184 @@ const openProjectChat: ToolDef = {
   },
 }
 
+const PostBriefArgs = z.object({
+  headline: z.string().trim().min(1).max(200),
+  top3: z.array(z.object({ text: z.string().trim().min(1).max(300), why: z.string().trim().max(300), chat: z.string().optional() })).max(3),
+  waiting_on_you: z.array(z.object({ chat: z.string().trim().min(1), question: z.string().trim().min(1).max(400) })).max(8).optional(),
+  focus_check: z.object({
+    verdict: z.enum(['on_plan', 'shifted', 'mixed']),
+    note: z.string().trim().max(600),
+    question: z.string().trim().max(300).optional(),
+    suggestions: z.array(z.object({
+      kind: z.enum(['add', 'drop']),
+      label: z.string().trim().min(1).max(200),
+      project: z.string().optional(),
+      focus_item: z.union([z.string(), z.number()]).optional(),
+      why: z.string().trim().max(200),
+    })).max(3).optional(),
+  }),
+  done: z.array(z.object({ text: z.string().trim().min(1).max(300), project: z.string().optional() })).max(10).optional(),
+  clean_up: z.array(z.object({
+    item: z.string().trim().min(1),
+    suggestion: z.enum(['close', 'snooze']),
+    why: z.string().trim().max(200),
+  })).max(6).optional(),
+})
+
+const postBrief: ToolDef = {
+  name: 'post_brief',
+  kinds: ['lead'],
+  description: () =>
+    'Post the daily brief to your thread — call it exactly once per brief. Reference chats and items by their [id] (a prefix is fine) and projects by name; the activity numbers are added for you.',
+  inputSchema: () => ({
+    type: 'object',
+    properties: {
+      headline: { type: 'string', description: 'One line: the gist of the day.' },
+      top3: {
+        type: 'array',
+        description: 'Up to 3 things for today, most important first.',
+        items: {
+          type: 'object',
+          properties: {
+            text: { type: 'string' },
+            why: { type: 'string', description: 'One line: why this, ranked against Focus.' },
+            chat: { type: 'string', description: 'The chat [id] it continues, if any.' },
+          },
+          required: ['text', 'why'],
+        },
+      },
+      waiting_on_you: {
+        type: 'array',
+        description: 'Open chats that ended on a question or a step only the user can take.',
+        items: {
+          type: 'object',
+          properties: { chat: { type: 'string', description: 'Chat [id].' }, question: { type: 'string', description: 'What it is waiting for, quoted.' } },
+          required: ['chat', 'question'],
+        },
+      },
+      focus_check: {
+        type: 'object',
+        properties: {
+          verdict: { type: 'string', enum: ['on_plan', 'shifted', 'mixed'] },
+          note: { type: 'string', description: 'Your read of the day vs. Focus, in a sentence or two.' },
+          question: { type: 'string', description: 'When mixed: how you ask the user to prioritize.' },
+          suggestions: {
+            type: 'array',
+            description: 'Focus changes to suggest (the user accepts or not).',
+            items: {
+              type: 'object',
+              properties: {
+                kind: { type: 'string', enum: ['add', 'drop'] },
+                label: { type: 'string' },
+                project: { type: 'string', description: 'Project name, if it maps to one.' },
+                focus_item: { type: 'string', description: 'For drop: the Focus item\'s number (1 = top) or label.' },
+                why: { type: 'string' },
+              },
+              required: ['kind', 'label', 'why'],
+            },
+          },
+        },
+        required: ['verdict', 'note'],
+      },
+      done: {
+        type: 'array',
+        description: 'What finished since the last brief (closed chats, shipped commits).',
+        items: { type: 'object', properties: { text: { type: 'string' }, project: { type: 'string' } }, required: ['text'] },
+      },
+      clean_up: {
+        type: 'array',
+        description: 'Open action items that look stale or settled.',
+        items: {
+          type: 'object',
+          properties: {
+            item: { type: 'string', description: 'Action item [id].' },
+            suggestion: { type: 'string', enum: ['close', 'snooze'] },
+            why: { type: 'string' },
+          },
+          required: ['item', 'suggestion', 'why'],
+        },
+      },
+    },
+    required: ['headline', 'top3', 'focus_check'],
+  }),
+  async run(ctx, raw) {
+    const parsed = parseArgs(PostBriefArgs, raw)
+    if ('error' in parsed) return parsed.error
+    const a = parsed.data
+    const { storage, sessionManager } = ctx.deps
+    const now = Date.now()
+    const [chats, projects, items, state] = await Promise.all([
+      userChats(ctx),
+      storage.listProjects(),
+      storage.listActionItems(),
+      storage.getLeadState(),
+    ])
+    const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? 'Removed project'
+    const chat = (ref: string) => matchChat(chats, ref)
+    const unknown: string[] = []
+
+    // One brief per run: refuse a second one since the run's prompt.
+    const thread = sessionManager.getSession(ctx.session.id)?.messages ?? []
+    const promptAt = thread.filter((m) => m.role === 'user').at(-1)?.timestamp ?? 0
+    if (thread.some((m) => m.metadata?.kind === 'brief' && m.timestamp >= promptAt)) {
+      return { text: 'The brief for this run is already posted — continue with save_memo and your reply.', isError: true }
+    }
+
+    const top3 = a.top3.map((t) => {
+      const s = t.chat ? chat(t.chat) : null
+      if (t.chat && !s) unknown.push(`chat "${t.chat}"`)
+      return { text: t.text, why: t.why, ...(s ? { sessionId: s.id } : {}) }
+    })
+    const waiting = (a.waiting_on_you ?? []).flatMap((w) => {
+      const s = chat(w.chat)
+      if (!s) { unknown.push(`chat "${w.chat}"`); return [] }
+      // The chat's own question, word for word, when it ended on one.
+      const question = s.attention?.state === 'waiting_on_you' && s.attention.question ? s.attention.question : w.question
+      return [{ sessionId: s.id, title: s.title, projectName: projectName(s.projectId), question }]
+    })
+    const suggestions = (a.focus_check.suggestions ?? []).map((sg) => {
+      const p = sg.project?.trim() ? matchProject(projects, sg.project) : null
+      if (sg.project?.trim() && !p) unknown.push(`project "${sg.project}"`)
+      let focusItemId: string | undefined
+      if (sg.kind === 'drop') {
+        const ref = String(sg.focus_item ?? sg.label).trim()
+        const n = /^\d+$/.test(ref) ? Number(ref) : NaN
+        const item = Number.isInteger(n) ? state.focus[n - 1] : state.focus.find((f) => f.label.toLowerCase() === ref.toLowerCase())
+        if (!item) unknown.push(`Focus item "${ref}"`)
+        else focusItemId = item.id
+      }
+      return { kind: sg.kind, label: sg.label, why: sg.why, ...(p ? { projectId: p.id } : {}), ...(focusItemId ? { focusItemId } : {}) }
+    })
+    const done = (a.done ?? []).map((d) => {
+      const p = d.project?.trim() ? matchProject(projects, d.project) : null
+      if (d.project?.trim() && !p) unknown.push(`project "${d.project}"`)
+      return { text: d.text, ...(p ? { projectName: p.name } : {}) }
+    })
+    const cleanUp = (a.clean_up ?? []).flatMap((c) => {
+      const item = matchById(items.filter((i) => i.status === 'open'), c.item)
+      if (!item) { unknown.push(`item "${c.item}"`); return [] }
+      return [{ itemId: item.id, text: item.text, projectName: projectName(item.projectId), ageDays: Math.floor((now - item.createdAt) / 86_400_000), suggestion: c.suggestion, why: c.why }]
+    })
+    if (unknown.length) {
+      return { text: `Not posted — no match for ${unknown.join(', ')}. Use [id]s from the digest (list_open_chats / list_action_items) and project names, then call post_brief again.`, isError: true }
+    }
+
+    const brief: Brief = {
+      at: now,
+      since: state.lastBriefAt ?? now - 86_400_000,
+      headline: a.headline,
+      top3,
+      waiting,
+      focusCheck: { verdict: a.focus_check.verdict, note: a.focus_check.note, ...(a.focus_check.question ? { question: a.focus_check.question } : {}), suggestions },
+      done,
+      cleanUp,
+      activity: activityRows(chats.map((s) => ({ ...digestChat(s, now), projectName: projectName(s.projectId) }))),
+    }
+    sessionManager.appendCard(ctx.session.id, `Daily brief: ${a.headline}`, { kind: 'brief', brief })
+    return { text: 'Brief posted. Now save_memo, then reply in 1–3 plain sentences.' }
+  },
+}
+
 const TOOLS: ToolDef[] = [
   addActionItem,
   listActionItems,
@@ -795,6 +974,7 @@ const TOOLS: ToolDef[] = [
   searchChat,
   updateFocus,
   openProjectChat,
+  postBrief,
 ]
 
 export class AgentToolService {

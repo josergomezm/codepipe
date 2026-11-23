@@ -5,6 +5,7 @@ import { useSessionsStore } from '@/stores/sessions'
 import { useUiStore } from '@/stores/ui'
 import PersonaAvatar from '@/components/PersonaAvatar.vue'
 import ChatToolCard from '@/components/ChatToolCard.vue'
+import BriefingCard from '@/components/briefing/BriefingCard.vue'
 import MarkdownContent from '@/components/MarkdownContent.vue'
 import ReplyUsageFooter from '@/components/ReplyUsageFooter.vue'
 import type { ChatMessage } from '@/api/client'
@@ -73,8 +74,11 @@ async function copyContent() {
 </script>
 
 <template>
+  <!-- The lead's daily brief -->
+  <BriefingCard v-if="isSystem && message.metadata?.kind === 'brief' && message.metadata.brief" :brief="message.metadata.brief" />
+
   <!-- A card an agent tool posted (action item / idea) -->
-  <ChatToolCard v-if="isSystem && isToolCard" :message="message" />
+  <ChatToolCard v-else-if="isSystem && isToolCard" :message="message" />
 
   <!-- System message: centered, muted -->
   <div v-else-if="isSystem" class="flex justify-center px-4 py-2">

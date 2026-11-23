@@ -53,11 +53,12 @@ export interface ChatMessage {
     /**
      * 'deliberation' = raw team output; 'prompt' = machine-built dispatch
      * prompt (both collapse in the UI); 'action' / 'idea' = a card an agent
-     * tool posted.
+     * tool posted; 'brief' = the lead's daily brief.
      */
-    kind?: 'deliberation' | 'prompt' | 'action' | 'idea'
+    kind?: 'deliberation' | 'prompt' | 'action' | 'idea' | 'brief'
     action?: ChatActionCard
     idea?: ChatIdeaCard
+    brief?: Brief
   }
   attachments?: Attachment[]
 }
@@ -189,7 +190,7 @@ export interface ProviderSettingsInfo {
   args: string[]
 }
 
-export type SessionKind = 'chat' | 'team' | 'work' | 'review'
+export type SessionKind = 'chat' | 'team' | 'work' | 'review' | 'lead'
 
 export interface Session {
   id: string
@@ -972,12 +973,22 @@ export function fetchProviderModels(provider: ProviderType): Promise<ProviderMod
 
 // --- Lead assistant ---
 
+/** Most items a Focus list holds (server: MAX_FOCUS_ITEMS). */
+export const MAX_FOCUS_ITEMS = 5
+
 /** One of your priorities, in order (server: FocusItemSchema). */
 export interface FocusItem {
   id: string
   label: string
   /** The project it maps to, so activity can be compared with it. */
   projectId?: string
+}
+
+/** When the daily brief runs on its own (local time). */
+export interface BriefSchedule {
+  enabled: boolean
+  hour: number
+  weekdaysOnly: boolean
 }
 
 export interface LeadStatus {
@@ -987,6 +998,22 @@ export interface LeadStatus {
   focus: FocusItem[]
   memo: string | null
   lastBriefAt: number | null
+  schedule: BriefSchedule
+  /** A brief is being written right now. */
+  briefRunning: boolean
+}
+
+/** "Brief me now": started (it lands in the lead's thread) or why not. */
+export function runBrief(): Promise<{ ran: boolean; reason?: string; sessionId?: string }> {
+  return request('/api/lead/brief', { method: 'POST' })
+}
+
+export function saveBriefSchedule(schedule: BriefSchedule): Promise<{ schedule: BriefSchedule }> {
+  return request<{ schedule: BriefSchedule }>('/api/lead/schedule', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ schedule }),
+  })
 }
 
 export function fetchLeadStatus(): Promise<LeadStatus> {
@@ -999,4 +1026,44 @@ export function saveFocus(focus: FocusItem[]): Promise<{ focus: FocusItem[] }> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ focus }),
   })
+}
+
+/** The lead's daily brief (server: BriefSchema). */
+export interface Brief {
+  at: number
+  since: number
+  headline: string
+  top3: { text: string; why: string; sessionId?: string }[]
+  waiting: { sessionId: string; title: string; projectName: string; question: string }[]
+  focusCheck: {
+    verdict: 'on_plan' | 'shifted' | 'mixed'
+    note: string
+    question?: string
+    suggestions: { kind: 'add' | 'drop'; label: string; projectId?: string; focusItemId?: string; why: string }[]
+  }
+  done: { text: string; projectName?: string }[]
+  cleanUp: { itemId: string; text: string; projectName: string; ageDays: number; suggestion: 'close' | 'snooze'; why: string }[]
+  activity: { projectId: string; projectName: string; mine24: number; mine7: number }[]
+}
+
+/** What the lead reads (GET /api/lead/digest) — the parts the Sources sheet shows. */
+export interface LeadDigest {
+  chats: {
+    sessionId: string
+    projectId: string
+    projectName: string
+    title: string
+    lastActivityAt: number
+    mine24: number
+    mine7: number
+    firstRequest: string
+    lastTurns: { you: string; reply: string; at: number }[]
+    attention: ChatAttention | null
+  }[]
+  openActions: { id: string }[]
+  ideas: { proposed: { id: string }[]; inboxCount: number }
+}
+
+export function fetchLeadDigest(): Promise<LeadDigest> {
+  return request<LeadDigest>('/api/lead/digest')
 }

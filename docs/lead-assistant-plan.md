@@ -1,8 +1,9 @@
 # Lead assistant & daily brief — plan
 
-Status: **phases 1–2 done** (digest, git, closed chats, sidebar chip; the
-lead's read-only thread, Workspace project, tools, Focus on the server). The
-brief itself is still sample text until phases 3–4 land.
+Status: **phases 1–4 done** — the digest, git and closed chats, the sidebar
+chip, the lead's read-only thread and tools, Focus on the server, the brief
+run (daily at 9 AM by default, or "Brief me now"), and the lead's page
+showing the real thread with the brief card. Phase 5 is for later.
 Updated: 2026-11-22.
 
 ## Goal
@@ -76,7 +77,7 @@ structured JSON (rendered by `BriefingCard`) plus a short message:
 - **Done since last brief**: closed chats + commits.
 - **Suggested action items**: pending things not tracked yet (project or
   Workspace); items that look resolved → suggest closing.
-- **Clean up**: stale items, inbox ideas.
+- **Clean up**: stale or settled action items (close or snooze).
 
 It saves a memo for next time (what it's watching, e.g. "partnerships 3
 days running").
@@ -113,9 +114,10 @@ alongside the commits, and can mark related action items resolved.
 - The lead's session: kind `lead`, one persistent session, the lead
   persona's provider/model (changeable any time in team settings),
   **read-only** launch settings (plan mode, no edit/shell tools).
-- Lead-only tools: `read_chat`, `search_chat`, `list_action_items`,
-  `add_action_item` (project or Workspace), `update_focus`, `save_memo`,
-  `open_project_chat(projectId, prompt)`. That last one creates the chat
+- Lead-only tools: `list_open_chats`, `read_chat`, `search_chat`,
+  `post_brief`, `update_focus`, `save_memo`, `open_project_chat(project,
+  title, prompt)`, plus `list_action_items` / `add_action_item` (project
+  or Workspace) / `resolve_action_item` across all projects. That last one creates the chat
   with the prompt in the composer; you send it.
 
 ## Build phases
@@ -132,10 +134,24 @@ alongside the commits, and can mark related action items resolved.
    (`list_open_chats`, `read_chat`, `search_chat`, `update_focus`,
    `open_project_chat`, `save_memo`, and the item tools across all
    projects); Focus at `GET /api/lead` / `PUT /api/lead/focus`.
-3. **Brief run**: digest → lead turn → structured brief; schedule (daily at
-   your hour) and "Brief me now"; push notification; unread badge from the
-   lead's session.
-4. **Wire the UI**: brief card buttons → real APIs; replace the preview data.
+3. **Brief run** — **done**: `LeadService.runBrief` builds the digest since
+   the last brief and gives the lead one turn (`lead/brief-prompt.ts`); the
+   lead posts the brief with the `post_brief` tool (every chat / item /
+   project reference resolved, activity computed by code, stored as a
+   `brief` card), suggests untracked work with `add_action_item`, and saves
+   its memo. `lastBriefAt` moves to the run's start only when a brief was
+   posted. Scheduled daily at 9 AM by default (`PUT /api/lead/schedule`,
+   weekdays-only or off), at most one scheduled attempt a day; "Brief me
+   now" is `POST /api/lead/brief`. Push comes from the turn's end like any
+   chat. Briefs too long for a command line reach the CLI as a file
+   (`server/src/long-input.ts`, for any long message).
+4. **Wire the UI** — **done**: the lead's Chat tab is the real lead session
+   (`LeadThread.vue` borrows the app's message list and composer while
+   open); the brief renders from `metadata.brief` (`BriefingCard.vue`):
+   Accept on Focus suggestions, Close/Snooze on clean-up items, links to
+   chats; suggested items are the usual suggestion cards. The sidebar badge
+   is the lead session's unread state; a lead notification opens the lead's
+   page. The sample-data preview is gone.
 5. **Later**: per-chat summaries only if digests outgrow the budget; team
    members' notes; per-member threads.
 

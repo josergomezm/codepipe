@@ -198,6 +198,7 @@ if (isMainModule) {
     .catch((err) => log.error('server', 'Failed to refresh chat attention', err))
 
   standupService.start()
+  leadService.start()
   dueReminders.start()
   startHealthMonitor(healthCounts)
   log.info('server', `Started (pid ${process.pid}, node ${process.version}${SUPERVISED ? ', supervised' : ''})`)
@@ -212,6 +213,7 @@ if (isMainModule) {
 
     try {
       standupService.stop()
+      leadService.stop()
       dueReminders.stop()
       await devServerManager.shutdownAll()
       await serviceManager.shutdownAll()
@@ -220,6 +222,8 @@ if (isMainModule) {
       // Standup pipelines end once their turns are rejected above; let
       // their final bookkeeping land rather than cutting it off mid-write.
       await standupService.whenIdle(5_000)
+      // The brief's turn was rejected above; let its bookkeeping land.
+      await leadService.whenIdle(5_000)
       await storage.whenIdle()
     } catch (err) {
       log.error('server', 'Error during shutdown', err)

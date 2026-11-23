@@ -1,57 +1,32 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import * as api from '@/api/client'
-import type { FocusItem, LeadStatus } from '@/api/client'
+import type { BriefSchedule, FocusItem, LeadStatus } from '@/api/client'
+import { useSessionsStore } from '@/stores/sessions'
 
 /**
- * Unread state for the lead's thread (the sidebar badge).
- *
- * PREVIEW: there is no lead session yet, so "messages" are the scheduled
- * 9 AM brief (today's once 9 AM has passed, else yesterday's) plus any
- * replies the preview thread posts. With the backend this becomes the lead
- * session's assistant messages, read the same way chats are.
+ * The lead assistant, client side: who leads and their thread, your Focus
+ * list, the brief schedule, and whether the thread has something you haven't
+ * read — the same unread check chats use, on the lead's session.
  */
-const LAST_READ_KEY = 'codepipe:lead:lastRead'
-const BRIEF_HOUR = 9
-
-/** When the most recent scheduled brief ran (today's once its hour has passed, else yesterday's). */
-export function latestScheduledBrief(now = new Date()): number {
-  const at = new Date(now)
-  at.setHours(BRIEF_HOUR, 0, 0, 0)
-  if (at.getTime() > now.getTime()) at.setDate(at.getDate() - 1)
-  return at.getTime()
-}
-
 export const useLeadStore = defineStore('lead', () => {
-  const lastRead = ref<number>(load())
-  /** Timestamps of lead messages posted this visit (preview replies, runs). */
-  const posted = ref<number[]>([])
-  /** Re-evaluated every minute so 9 AM turns the badge on without a reload. */
-  const now = ref(Date.now())
-  setInterval(() => (now.value = Date.now()), 60_000)
+  const sessions = useSessionsStore()
 
-  function load(): number {
-    try { return Number(localStorage.getItem(LAST_READ_KEY)) || 0 } catch { return 0 }
-  }
-
-  const messages = computed(() => [latestScheduledBrief(new Date(now.value)), ...posted.value])
-  const unreadCount = computed(() => messages.value.filter((t) => t > lastRead.value).length)
-  /** Sidebar hint: a reply reads as a message; otherwise it's the morning brief. */
-  const unreadLabel = computed(() => (posted.value.some((t) => t > lastRead.value) ? 'New message' : 'New brief'))
-
-  function markRead() {
-    lastRead.value = Date.now()
-    try { localStorage.setItem(LAST_READ_KEY, String(lastRead.value)) } catch { /* preview */ }
-  }
-
-  /** The thread posted a lead message (callers mark it read if they're on screen). */
-  function notePosted() {
-    posted.value = [...posted.value, Date.now()]
-  }
-
-  /** Who leads, their thread, your Focus list (server). */
   const status = ref<LeadStatus | null>(null)
   const focus = computed(() => status.value?.focus ?? [])
+
+  /** The lead's thread, as listed with the other sessions. */
+  const thread = computed(() => {
+    const id = status.value?.sessionId
+    return id ? sessions.sessions.find((s) => s.id === id) ?? null : null
+  })
+  const unread = computed(() => !!thread.value && sessions.isUnread(thread.value))
+  /** Sidebar hint: a brief since you last looked, or just a message. */
+  const unreadLabel = computed(() => {
+    const t = thread.value
+    const brief = status.value?.lastBriefAt
+    return t && brief && brief > (sessions.lastRead[t.id] ?? 0) ? 'New brief' : 'New message'
+  })
 
   async function fetchStatus() {
     try { status.value = await api.fetchLeadStatus() } catch { /* keep the last known */ }
@@ -69,5 +44,22 @@ export const useLeadStore = defineStore('lead', () => {
     }
   }
 
-  return { unreadCount, unreadLabel, markRead, notePosted, status, focus, fetchStatus, saveFocus }
+  /** Start a brief now; the answer says whether it started (and why not). */
+  async function runBrief(): Promise<{ ran: boolean; reason?: string }> {
+    try {
+      const result = await api.runBrief()
+      await fetchStatus()
+      return result
+    } catch (e) {
+      return { ran: false, reason: e instanceof Error ? e.message : 'Could not start the brief' }
+    }
+  }
+
+  async function saveSchedule(schedule: BriefSchedule) {
+    if (status.value) status.value = { ...status.value, schedule }
+    try { await api.saveBriefSchedule(schedule) } catch { /* the refetch shows the truth */ }
+    await fetchStatus()
+  }
+
+  return { status, focus, unread, unreadLabel, fetchStatus, saveFocus, runBrief, saveSchedule }
 })

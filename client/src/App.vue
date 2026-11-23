@@ -5,12 +5,14 @@ import { useSessionsStore } from '@/stores/sessions'
 import { useProjectsStore } from '@/stores/projects'
 import { useTeamStore } from '@/stores/team'
 import { useUiStore } from '@/stores/ui'
+import { useLeadStore } from '@/stores/lead'
 import { startEvents } from '@/composables/useEvents'
 import AppSidebar from '@/components/AppSidebar.vue'
 import ActionQuickAddModal from '@/components/ActionQuickAddModal.vue'
 import UsageModal from '@/components/UsageModal.vue'
 
 const sessionsStore = useSessionsStore()
+const leadStore = useLeadStore()
 const projectsStore = useProjectsStore()
 const teamStore = useTeamStore()
 const ui = useUiStore()
@@ -22,6 +24,14 @@ async function openSessionFromId(sessionId: string | null | undefined) {
   // first so the sidebar and header know about the session being opened.
   if (!sessionsStore.sessions.some((s) => s.id === sessionId)) {
     await sessionsStore.fetchSessions()
+  }
+  // The lead's thread lives on the lead's page, not in the chat list.
+  if (sessionsStore.sessions.find((s) => s.id === sessionId)?.kind === 'lead') {
+    await leadStore.fetchStatus()
+    if (leadStore.status?.leadPersonaId) {
+      router.push(`/team/${leadStore.status.leadPersonaId}`)
+      return
+    }
   }
   sessionsStore.selectSession(sessionId)
   // A notification tap may land while a workspace page is open.

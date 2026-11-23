@@ -11,6 +11,7 @@ import type {
   ChatAttention,
   ChatActionCard,
   ChatIdeaCard,
+  Brief,
   Attachment,
   ModelState,
   ModelOption,
@@ -31,6 +32,7 @@ import { READ_ONLY_SETTINGS, resolveSettings, type SettingLayers, type SettingVa
 import type { ProviderSettingsStore } from './provider-settings-store.js'
 import { computeReplyUsage, formatUsd, type PreviousReply } from './reply-usage.js'
 import { endingHint, isUserChat } from './lead/chat-digest.js'
+import { fitForCommandLine } from './long-input.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1029,7 +1031,7 @@ export class SessionManager implements ISessionManager {
   appendCard(
     sessionId: string,
     content: string,
-    metadata: { kind: 'action'; action: ChatActionCard } | { kind: 'idea'; idea: ChatIdeaCard },
+    metadata: { kind: 'action'; action: ChatActionCard } | { kind: 'idea'; idea: ChatIdeaCard } | { kind: 'brief'; brief: Brief },
     options: { atTurnEnd?: boolean } = {},
   ): ChatMessage | null {
     const ctx = this.sessions.get(sessionId)
@@ -1116,12 +1118,14 @@ export class SessionManager implements ISessionManager {
 
     const isFirstMessage = !ctx.session.cliSessionId
 
-    const attachmentRefs = attachments?.map(a => ({ path: a.path, mimeType: a.mimeType }))
+    // A message too long for a command line goes to the CLI as a file.
+    const input = await fitForCommandLine({ text, attachments: attachments?.map(a => ({ path: a.path, mimeType: a.mimeType })) })
+    if (this.sessions.get(sessionId) !== ctx) return
     const withTools = sessionGetsAgentTools(ctx.session.kind)
     const { command, args } = adapter.buildMessageCommand!(
-      text,
+      input.text,
       ctx.session.cliSessionId ?? null,
-      attachmentRefs,
+      input.attachments,
       ctx.session.model ?? null,
       withTools ? [codepipeMcpServer(sessionId)] : [],
       launchSettings,
