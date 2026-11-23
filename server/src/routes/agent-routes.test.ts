@@ -168,13 +168,13 @@ describe('add_action_item', () => {
 describe('list_action_items / resolve_action_item', () => {
   it('lists open items with ids, and closed ones on request', async () => {
     expect((await tool('list_action_items', {})).text).toContain('Nothing is waiting')
-    const open = await recordActionItem(storage, project.id, { text: 'Pick a DB', kind: 'decision', options: [{ label: 'Postgres', recommended: true }], dueDate: '2026-11-01' })
+    const open = await recordActionItem(storage, project.id, { text: 'Pick a DB', kind: 'decision', options: [{ label: 'Postgres', recommended: true }], dueDate: '2099-01-01' })
     const closed = await recordActionItem(storage, project.id, { text: 'Buy a domain' })
     if (open.status !== 'added' || closed.status !== 'added') throw new Error('setup')
     await storage.updateActionItem(closed.item.id, { status: 'dismissed', resolution: 'Using a subdomain' })
 
     const list = (await tool('list_action_items', {})).text
-    expect(list).toContain(`[${open.item.id.slice(0, 8)}] (decision, due 2026-11-01, the user's own) Pick a DB`)
+    expect(list).toContain(`[${open.item.id.slice(0, 8)}] (decision, due 2099-01-01, the user's own) Pick a DB`)
     expect(list).toContain('Postgres (recommended)')
     expect(list).not.toContain('Buy a domain')
     expect((await tool('list_action_items', { include_closed: true })).text).toContain('declined: Buy a domain — reason: Using a subdomain')
