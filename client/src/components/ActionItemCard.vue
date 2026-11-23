@@ -235,13 +235,36 @@ function openBoard() {
       ? 'border-gray-200 dark:border-gray-700'
       : 'border-gray-100 bg-gray-50/60 dark:border-gray-800 dark:bg-gray-900/40'"
   >
-    <input
-      type="checkbox"
-      :checked="!isOpen"
-      class="mt-0.5 rounded"
+    <!-- Done check: a round, roomy target (the hit area is larger than the circle) -->
+    <button
+      type="button"
+      role="checkbox"
+      :aria-checked="!isOpen"
+      :aria-label="isOpen ? 'Mark done' : 'Reopen'"
       :title="isOpen ? 'Mark done' : 'Reopen'"
-      @change="toggleDone"
-    />
+      class="group/check -m-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-full focus:outline-none"
+      @click="toggleDone"
+    >
+      <span
+        class="flex h-5 w-5 items-center justify-center rounded-full border-2 transition-all duration-150 group-focus-visible/check:ring-2 group-focus-visible/check:ring-green-500/40 group-active/check:scale-90"
+        :class="isOpen
+          ? 'border-gray-300 bg-white group-hover/check:border-green-500 dark:border-gray-600 dark:bg-gray-900 dark:group-hover/check:border-green-400'
+          : 'border-green-500 bg-green-500 dark:border-green-500 dark:bg-green-500'"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+          class="h-3 w-3 transition-all duration-150"
+          :class="isOpen
+            ? 'scale-75 text-green-500 opacity-0 group-hover/check:scale-100 group-hover/check:opacity-60 dark:text-green-400'
+            : 'scale-100 text-white opacity-100'"
+          aria-hidden="true"
+        >
+          <path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 0 1 .143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z" clip-rule="evenodd" />
+        </svg>
+      </span>
+    </button>
     <div class="min-w-0 flex-1">
       <!-- Question / task -->
       <div class="flex items-start gap-2">
